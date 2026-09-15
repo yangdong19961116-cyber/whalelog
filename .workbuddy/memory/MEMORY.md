@@ -137,6 +137,13 @@
   **判定标准看产物文件，不看退出码**。
 - **改同一个文件必须串行 Edit**：同一条消息里并行发两个改同一文件的 Edit，会丢其中一处
   （本会话栽过两次）。
+- **本机没法 `git push` 到 GitHub**：`api.github.com` 通（HTTP 200），但 `github.com`
+  被代理拦（`CONNECT tunnel failed, response 502`）。所以「建仓库 + 推代码」这类任务，
+  建仓库只能用户手动，首次 push 得在能正常访问 `github.com` 的机器上做。
+- **平台 GitHub 连接器只有"写文件"权限，没有"建仓库"权限**：
+  `create_repository` → `403 Resource not accessible by integration`。
+  而往一个**不存在**的仓库写文件返回的是 `404` 而不是 `403` ——
+  用这个差异可以区分「没权限」和「仓库还不存在」。
 
 ## 六、发布例行（发 1.2 时定下来的）
 - 版本唯一来源是 `src/WhaleLog/WhaleLog.csproj` 的 `<Version>`，界面读 `Assembly.GetName().Version` 自动跟，改一处即可。
