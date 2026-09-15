@@ -25,6 +25,21 @@
 帧与帧之间只允许「整体垂直位移」和「绕该基准点的缩放」，
 **横向中心绝对不能左右漂** —— 判据是每帧角色的 alpha 边界框横向中心必须一致。
 
+垂直方向能走多远，**不能按"上边留了 60px"来算**
+-----------------------------------------------
+脚底在 660、角色高 600，所以静止时头顶在 y=60 —— 上边只剩 60px。
+但这 60px 里还要装下**纵向拉伸**：拉伸到 1.07 时角色高 642，头顶会再往上多出 42px。
+第一版 PLAN 就是按"能上移 34px"写的，结果最高帧头顶落到 y=-15，被画布裁掉了
+（`tools/check_anim_assets.py` 报「帧3（上）」）。
+
+准确的余量算法（也是本脚本末尾 assert_headroom 用的判据）：
+
+    头顶 y = 661 − round(角色高 × 纵向缩放) + 垂直位移    必须 ≥ 2
+    脚底 y = 头顶 y + round(角色高 × 纵向缩放) − 1        必须 ≤ 717
+
+即：**拉伸越猛，可用于"整体上移"的额度越小**。改动 PLAN 之后跑一遍脚本，
+它会逐帧打印头顶/脚底的余量，不够就当场报错退出。
+
 产物：
     <输出目录>/sheet.png      精灵图（4 列 × 2 行 = 8 帧）
     <输出目录>/sheet.json     帧表
@@ -33,6 +48,9 @@
 
 用法：
     python tools/make_anim_sample.py
+
+完整规格（帧表字段、动作名、放置目录、排查顺序）见 docs\\动态素材规格.md；
+交付前再跑一次 tools\\check_anim_assets.py。
 """
 
 from __future__ import annotations
@@ -58,16 +76,24 @@ FPS = 24            # 实测：渲染时钟 ~64Hz，24 fps 能打满
 
 # (垂直位移, 横向缩放, 纵向缩放) —— 经典 squash & stretch
 # 正数 = 整体下移（落地压扁），负数 = 上移（跳起）
+#
+# 数值按「头顶位置」倒推，别凭感觉给：
+#     头顶 y = 661 − round(600 × 纵向缩放) + 垂直位移
+# 拉伸到 1.07 时角色高 642，光拉伸就把头顶顶到 y=19，于是垂直位移只敢用 −15。
 PLAN = [
-    (0,   1.00, 1.00),   # 0 站立（与静态本体逐像素一致）
-    (5,   1.07, 0.93),   # 1 下压蓄力
-    (-18, 0.96, 1.06),   # 2 起跳拔高
-    (-34, 0.95, 1.07),   # 3 最高点
-    (-32, 0.97, 1.03),   # 4 滞空
-    (-16, 1.00, 1.00),   # 5 下落
-    (4,   1.06, 0.94),   # 6 落地压扁
-    (0,   1.00, 1.00),   # 7 回正
+    (0,   1.00, 1.00),   # 0 站立（与静态本体逐像素一致）      头顶 61
+    (5,   1.07, 0.93),   # 1 下压蓄力                        头顶 108
+    (-9,  0.96, 1.06),   # 2 起跳拔高                        头顶 16
+    (-15, 0.95, 1.07),   # 3 最高点                          头顶 4
+    (-21, 0.97, 1.03),   # 4 滞空                            头顶 22
+    (-13, 1.00, 1.00),   # 5 下落                            头顶 48
+    (3,   1.06, 0.94),   # 6 落地压扁                        头顶 100
+    (0,   1.00, 1.00),   # 7 回正                            头顶 61
 ]
+
+# 角色离画布边缘至少要留这么多像素。贴着边（0）几乎一定是被裁了，
+# 和 tools/check_anim_assets.py 里的 MIN_EDGE_MARGIN_PX 是同一个判据。
+MIN_EDGE_MARGIN = 2
 
 
 def place(char: Image.Image, anchor_x: float, foot_y: int, dy: int,
@@ -86,6 +112,37 @@ def place(char: Image.Image, anchor_x: float, foot_y: int, dy: int,
     py = round(foot_y - (h - 1) + dy)
     frame.alpha_composite(scaled, (px, py))
     return frame
+
+
+def assert_headroom(frames: list, title: str = "帧") -> None:
+    """逐帧检查角色有没有贴到（甚至越过）画布边缘。
+
+    生成端自己也过一遍这道关，是因为"被裁"这件事**肉眼极难发现**：
+    少掉的往往只是头顶十几像素，缩略图里看着一切正常，
+    等程序里播起来才发现角色每次跳到最高点就少一截。宁可在这里当场报错。
+
+    判据和 tools/check_anim_assets.py 的 MIN_EDGE_MARGIN_PX 保持一致。
+    """
+    worst = None
+    for i, f in enumerate(frames):
+        bb = f.getchannel("A").point(lambda v: 255 if v > 8 else 0).getbbox()
+        if bb is None:
+            raise SystemExit(f"{title} {i} 整帧透明 —— 漏画了？")
+
+        left, top, right, bottom = bb[0], bb[1], bb[2] - 1, bb[3] - 1
+        margin = min(left, top, CELL - 1 - right, CELL - 1 - bottom)
+        worst = margin if worst is None else min(worst, margin)
+
+        print(f"  {title} {i}：角色 {right - left + 1}×{bottom - top + 1}，"
+              f"离边最近 {margin}px"
+              f"（左 {left} / 上 {top} / 右 {CELL - 1 - right} / 下 {CELL - 1 - bottom}）")
+
+    if worst is not None and worst < MIN_EDGE_MARGIN:
+        raise SystemExit(
+            f"\n角色离画布边缘只剩 {worst}px（至少要 {MIN_EDGE_MARGIN}px）—— 会被裁。\n"
+            f"多半是 PLAN 里的上移量太大：纵向拉伸本身就会把头顶往上顶，\n"
+            f"   头顶 y = 661 − round({CHAR_H} × 纵向缩放) + 垂直位移\n"
+            f"这一串算出来必须 ≥ {MIN_EDGE_MARGIN}。改完 PLAN 再跑一次。")
 
 
 def main() -> int:
@@ -115,6 +172,13 @@ def main() -> int:
 
     # ---- 逐帧 ----
     frames = [place(char, ANCHOR_X, FOOT_Y, dy, sx, sy) for dy, sx, sy in PLAN]
+
+    # 先验再存：被裁的素材一旦写出去，后面所有环节（预览图、对齐图、交付包）
+    # 都会带着这个缺陷，而且肉眼看不太出来。
+    print("静态本体余量检查：")
+    assert_headroom([base_frame], "本体")
+    print("逐帧余量检查：")
+    assert_headroom(frames)
 
     sheet = Image.new("RGBA", (CELL * COLS, CELL * ROWS), (0, 0, 0, 0))
     for i, f in enumerate(frames):

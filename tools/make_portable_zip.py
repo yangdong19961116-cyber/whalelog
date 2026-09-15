@@ -201,6 +201,14 @@ README = """鲸记 WhaleLog · 桌面工作记录台
 再到托盘图标上点右键 →「重新加载素材」，界面立刻换过来，不用重新编译。
 每个文件要什么规格，见 Assets\\素材说明.txt。删掉某个文件就恢复内置默认。
 
+让小鲸鱼动起来
+--------------
+Assets\\anim\\ 里可以放精灵图动画（单击弹跳 / 闲置眨眼 / 到点提醒）。一个动作一个子目录，
+放完点「重新加载素材」就生效。画布、锚点、帧表的完整规格见程序目录下的
+《动态素材规格.md》，里面还有"看不到效果时按什么顺序查"的一张表。
+
+不想让它动：托盘右键 →「小鲸鱼动画」，素材文件不用删。
+
 数据存在哪儿
 ------------
 默认在 %AppData%\\WhaleLog（笔记 Markdown、文件索引、设置、日志都在这里）。
@@ -283,6 +291,15 @@ def main() -> int:
     (bundle / "WhaleLog.deps.json").write_text(deps, encoding="utf-8")
 
     (bundle / "使用说明.txt").write_text(README, encoding="utf-8-sig")
+
+    # 动态素材规格一起放进包：《使用说明》和 Assets\素材说明.txt 都指向它，
+    # 不带上就是一个死链接 —— 而"怎么做动画"恰恰是唯一需要看文档的部分。
+    spec = ROOT / "docs" / "动态素材规格.md"
+    if spec.exists():
+        shutil.copy2(spec, bundle / spec.name)
+        print(f"已附带规格文档：{spec.name}")
+    else:
+        print(f"提示：没有 {spec}，包里的《使用说明》会指向一个不存在的文件", file=sys.stderr)
 
     # 出厂素材目录：让用户解压后立刻看到该换哪些文件，不用等首次启动。
     # 交给程序自己导出，而不是在这里重写一遍素材清单 ——
