@@ -927,7 +927,7 @@ internal static class Program
         // 精灵图路径要落到动作自己的目录里 —— 拼错就会"素材在但不生效"
         var sheetPath = lib.SheetImagePath(AnimActions.Click);
         Check(sheetPath != null &&
-              Path.GetDirectoryName(sheetPath).EndsWith("clickBounce", StringComparison.Ordinal) &&
+              Path.GetDirectoryName(sheetPath)!.EndsWith("clickBounce", StringComparison.Ordinal) &&
               File.Exists(sheetPath),
             $"精灵图路径指向动作自己的目录：{sheetPath}");
 
