@@ -1,7 +1,7 @@
 # 交接单 · 鲸记 WhaleLog（桌面工作记录台）
 
 > 用途：把「桌面笔记 / 工作记录工具」的完整上下文迁到新任务，新任务读这一份即可接续。
-> 交接时间：2026-09-15 14:50 · 上一轮工作止于 2026-09-14 17:48（动态素材调研）
+> 交接时间：2026-09-15 15:45 · 上一轮工作止于 2026-09-15 15:34（发 1.2，接入精灵图动画）
 
 ---
 
@@ -14,7 +14,8 @@
 | 3 | `C:\Users\Administrator\WorkBuddy\workwork\src\WhaleLog\README.md` | 功能全貌 + 构建 / 打包 / 自测 / 诊断用法 |
 
 - **代码根目录**（在本工作空间之外）：`C:\Users\Administrator\WorkBuddy\workwork\`
-- 上一轮原始日志：`workwork\.workbuddy\memory\2026-09-11.md`（分批记录，含每轮实跑抓到的真 bug）
+- 上一轮原始日志：`workwork\.workbuddy\memory\` 下的 `2026-09-11.md`（分批记录，含每轮实跑抓到的真 bug）、
+  `2026-09-14.md`（动态素材调研）、`2026-09-15.md`（播放器接入与发 1.2）
 - 本工作空间内这份交接单与 `workwork\HANDOFF-鲸记WhaleLog.md` 内容相同，从哪个入口进来都能接上。
 
 ---
@@ -40,15 +41,15 @@
 
 | 项 | 值 |
 |---|---|
-| 版本 | `1.1.0`（`src/WhaleLog/WhaleLog.csproj` 的 `<Version>`，界面读 `Assembly.GetName().Version` 自动跟） |
+| 版本 | `1.2.0`（`src/WhaleLog/WhaleLog.csproj` 的 `<Version>`，界面读 `Assembly.GetName().Version` 自动跟） |
 | TFM | `net8.0-windows`（**不要加 OS 版本号**） |
 | 平台 | AnyCPU（**不能设 x64**，见第 5 节） |
-| 主程序 | `src/WhaleLog/`：App + MainWindow + `Views/`(7 组) + `Services/`(19 个) + `Models/`(4 个) |
-| 可运行产物 | `src/WhaleLog/bin/Release/net8.0-windows/WhaleLog.exe`；解压态副本 `build/portable/鲸记 WhaleLog/`（243 个文件） |
-| 桌面安装包 | `C:\Users\Administrator\Desktop\鲸记 WhaleLog 1.1.zip`（约 57.3 MB，自包含，解压即用） |
-| 自测 | `tools/selftest/` 163 项断言，直接编译主程序非界面部分，测的是发货代码 |
-| 诊断自检 | `WhaleLog.exe --selfcheck` → `logs\selfcheck.log`（真实数据 144 项） |
-| 版本控制 | ⚠️ **没有 git 仓库**（`workwork` 下只有 `.gitignore`，无 `.git`）。改动前建议先手工备份 |
+| 主程序 | `src/WhaleLog/`：App + MainWindow + `Views/`(6 个窗口 + `SpritePlayer`/`Converters`/`AssetImageExtension`) + `Services/`(21 个，含 `AnimSheet`/`AnimLibrary`) + `Models/`(4 个) |
+| 可运行产物 | `src/WhaleLog/bin/Release/net8.0-windows/WhaleLog.exe`；解压态副本 `build/portable/鲸记 WhaleLog/`（248 个文件） |
+| 桌面安装包 | `C:\Users\Administrator\Desktop\鲸记 WhaleLog 1.2.zip`（57.3 MB，自包含，解压即用） |
+| 自测 | `tools/selftest/` 213 项断言，直接编译主程序非界面部分，测的是发货代码 |
+| 诊断自检 | `WhaleLog.exe --selfcheck` → `logs\selfcheck.log`（154 项，18 个段落） |
+| 版本控制 | ✅ 有 git 仓库（`workwork\.git`），基线 `f05c39b`，当前 HEAD 见 `git log` |
 
 ---
 
@@ -70,9 +71,9 @@
 
 ## 4. 未完成 / 在研 ← **重点看这节**
 
-### A. 动态素材（悬浮窗动画）—— 停在这里
+### A. 动态素材（悬浮窗动画）—— 播放器已接入，缺真实素材
 
-9/14 做的这一批**没有写进记忆日志**，是新任务最容易漏掉的部分。
+9/14 做的这一批已经补记进 `workwork\.workbuddy\memory\2026-09-14.md`（原本是漏的，最容易被新任务忽略）。
 
 **已经做完的：**
 
@@ -123,17 +124,32 @@
 }
 ```
 
-**没做完的（下一步就是它）：**
+**播放器已接入（2026-09-15 完成）：**
 
-- ❌ **主程序尚未接入动画播放。** `src/` 最后一次改动停在 09-11 18:20，
-  `Views/FloatingWindow.xaml(.cs)` 目前完全不认识精灵图 / 帧表。
-  现在是「素材规格 + 样例 + 校验工具」三件套齐了，但**播放器还没写**。
-- ❌ 事件映射未定：点击弹跳 / 闲置眨眼 / 提醒时的动作，还没接上悬浮窗的交互事件。
-- ❌ 素材规格文档没有独立 `.md`，规格散在 `make_anim_sample.py` 头注释和 `check_anim_assets.py` 文档串里。
+| 产出 | 说明 |
+|---|---|
+| `Services/AnimSheet.cs` | 帧表解析 + 校验 + **行优先**切帧（纯逻辑，刻意不碰 WPF，好让自测直接编译） |
+| `Services/AnimLibrary.cs` | 扫 `Assets\anim\<动作名>\`，动作名归一化 + 别名；目录名与动作键一致者优先（解撞车） |
+| `Views/SpritePlayer.cs` | `CroppedBitmap` 切帧（不复制像素）+ `CompositionTarget.Rendering` / `DispatcherTimer` 双通道驱动；**时间由时钟算**（已过时间 ÷ 单帧时长），不是计次 |
+| `FloatingWindow.xaml.cs` | 接入三个动作：`clickBounce`（点击）、`blink`（闲置眨眼）、`alert`（提醒气泡时优先，播不了才退回原 `Bounce`）；播完回落静态本体 |
+| 托盘开关 | 「小鲸鱼动画」关掉退回静态 168px，素材文件不用删 |
+| `docs/动态素材规格.md` | 规格从两个 `.py` 的注释里独立出来，可直接发给做素材的人；`make_portable_zip.py` 会把它复制进便携包 |
 
-**建议的实现路径**：给 `FloatingWindow` 加一个帧表驱动的精灵图播放器
-（`CroppedBitmap` 切帧 + `CompositionTarget.Rendering` 驱动，目标 24fps；
-注意探针已确认**采样渲染时钟必须跑真的消息循环**，用 `Thread.Sleep` 堵 UI 线程会得出「渲染时钟不可用」的错误结论）。
+**尺寸是关键，别踩回去**：装素材前后角色在屏幕上都是 **165px**，
+鲸鱼框从静态 168px 变成 **198px**（= `165 × 720 ÷ 600`，按帧表 `characterHeight` 反算），
+悬浮窗设计高 **296 → 326**（`ExpandedDesignHeight = 296 + (框高 − 168)`）。
+**窗口高度和鲸鱼框必须出自同一个系数**，漏一处就会出现"鲸鱼变大了但窗口没跟上"。
+
+**还没做的：**
+
+- ❌ **出厂不带真实素材。** `Assets\anim\` 解压后是空的，用户/画师得按规格自己放。
+  （`outputs/` 下有两个样例：`样例-点击弹跳`、`样例-眨眼示意`，可当参考实现。）
+- ❌ 提醒动作 `alert` 只有代码路径，没有对应的样例素材；眨眼样例是 4 帧示意稿。
+- ❌ 动作事件目前是**写死的映射**，没有做成可配置。
+
+**实现上的两个坑（已踩过）：**
+1. 采样渲染时钟必须跑真消息循环，用 `Thread.Sleep` 堵 UI 线程会得出「渲染时钟不可用」的错误结论。
+2. 目标 24fps；`fps` 上限卡 30（悬浮窗尺寸小，更高纯属浪费）。
 
 ### B. README 里自己列的待办（还没动）
 
@@ -160,6 +176,13 @@
    节奏：**先在 Debug 版验功能**（输出目录不同不会被锁），最后才切 Release 并重生成 apphost、重指快捷方式。
 6. **`dotnet.exe` 是控制台子系统程序**，从快捷方式启动会一直挂个黑控制台窗口
    → 必须用 `tools/make_apphost.py` 离线生成 GUI 子系统的 `WhaleLog.exe`。
+7. **`build-whalelog-offline.cmd` 依赖 cmd.exe 与 PATH 里的 `dotnet`**。
+   只能执行 bash 的会话（调 `cmd.exe` 会被安全策略拦）要手工复现它那四步：
+   `offline_restore.py` → `dotnet build …`（`dotnet` 用完整路径
+   `"C:\Program Files (x86)\dotnet\dotnet.exe"`）→ `offline_restore.py` → `make_apphost.py`。
+   **`offline_restore.py` 自己会找 dotnet，不用喂。** 注意第 3 步不能省 ——
+   带 `-p:GenerateRuntimeConfigurationFiles=false` 编译出来的产物没有 `runtimeconfig.json`，
+   直接跑会报 `hostpolicy.dll not found`；重跑一遍会补上。
 
 ---
 
@@ -175,7 +198,7 @@ build-whalelog.cmd
 :: 只编译不发布
 dotnet build WhaleLog.sln -c Release
 
-:: 自测（163 项断言，直接编译主程序非界面部分）
+:: 自测（213 项断言，直接编译主程序非界面部分）
 dotnet build tools\selftest\selftest.csproj -c Release
 dotnet tools\selftest\bin\Release\net8.0\WhaleLog.SelfTest.dll
 ::  加 --keep 保留临时目录，方便翻看产出的 Markdown 和 index.json
@@ -189,9 +212,11 @@ WhaleLog.exe --shot-notes D:\tmp\notes-page.png
 WhaleLog.exe --shot-floating D:\tmp\floating-scales.png
 WhaleLog.exe --export-assets D:\tmp\Assets
 
-:: 打包自包含 zip（输出到桌面：鲸记 WhaleLog.zip）
+:: 打包自包含 zip（不带参数会输出到桌面：鲸记 WhaleLog.zip；
+:: 按本仓惯例要显式带版本号，例如 鲸记 WhaleLog 1.2.zip）
 python tools\make_portable_zip.py
 python tools\make_portable_zip.py D:\某目录
+python tools\make_portable_zip.py "C:\Users\Administrator\Desktop\鲸记 WhaleLog 1.2.zip"
 
 :: 素材
 python tools\make_icon.py                                   :: 610×610 PNG → 7 尺寸 ICO
@@ -227,11 +252,31 @@ python tools\drag_probe.py
 
 ---
 
-## 8. 建议的下一步
+## 8. 上一轮「建议的下一步」执行情况（2026-09-15 全部完成）
 
-1. **接动画**（在研事项 A，投入产出比最高）：写 `FloatingWindow` 的精灵图播放器，
-   先只接「点击弹跳」一个动作打通链路，再挂闲置眨眼。
-2. 把散在两个 `.py` 里的素材规格整理成 `docs\动态素材规格.md`，方便直接发给做素材的人。
-3. 回填 `workwork\.workbuddy\memory\` —— 9/14 那批动态素材工作**目前没进记忆日志**，
-   建议补一份 `2026-09-14.md`，否则下次还会漏。
-4. 考虑 `git init` 并做一次初始提交（现在完全没有版本控制，改动不可回溯）。
+| # | 事项 | 结果 |
+|---|---|---|
+| 1 | 接动画：写 `FloatingWindow` 的精灵图播放器 | ✅ 已接入，三个动作全部打通并实跑验证 |
+| 2 | 整理 `docs\动态素材规格.md` | ✅ 已写（含垂直余量公式 + 排查顺序表），并随便携包附带 |
+| 3 | 回填 `workwork\.workbuddy\memory\` | ✅ 补了 `2026-09-14.md`（动态素材调研）与 `2026-09-15.md`（播放器接入） |
+| 4 | `git init` + 初始提交 | ✅ 已建仓库，基线 `f05c39b` |
+
+顺带做完的：版本升到 **1.2.0**、重建 Release 与 apphost、打出
+`桌面\鲸记 WhaleLog 1.2.zip`（57.3 MB）、修掉样例素材「最高帧头顶被裁」的缺陷、
+修掉自测里一处 `CS8602` 警告。
+
+---
+
+## 9. 建议的下一步（2026-09-15 留下的）
+
+1. **`tools/drag_probe.py` 一直没跑过**（会真的移动鼠标光标、并先结束正在运行的鲸记，
+   所以只能手动、且要先退掉你正开着的实例）。拖拽归档是本项目最核心的交互，
+   但至今只靠离屏截图和自测覆盖，真实鼠标路径没验证过。
+2. **出厂要不要自带一份动画素材？** 现在 `Assets\anim\` 解压后是空的，用户开箱看不到任何动画效果，
+   得自己按规格做。把 `outputs/样例-点击弹跳` 塞进包的 `Assets\anim\clickBounce\`
+   就能开箱即见 —— 但这是产品决策（样例画风是否代表最终形象），要用户拍板。
+3. **接入真实素材后**，先跑 `python tools\check_anim_assets.py <目录>` 过一遍（退出码 0 才算合格），
+   再放进 `Assets\anim\<动作名>\` 点托盘「重新加载素材」。
+4. **README 自列的四项待办**（第 4 节 B）：周报对比视图、拖入自动打标、历史导出、语音输入。
+5. 桌面上还留着旧的 `鲸记 WhaleLog 1.1.zip`（不含动画）。**删除桌面文件需用户明确同意**，
+   别自作主张清桌面。

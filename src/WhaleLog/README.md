@@ -13,6 +13,7 @@ src/WhaleLog/
 │   ├── MonthCalendarPanel.xaml(.cs)  整月日历：有记录的日期打点，可点选或敲日期跳转
 │   ├── ReportWindow.xaml(.cs)        日报 / 周报查看窗（可一键复制）
 │   ├── TrayMenuWindow.xaml(.cs)      托盘右键菜单（WPF 实现，跟主题走）
+│   ├── SpritePlayer.cs               精灵图播放器：切帧 + 双通道时钟驱动
 │   ├── AssetImageExtension.cs        XAML 里引用素材：{v:AssetImage whale-head}
 │   └── Converters.cs                 分类配色等值转换器
 ├── Models/                    AppSettings / DayNote / NoteEntry / FileRecord / FileVersion / ClassifyRule
@@ -29,10 +30,12 @@ src/WhaleLog/
 │   ├── ReminderService.cs     下班提醒调度
 │   ├── HotKeyService.cs       全局快捷键（消息专用窗口 + RegisterHotKey）
 │   ├── ShortcutService.cs     桌面快捷方式（WScript.Shell，含 dotnet 宿主兜底）
-│   ├── DiagnosticsService.cs  诊断自检：快捷键/图标/快捷方式/窗口/页签/筛选/分组/滑杆/缩放
+│   ├── DiagnosticsService.cs  诊断自检：快捷键/图标/快捷方式/窗口/页签/筛选/分组/滑杆/缩放/动画
 │   ├── ThemeService.cs        浅色 / 深色 / 跟随系统
 │   ├── StartupService.cs      开机自启（HKCU Run）
 │   ├── TrayService.cs         托盘图标与通知
+│   ├── AnimSheet.cs           帧表解析 + 校验 + 行优先切帧（纯逻辑，可自测）
+│   ├── AnimLibrary.cs         扫描并归一化 Assets\anim\ 下的动作目录（纯逻辑，可自测）
 │   ├── AssetCatalog.cs        素材清单：逻辑名 ↔ 候选文件名 ↔ 内置资源（纯逻辑，可自测）
 │   └── IconAssets.cs          素材加载：外部文件优先，缺失/损坏回落内置
 └── Resources/
@@ -430,7 +433,7 @@ dotnet build tools\selftest\selftest.csproj -c Release
 dotnet tools\selftest\bin\Release\net8.0\WhaleLog.SelfTest.dll
 ```
 
-覆盖 151 项断言，包括：
+覆盖 213 项断言，包括：
 
 - 12 个分类用例，验证「名字命中」要压过「类型兜底」（周报是 .docx，但不该归到「文档」）
 - 版本链基名归一化（`v2` / `(3)` / `- 副本` / `第2版` / `_final`，以及叠加后缀）
@@ -449,6 +452,8 @@ dotnet tools\selftest\bin\Release\net8.0\WhaleLog.SelfTest.dll
 - **原文件保护**：归档前后逐字节比对文件内容、修改时间、目录条目数量
 - 大文件的采样指纹（同文件稳定、内容变则变、长度变则变）
 - 快照模式确实产出可读的副本，且原文件仍在原地
+- 动态素材（精灵图）：帧表字段校验与 8 类报错原因、能救回的 6 类、
+  **行优先**切帧的坐标、动作名归一化与别名、目录扫描（含同名撞车时"目录名即动作键"者优先）
 
 加 `--keep` 参数可以保留临时目录，方便翻看产出的 Markdown 和 index.json。
 
