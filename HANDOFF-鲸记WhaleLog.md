@@ -7,15 +7,19 @@
 
 ## 0. 新任务开工第一件事：读这三份
 
+> **换到另一台设备：先看 `新设备继续指令.md`**（怎么装环境、怎么验、粘贴什么话给 WorkBuddy）。
+> 下面路径都相对**仓库根目录** —— 原来在 `C:\Users\Administrator\WorkBuddy\workwork\`，
+> 换了机器就以解压出来的那个目录为根。
+
 | 顺序 | 文件 | 作用 |
 |---|---|---|
 | 1 | 本文件 | 现状、未完成事项、下一步 |
-| 2 | `C:\Users\Administrator\WorkBuddy\workwork\.workbuddy\memory\MEMORY.md` | **技术决策与全部踩坑记录，必读** |
-| 3 | `C:\Users\Administrator\WorkBuddy\workwork\src\WhaleLog\README.md` | 功能全貌 + 构建 / 打包 / 自测 / 诊断用法 |
+| 2 | `.workbuddy/memory/MEMORY.md` | **技术决策与全部踩坑记录，必读** |
+| 3 | `src/WhaleLog/README.md` | 功能全貌 + 构建 / 打包 / 自测 / 诊断用法 |
 
 - **代码根目录**（在本工作空间之外）：`C:\Users\Administrator\WorkBuddy\workwork\`
-- 上一轮原始日志：`workwork\.workbuddy\memory\` 下的 `2026-09-11.md`（分批记录，含每轮实跑抓到的真 bug）、
-  `2026-09-14.md`（动态素材调研）、`2026-09-15.md`（播放器接入与发 1.2）
+- 上一轮原始日志：`.workbuddy\memory\` 下的 `2026-09-11.md`（分批记录，含每轮实跑抓到的真 bug）、
+  `2026-09-14.md`（动态素材调研）、`2026-09-15.md`（播放器接入、发 1.2 / 1.3）
 - 本工作空间内这份交接单与 `workwork\HANDOFF-鲸记WhaleLog.md` 内容相同，从哪个入口进来都能接上。
 
 ---
