@@ -2,6 +2,7 @@ using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
+using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using WhaleLog.Models;
 using WhaleLog.Services;
@@ -26,6 +27,18 @@ public partial class FloatingWindow : Window
     private const double CollapsedSize = 60;
     private const double SnapThreshold = 40;
 
+    /// <summary>静态形象时鲸鱼图的高度（设计像素）。XAML 里 WhaleImage 的 Height 也是这个数。</summary>
+    private const double StaticWhaleHeight = AnimLibrary.StaticWhaleBoxHeight;
+
+    /// <summary>
+    /// 鲸鱼框高度的允许区间。
+    ///
+    /// 正常情况下它由帧表算出来（样例是 198），这里只是兜住手写坏的帧表：
+    /// 太小看不清，太大能把窗口撑成一块占半个屏幕的空白。
+    /// </summary>
+    private const double MinWhaleHeight = 120;
+    private const double MaxWhaleHeight = 280;
+
     private readonly DispatcherTimer _collapseTimer;
 
     /// <summary>
@@ -38,6 +51,42 @@ public partial class FloatingWindow : Window
     private bool _dragging;
     private Edge _edge = Edge.None;
     private bool _ready;
+
+    /// <summary>位置已经摆过一次了（那之后 ApplySize 才不会摸到 NaN）。</summary>
+    private bool _positioned;
+
+    // ---- 动态素材 ----
+    /// <summary>扫描结果（诊断自检要读它写报告）。</summary>
+    private AnimLibrary? _anim;
+
+    /// <summary>精灵图播放器。没有可用素材时为 null，此时完全是静态形象。</summary>
+    private SpritePlayer? _player;
+
+    /// <summary>闲置眨眼的调度器。</summary>
+    private DispatcherTimer? _blinkTimer;
+
+    private static readonly Random BlinkRng = new();
+
+    /// <summary>
+    /// 当前鲸鱼图的高度（设计像素）。动态素材的画布比静态的大，
+    /// 这个值要跟着变大，否则角色会凭空缩小 —— 见 AnimSheet.DisplayBoxHeight。
+    /// </summary>
+    private double _whaleHeight = StaticWhaleHeight;
+
+    /// <summary>此刻是否启用了动态素材。</summary>
+    private bool _animationsOn;
+
+    /// <summary>上次按哪个"动画开关"值建的播放器，用来判断设置改动后要不要重建。</summary>
+    private bool _animationsSettingApplied;
+    private bool _animationsSettingKnown;
+
+    /// <summary>
+    /// 展开态的设计高度。
+    ///
+    /// 鲸鱼框高一点，窗口就高一点 —— 两者必须出自同一个量。只把图放大而不动窗口，
+    /// 多出来的部分会顶掉气泡的位置；只把窗口放大而不动图，鲸鱼下方会多一条空白。
+    /// </summary>
+    private double ExpandedDesignHeight => ExpandedHeight + (_whaleHeight - StaticWhaleHeight);
 
     // 按下时的屏幕坐标与窗口位置，用来判断这次到底是"拖拽"还是"点击"。
     // 都是屏幕坐标 / 绝对位置，不含任何随窗口移动而变的量。
@@ -73,6 +122,10 @@ public partial class FloatingWindow : Window
         SourceInitialized += (_, _) => _ready = true;
         Loaded += (_, _) =>
         {
+            // 动态素材必须在 RestorePosition 之前定下来 —— 它决定窗口该多高，
+            // 反过来再摆位置就白摆一次。
+            ReloadAnimations();
+
             RestorePosition();
             HookDataChanges();
             RefreshStatus();
@@ -109,6 +162,11 @@ public partial class FloatingWindow : Window
     public void ApplySettings()
     {
         var s = App.Settings.Settings;
+
+        // 「小鲸鱼动画」开关翻动了要重建播放器（否则关掉之后还在眨）
+        if (!_animationsSettingKnown || _animationsSettingApplied != s.FloatingAnimations)
+            ReloadAnimations();
+
         Opacity = s.FloatingOpacity;
 
         if (!_collapsed) ApplySize();
@@ -133,6 +191,9 @@ public partial class FloatingWindow : Window
 
         var head = IconAssets.Load("whale-head");
         if (head != null) HeadImage.Source = head;
+
+        // 动态素材跟着一起重扫：用户刚把 sheet.png / sheet.json 拷进来，就该立刻能播
+        ReloadAnimations();
     }
 
     /// <summary>
@@ -180,7 +241,7 @@ public partial class FloatingWindow : Window
             : Math.Clamp(scaleOverride ?? s.FloatingScale, AppSettings.MinFloatingScale, AppSettings.MaxFloatingScale);
 
         double designW = collapsed ? CollapsedSize : ExpandedWidth;
-        double designH = collapsed ? CollapsedSize : ExpandedHeight;
+        double designH = collapsed ? CollapsedSize : ExpandedDesignHeight;
 
         double w = Math.Round(designW * factor);
         double h = Math.Round(designH * factor);
@@ -237,6 +298,7 @@ public partial class FloatingWindow : Window
         Height = h;
         _edge = NearestEdge();
         ClampToArea();
+        _positioned = true;
     }
 
     /// <summary>当前窗口所在显示器的工作区（已换算成 WPF 的 DIP 单位）。</summary>
@@ -522,6 +584,10 @@ public partial class FloatingWindow : Window
             return;
         }
 
+        // 戳一下鲸鱼先弹一跳：主面板要等一下才画出来，这一跳是"点到了"的即时反馈。
+        // 素材没装或不支持时 PlayAnimation 返回 false，行为完全等于以前。
+        PlayAnimation(AnimActions.Click);
+
         ((App)Application.Current).ShowMainWindow();
     }
 
@@ -536,6 +602,177 @@ public partial class FloatingWindow : Window
         }
         return false;
     }
+
+    // ------------------------------------------------------------------
+    // 动态素材（精灵图动画）
+    // ------------------------------------------------------------------
+
+    /// <summary>
+    /// 按设置和磁盘上的素材重建动画播放器。可重复调用（「重新加载素材」和开关翻动都走它）。
+    ///
+    /// 整段是"尽力而为"的：任何一环出问题都退回静态形象 ——
+    /// 素材是用户可以随手替换的东西，它不该有把悬浮窗搞挂的能力。
+    /// </summary>
+    private void ReloadAnimations()
+    {
+        var wanted = App.Settings.Settings.FloatingAnimations;
+        _animationsSettingApplied = wanted;
+        _animationsSettingKnown = true;
+
+        try
+        {
+            _blinkTimer?.Stop();
+            DetachPlayer();
+
+            _anim = AnimLibrary.Scan();
+
+            // 静态图先取出来：无论开不开动画，它都是"没在播"时的底图。
+            // anim\base.png 也在素材清单里，取到了它就是这张。
+            var still = IconAssets.Load("whale") as BitmapSource;
+            if (still != null) WhaleImage.Source = still;
+
+            _animationsOn = wanted && _anim.HasAny;
+
+            if (!_animationsOn)
+            {
+                _whaleHeight = StaticWhaleHeight;
+            }
+            else
+            {
+                // 画布从 610 变成 720 之后，框还留 168 的话角色会凭空小 15%。
+                // 帧表没写 characterHeight 时算不出来，就老实保持静态尺寸。
+                var box = _anim.DisplayBoxHeight(AnimLibrary.FloatingCharacterDesignHeight);
+                _whaleHeight = box.HasValue
+                    ? Math.Clamp(box.Value, MinWhaleHeight, MaxWhaleHeight)
+                    : StaticWhaleHeight;
+
+                _player = new SpritePlayer(WhaleImage) { BaseImage = still };
+
+                foreach (var action in _anim.ActionNames)
+                {
+                    var sheet = _anim.Find(action);
+                    var path = _anim.SheetImagePath(action);
+                    if (sheet != null && path != null) _player.Register(action, sheet, path);
+                }
+
+                _player.Finished += OnAnimationFinished;
+            }
+
+            WhaleImage.Height = _whaleHeight;
+
+            // 只有位置已经摆过才能重排尺寸 —— 首次 Loaded 时 Left/Top 还是 NaN，
+            // 这时候走 ResizeAnchored 会把窗口摆到 NaN 上去。
+            if (_ready && _positioned) ApplySize();
+
+            ScheduleBlink();
+        }
+        catch (Exception ex)
+        {
+            CrashLog.Note($"[动画] 初始化失败，退回静态形象：{ex}");
+
+            _animationsOn = false;
+            _whaleHeight = StaticWhaleHeight;
+            WhaleImage.Height = _whaleHeight;
+            DetachPlayer();
+        }
+    }
+
+    private void DetachPlayer()
+    {
+        if (_player == null) return;
+
+        _player.Finished -= OnAnimationFinished;
+        _player.Dispose();
+        _player = null;
+    }
+
+    /// <summary>播一个动作。播不了（没素材 / 素材坏了）返回 false，调用方据此走降级分支。</summary>
+    private bool PlayAnimation(string action)
+    {
+        if (!_animationsOn || _player == null) return false;
+
+        try
+        {
+            return _player.Play(action);
+        }
+        catch (Exception ex)
+        {
+            CrashLog.Note($"[动画] 播放 {action} 失败：{ex.Message}");
+            return false;
+        }
+    }
+
+    private void OnAnimationFinished(string action)
+    {
+        // 眨完一次就安排下一次 —— 用"播完再排期"而不是固定节拍器，
+        // 播放耗时本身也被算进间隔里，节奏不会越走越密
+        if (action == AnimActions.Blink) ScheduleBlink();
+    }
+
+    /// <summary>此刻适不适合眨眼：开着动画、展开着、显示着、鼠标不在上面。</summary>
+    private bool CanBlinkNow
+        => _animationsOn && !_collapsed && IsVisible && !IsMouseOver && !_dragging;
+
+    /// <summary>
+    /// 安排下一次眨眼。间隔取 4~9 秒随机 —— 固定节拍一眼就能看出是循环，
+    /// 太密集又显得抽搐。没有 blink 这个动作时干脆不排期，免得留个空转的定时器。
+    /// </summary>
+    private void ScheduleBlink()
+    {
+        _blinkTimer ??= CreateBlinkTimer();
+
+        _blinkTimer.Stop();
+
+        if (!_animationsOn || _player is not { } p || !p.Has(AnimActions.Blink)) return;
+
+        _blinkTimer.Interval = TimeSpan.FromSeconds(4 + BlinkRng.NextDouble() * 5);
+        _blinkTimer.Start();
+    }
+
+    private DispatcherTimer CreateBlinkTimer()
+    {
+        var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(6) };
+
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+
+            // 鼠标在鲸鱼身上、或者正在播别的动作时不打断（Play 的 restart=false 也会兜一层）
+            if (CanBlinkNow && _player is { IsPlaying: false }) PlayAnimation(AnimActions.Blink);
+
+            ScheduleBlink();
+        };
+
+        return timer;
+    }
+
+    // ---- 诊断自检入口 ----
+
+    /// <summary>动态素材当前的状态报告（自检日志里原样写出来）。</summary>
+    public string AnimStateReport
+    {
+        get
+        {
+            if (_anim == null) return "（动态素材尚未扫描）";
+
+            var head = _animationsOn
+                ? $"已启用：鲸鱼框 {_whaleHeight:0.#}px，窗口设计高 {ExpandedDesignHeight:0.#}px，" +
+                  $"登记动作 {_player?.RegisteredCount ?? 0} 个"
+                : $"未启用（开关={App.Settings.Settings.FloatingAnimations}，" +
+                  $"扫到动作 {_anim.ActionNames.Count} 个）";
+
+            return head + Environment.NewLine + _anim.Describe();
+        }
+    }
+
+    /// <summary>自检用：直接拿到播放器验证真实的播放/推进逻辑。</summary>
+    public SpritePlayer? AnimPlayer => _player;
+
+    /// <summary>自检用：此刻是否启用了动态素材。</summary>
+    public bool AnimationsOn => _animationsOn;
+
+    /// <summary>自检用：鲸鱼框的当前高度（设计像素）。</summary>
+    public double WhaleHeight => _whaleHeight;
 
     // ------------------------------------------------------------------
     // 状态显示
@@ -605,7 +842,11 @@ public partial class FloatingWindow : Window
             };
             hide.Start();
 
-            if (urgency >= 1) Bounce(urgency >= 2 ? 16 : 9);
+            // 有专门画的提醒动作就用它（画师可以做成"举牌子""摇铃"之类）；
+            // 没有就沿用原来的"整体上下弹一下" —— 提醒一定要动起来，这是三种渠道之外
+            // 唯一能拽住注意力的东西，降级但绝不能不响。
+            if (urgency >= 1 && !PlayAnimation(AnimActions.Alert))
+                Bounce(urgency >= 2 ? 16 : 9);
         }
         catch
         {

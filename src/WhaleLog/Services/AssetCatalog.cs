@@ -24,10 +24,15 @@ public static class AssetCatalog
         new Entry(
             "whale",
             "桌面小鲸鱼形象",
-            new[] { "whale.png", "DSniang1.png" },
+            // anim\base.png 排在最后：它是「动态素材」那一套里的静态本体，
+            // 和精灵图同一块画布。用户没放动态素材时它不存在，取值不受影响；
+            // 放了的话（且没另给 whale.png）静止状态就用它 —— 这样
+            // 「静止 → 播放第一帧」不会因为画布不同而跳一下。
+            new[] { "whale.png", "DSniang1.png", "anim/base.png" },
             "pack://application:,,,/Resources/Assets/DSniang1.png",
             "PNG，带透明通道。正方形画布、角色居中；程序按 Uniform 等比缩放显示，\n" +
-            "    不用刻意裁成固定尺寸，但同一套形象若有多张差分，画布必须一致。"),
+            "    不用刻意裁成固定尺寸，但同一套形象若有多张差分，画布必须一致。\n" +
+            "    要做动画：把同画布的静态本体放成 anim\\base.png（详见动态素材说明）。"),
 
         new Entry(
             "whale-head",

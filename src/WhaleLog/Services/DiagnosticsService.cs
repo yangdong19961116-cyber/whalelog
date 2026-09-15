@@ -390,6 +390,12 @@ public static class DiagnosticsService
         Section("悬浮窗缩放");
         ProbeFloatingScale(Check);
 
+        // ---- 小鲸鱼动画 ----
+        // 动画的失效方式全是**安静的**：素材没扫到、帧切错、画布换大了但显示框没跟着放大 ——
+        // 表现都只是"小鲸鱼不太对"，日志里一个字都没有。这里自己造一份最小素材真跑一遍。
+        Section("小鲸鱼动画");
+        ProbeFloatingAnimations(Check, sb);
+
         // ---- 月历面板 ----
         // 网格偏移、42 格、跨月边界这类算错的话，日历"看着正常"但日期整体错位，
         // 肉眼很难发现。这里把几何和事件都断言一遍。
@@ -1054,6 +1060,240 @@ public static class DiagnosticsService
     private static double RenderedHeight(FrameworkElement element, UIElement root)
         => element.TranslatePoint(new Point(0, element.ActualHeight), root).Y
          - element.TranslatePoint(new Point(0, 0), root).Y;
+
+    /// <summary>
+    /// 小鲸鱼的动态素材（精灵图动画）。
+    ///
+    /// 探针自己造一份最小可用的素材（**真的 PNG + 真的帧表**）放进临时素材目录，
+    /// 把 <c>WHALELOG_ASSET_DIR</c> 指过去，再按真实方式创建悬浮窗。
+    /// 验完立刻还原环境变量、删掉临时目录 —— 绝不碰用户自己的素材，
+    /// 也绝不让临时素材留在用户界面里（这正是"探针必须零副作用"那条教训）。
+    /// </summary>
+    private static void ProbeFloatingAnimations(CheckFn check, StringBuilder sb)
+    {
+        // 先用当前的真实素材目录报告一遍：用户报"我放了动画没反应"时，
+        // 这份描述直接说明程序看了哪里、认出了什么、哪一份没认出来、为什么。
+        var live = AnimLibrary.Scan();
+        sb.AppendLine(Indent(live.Describe()));
+
+        var probeRoot = Path.Combine(AppPaths.LogDir, "anim-probe");
+        var assetDir = Path.Combine(probeRoot, "Assets");
+        var actionDir = Path.Combine(assetDir, AnimLibrary.FolderName, AnimActions.Click);
+
+        // 帧表里的数字刻意和样例一致：帧高 720、角色 600 → 显示框应当是 198。
+        // 对不上就说明换算写错了，而这在界面上只表现为"鲸鱼变大了一点点"。
+        const int frameSize = 720;
+        const int cols = 2;
+        const int count = 2;
+
+        string? previousAssetDir = null;
+        FloatingWindow? window = null;
+        var settings = App.Settings.Settings;
+
+        try
+        {
+            previousAssetDir = Environment.GetEnvironmentVariable("WHALELOG_ASSET_DIR");
+
+            // 和"悬浮窗缩放"那段同一个道理：探针窗口不能出现在用户的桌面上。
+            // RestorePosition 是按设置里的位置摆的，所以先把位置临时挪到屏幕外；
+            // 不关掉"不用时收起"的话，窗口一加载就把自己收成小胶囊，
+            // 而 Collapse() 会顺手 SavePosition() 把位置**写回 settings.json** ——
+            // 探针就这么把自己的坐标落进用户配置了。跑完由外层快照整体还原。
+            settings.FloatingAutoCollapse = false;
+            settings.FloatingLeft = Offscreen;
+            settings.FloatingTop = Offscreen;
+
+            Directory.CreateDirectory(actionDir);
+
+            WriteProbeSheet(Path.Combine(actionDir, "sheet.png"), frameSize, cols, count);
+
+            File.WriteAllText(Path.Combine(actionDir, AnimLibrary.ManifestName), $$"""
+            {
+              "name": "clickBounce", "version": 1, "type": "sheet",
+              "sheet": "sheet.png",
+              "frameWidth": {{frameSize}}, "frameHeight": {{frameSize}},
+              "cols": {{cols}}, "rows": 1, "count": {{count}},
+              "fps": 10, "loop": false,
+              "anchor": { "x": 360, "y": 660 },
+              "characterHeight": 600, "returnTo": "base", "sound": ""
+            }
+            """);
+
+            // 同画布的静态本体，让"静止 → 播放"不跳
+            WriteProbeSheet(Path.Combine(assetDir, AnimLibrary.FolderName, AnimLibrary.BaseImageName),
+                frameSize, 1, 1);
+
+            // 扫描结果先单独断言一遍，免得后面界面出的问题被赖到扫描上
+            var probeLib = AnimLibrary.Scan(assetDir);
+            check("探针素材能被扫到", probeLib.HasAny && probeLib.Problems.Count == 0,
+                probeLib.Problems.Count == 0
+                    ? $"动作 {string.Join("、", probeLib.ActionNames)}"
+                    : string.Join(" / ", probeLib.Problems));
+
+            // ---- 让悬浮窗真的按这份素材加载 ----
+            Environment.SetEnvironmentVariable("WHALELOG_ASSET_DIR", assetDir);
+
+            window = new FloatingWindow
+            {
+                WindowStartupLocation = WindowStartupLocation.Manual,
+                ShowInTaskbar = false,
+                ShowActivated = false,
+                BackgroundProbeMode = true,
+                Left = Offscreen,
+                Top = Offscreen,
+            };
+            window.Show();
+            window.UpdateLayout();
+
+            check("探针窗口落在屏幕外（不会闪到用户的桌面）",
+                window.Left <= Offscreen + 1 && window.Top <= Offscreen + 1,
+                $"窗口位置 ({window.Left:0.#}, {window.Top:0.#})");
+
+            check("悬浮窗启用了动态素材", window.AnimationsOn, window.AnimStateReport);
+
+            // 换素材最容易砸的一处：画布从 610 变成 720，显示框必须跟着放大，
+            // 否则角色在屏幕上凭空小 15%（界面上只表现为"好像小了点"）
+            check("鲸鱼框按帧表放大到约 198px",
+                Math.Abs(window.WhaleHeight - 198) < 1.5,
+                $"实际 {window.WhaleHeight:0.#}px（静态形象是 168px）");
+
+            check("窗口高度跟着鲸鱼框一起变（两者必须出自同一个系数）",
+                Math.Abs(window.Height - 326) < 1.5,
+                $"实际 {window.Height:0.#}，期望 326（296 + 30）");
+
+            var whale = Descendants(window).OfType<Image>().FirstOrDefault(i => i.Name == "WhaleImage");
+            check("找到鲸鱼图", whale != null);
+            if (whale == null) return;
+
+            check("静止时显示的是与精灵图同画布的静态本体",
+                whale.Source is not System.Windows.Media.Imaging.CroppedBitmap,
+                whale.Source?.GetType().Name ?? "（空）");
+
+            // ---- 播放链路 ----
+            var player = window.AnimPlayer;
+            check("播放器已建立", player != null && player.RegisteredCount == 1,
+                $"登记动作 {player?.RegisteredCount ?? 0} 个");
+
+            if (player == null) return;
+
+            check("点一下鲸鱼能播起来（动作名走别名 click）",
+                player.Play("click") && player.IsPlaying,
+                $"动作={player.CurrentAction ?? "（无）"} 帧={player.CurrentFrame}");
+
+            check("刚播起来就是第 0 帧（不能等下一个渲染 tick 才显示）",
+                player.CurrentFrame == 0, $"实际第 {player.CurrentFrame} 帧");
+
+            check("帧真的被切出来贴到图上了",
+                whale.Source is System.Windows.Media.Imaging.CroppedBitmap,
+                whale.Source?.GetType().Name ?? "（空）");
+
+            // 确定性推进：不依赖显示器刷新率，直接问"时间过了这么久，该显示第几帧"
+            player.AdvanceBy(TimeSpan.FromMilliseconds(120));   // 10fps → 120ms 跨过 1 帧
+
+            check("时间往前走，帧号跟着走",
+                player.CurrentFrame == 1, $"实际第 {player.CurrentFrame} 帧");
+
+            player.AdvanceBy(TimeSpan.FromMilliseconds(500));
+
+            check("播完自动停下（loop=false）", !player.IsPlaying && player.CurrentFrame == -1,
+                $"播放中={player.IsPlaying} 帧={player.CurrentFrame}");
+
+            check("播完回到静态本体（不留最后一帧在脸上）",
+                whale.Source is not System.Windows.Media.Imaging.CroppedBitmap,
+                whale.Source?.GetType().Name ?? "（空）");
+
+            // ---- 关掉开关要真的回到静态 ----
+            App.Settings.Settings.FloatingAnimations = false;
+            window.ApplySettings();
+            window.UpdateLayout();
+
+            check("关掉「小鲸鱼动画」后退回静态形象",
+                !window.AnimationsOn && Math.Abs(window.WhaleHeight - 168) < 0.5,
+                $"启用={window.AnimationsOn} 鲸鱼框={window.WhaleHeight:0.#}px");
+
+            check("退回静态后窗口高度也回到 296",
+                Math.Abs(window.Height - 296) < 1.5, $"实际 {window.Height:0.#}");
+
+            App.Settings.Settings.FloatingAnimations = true;
+            window.ApplySettings();
+            window.UpdateLayout();
+
+            check("重新打开开关能立刻恢复动画",
+                window.AnimationsOn && Math.Abs(window.WhaleHeight - 198) < 1.5,
+                $"启用={window.AnimationsOn} 鲸鱼框={window.WhaleHeight:0.#}px");
+        }
+        catch (Exception ex)
+        {
+            check("小鲸鱼动画", false, ex.Message);
+            sb.AppendLine("      " + ex);
+        }
+        finally
+        {
+            // 顺序很重要：先把窗口关掉（它可能还挂着播放器），再还原环境变量，
+            // 最后才清缓存 —— 反过来的话，界面上会短暂地留着探针素材。
+            try { window?.Close(); }
+            catch { /* 关不掉不影响结论 */ }
+
+            try
+            {
+                Environment.SetEnvironmentVariable("WHALELOG_ASSET_DIR", previousAssetDir);
+                IconAssets.Reload();
+            }
+            catch { /* 还原失败也只能继续 */ }
+
+            try { Directory.Delete(probeRoot, true); }
+            catch { /* 删不掉不影响结论 */ }
+        }
+    }
+
+    /// <summary>
+    /// 造一张只有两块色板的测试精灵图。
+    ///
+    /// 必须是**真 PNG**：播放器走的是真实的图片解码路径，用假文件测不出解码、
+    /// 尺寸核对、切片这些环节。两帧颜色不同，出问题时一眼能看出是没切帧还是切错了。
+    /// </summary>
+    private static void WriteProbeSheet(string path, int frameSize, int cols, int count)
+    {
+        int w = frameSize * cols;
+        int h = frameSize;
+        int stride = w * 4;
+        var pixels = new byte[stride * h];
+
+        for (int i = 0; i < count; i++)
+        {
+            // 0 = 蓝、1 = 红（BGRA 顺序）
+            byte blue = (byte)(i == 0 ? 255 : 0);
+            byte red = (byte)(i == 0 ? 0 : 255);
+
+            for (int y = frameSize / 4; y < frameSize * 3 / 4; y++)
+            {
+                for (int x = i * frameSize + frameSize / 4; x < i * frameSize + frameSize * 3 / 4; x++)
+                {
+                    int p = y * stride + x * 4;
+                    pixels[p] = blue;
+                    pixels[p + 1] = 0;
+                    pixels[p + 2] = red;
+                    pixels[p + 3] = 255;
+                }
+            }
+        }
+
+        var bmp = System.Windows.Media.Imaging.BitmapSource.Create(
+            w, h, 96, 96, System.Windows.Media.PixelFormats.Bgra32, null, pixels, stride);
+
+        var encoder = new System.Windows.Media.Imaging.PngBitmapEncoder();
+        encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(bmp));
+
+        var dir = Path.GetDirectoryName(path);
+        if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+
+        using var fs = File.Create(path);
+        encoder.Save(fs);
+    }
+
+    /// <summary>多行文本在报告里统一往右缩进，读起来才不像掉进了另一份文件。</summary>
+    private static string Indent(string text)
+        => "  " + text.Replace(Environment.NewLine, Environment.NewLine + "  ");
 
     /// <summary>悬浮窗展开态的设计宽高，和 FloatingWindow 里的常量保持一致。</summary>
     private const double ExpandedW = 236;

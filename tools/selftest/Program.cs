@@ -44,6 +44,7 @@ internal static class Program
             TestSettingsClamp();
             TestAssetCatalog(workspace);
             TestCommandLine();
+            TestAnimAssets(workspace);
             await TestEndToEndIntakeAsync(workDir);
             await TestDateScopedIntakeAsync(workspace);
             TestLargeFileSampling(dataDir);
@@ -735,12 +736,229 @@ internal static class Program
         }
     }
 
+    // ==================================================================
+    // 动态素材（悬浮窗的精灵图动画）
+    //
+    // 播放器本身是 WPF 的，测不了；但"帧表怎么读、帧怎么切、目录怎么扫、
+    // 显示框该多大"全是纯逻辑 —— 而这几件事恰恰是最容易悄悄错的地方：
+    // 列宽算错一位，整个动画就整体错位；框高漏算，角色在屏幕上就小一圈。
+    // ==================================================================
+
+    /// <summary>仓库里那份样例帧表，原样抄进来当"规格的活样本"。</summary>
+    private const string SampleSheetJson = """
+    {
+      "name": "clickBounce", "version": 1, "type": "sheet",
+      "sheet": "sheet.png",
+      "frameWidth": 720, "frameHeight": 720,
+      "cols": 4, "rows": 2, "count": 8,
+      "fps": 24, "loop": false,
+      "anchor": { "x": 360, "y": 660 },
+      "characterHeight": 600, "returnTo": "base", "sound": ""
+    }
+    """;
+
+    private static void TestAnimAssets(string workspace)
+    {
+        Section("动态素材：帧表解析");
+
+        var parsed = AnimSheet.Parse(SampleSheetJson);
+        Check(parsed.Ok, "样例帧表能解析" + (parsed.Ok ? "" : "：" + parsed.Error));
+        if (parsed.Sheet is not { } sheet) return;
+
+        CheckEq(sheet.Count.ToString(), "8", "帧数");
+        CheckEq(sheet.Fps.ToString("0.##"), "24", "帧率");
+        CheckEq(sheet.FrameDuration.TotalMilliseconds.ToString("0.###"), "41.667", "单帧时长（ms）");
+        Check(sheet.HasCharacterHeight, "characterHeight 被认出来了");
+        Check(!sheet.Loop, "loop=false 认成" + (sheet.Loop ? "循环" : "播一次"));
+
+        // ------------------------------------------------------------------
+        Section("动态素材：切帧（行优先）");
+
+        (int X, int Y, int W, int H) Rect(int i)
+            => sheet.TryFrameRect(i, out var x, out var y, out var w, out var h)
+                ? (x, y, w, h) : (-1, -1, -1, -1);
+
+        CheckEq(Rect(0).ToString(), "(0, 0, 720, 720)", "第 0 帧在左上角");
+        CheckEq(Rect(3).ToString(), "(2160, 0, 720, 720)", "第 3 帧在同一行最右");
+        CheckEq(Rect(4).ToString(), "(0, 720, 720, 720)", "第 4 帧换到第二行左边");
+        CheckEq(Rect(7).ToString(), "(2160, 720, 720, 720)", "第 7 帧在右下角");
+        Check(!sheet.TryFrameRect(8, out _, out _, out _, out _), "越界的帧号被拒绝（不抛异常）");
+        Check(!sheet.TryFrameRect(-1, out _, out _, out _, out _), "负帧号被拒绝");
+
+        var (ew, eh) = sheet.ExpectedSheetSize;
+        CheckEq($"{ew}×{eh}", "2880×1440", "按帧表算出的精灵图应有尺寸");
+
+        // ------------------------------------------------------------------
+        // 最容易出错、后果最明显的一条：画布 610→720 之后还按老尺寸显示，
+        // 角色会凭空小 15%。必须靠帧表里的 characterHeight 把框反过来放大。
+        Section("动态素材：显示框高度（换素材不能改变角色大小）");
+
+        var box = sheet.DisplayBoxHeight(AnimLibrary.FloatingCharacterDesignHeight);
+        Check(box.HasValue && Math.Abs(box.Value - 198) < 0.6,
+            $"720 画布、角色 600 高 → 鲸鱼框应为约 198px（实际 {box?.ToString("0.#") ?? "null"}）");
+
+        if (box.HasValue)
+        {
+            double onScreen = box.Value * sheet.CharacterHeight / (double)sheet.FrameHeight;
+            Check(Math.Abs(onScreen - AnimLibrary.FloatingCharacterDesignHeight) < 0.6,
+                $"换算回屏幕，角色仍是 {AnimLibrary.FloatingCharacterDesignHeight:0}px（实际 {onScreen:0.#}）");
+        }
+
+        // ------------------------------------------------------------------
+        Section("动态素材：坏帧表要给出能看懂的原因");
+
+        void Reject(string label, string json, string expectFragment)
+        {
+            var r = AnimSheet.Parse(json);
+            Check(!r.Ok && r.Error.Contains(expectFragment, StringComparison.Ordinal),
+                $"{label} → {(r.Ok ? "竟然通过了" : r.Error)}");
+        }
+
+        Reject("缺 count", """{"sheet":"s.png","frameWidth":720,"frameHeight":720,"cols":4,"rows":2}""",
+            "count");
+        Reject("网格放不下 9 帧", """{"sheet":"s.png","frameWidth":720,"frameHeight":720,"cols":4,"rows":2,"count":9}""",
+            "放不下");
+        Reject("sheet 里带路径", """{"sheet":"sub/s.png","frameWidth":720,"frameHeight":720,"cols":4,"rows":2,"count":1}""",
+            "不能带路径");
+        Reject("type=sequence 暂不支持", """{"type":"sequence","sheet":"s.png","frameWidth":1,"frameHeight":1,"cols":1,"rows":1,"count":1}""",
+            "sequence");
+        Reject("帧尺寸为 0", """{"sheet":"s.png","frameWidth":0,"frameHeight":720,"cols":4,"rows":2,"count":1}""",
+            "帧尺寸不合法");
+        Reject("anchor 跑到画布外", """{"sheet":"s.png","frameWidth":720,"frameHeight":720,"cols":1,"rows":1,"count":1,"anchor":{"x":9999,"y":660}}""",
+            "之外");
+        Reject("不是 JSON", "{ 这不是 json", "不是合法的 JSON");
+        Reject("顶层是数组", "[1,2,3]", "必须是一个对象");
+
+        // ------------------------------------------------------------------
+        Section("动态素材：能救回来的问题只提示、不报废");
+
+        var noFps = AnimSheet.Parse("""{"sheet":"s.png","frameWidth":720,"frameHeight":720,"cols":1,"rows":1,"count":1}""");
+        Check(noFps.Ok && noFps.Sheet!.Fps == AnimSheet.DefaultFps &&
+              noFps.Warnings.Any(w => w.Contains("fps", StringComparison.Ordinal)),
+            "没写 fps → 按默认 24 播，并提示一句");
+
+        var fastFps = AnimSheet.Parse("""{"sheet":"s.png","frameWidth":720,"frameHeight":720,"cols":1,"rows":1,"count":1,"fps":240}""");
+        Check(fastFps.Ok && Math.Abs(fastFps.Sheet!.Fps - AnimSheet.MaxFps) < 1e-9,
+            $"fps 写太大 → 夹到 {AnimSheet.MaxFps:0}（实际 {fastFps.Sheet?.Fps:0.##}）");
+
+        var sparse = AnimSheet.Parse("""{"sheet":"s.png","frameWidth":720,"frameHeight":720,"cols":4,"rows":2,"count":6}""");
+        Check(sparse.Ok && sparse.Warnings.Any(w => w.Contains("多出来", StringComparison.Ordinal)),
+            "网格比帧数多 → 允许，但提示多出来的格子不会播");
+
+        var noAnchor = AnimSheet.Parse("""{"sheet":"s.png","frameWidth":720,"frameHeight":720,"cols":1,"rows":1,"count":1}""");
+        Check(noAnchor.Ok &&
+              noAnchor.Sheet!.AnchorX == 360 && noAnchor.Sheet.AnchorY == 720 &&
+              noAnchor.Warnings.Any(w => w.Contains("anchor", StringComparison.Ordinal)),
+            "没写 anchor → 按横向居中、脚底贴下边，并提示一句");
+
+        var noChar = AnimSheet.Parse("""{"sheet":"s.png","frameWidth":720,"frameHeight":720,"cols":1,"rows":1,"count":1}""");
+        Check(noChar.Ok && !noChar.Sheet!.HasCharacterHeight && noChar.Sheet.DisplayBoxHeight(165) == null,
+            "没写 characterHeight → 算不出框高，明确返回 null 让界面自己决定");
+
+        // 手写帧表很容易带上注释和尾逗号，不该因此整份报废
+        var lenient = AnimSheet.Parse("""
+        {
+          // 这是注释
+          "sheet": "s.png", "frameWidth": 720, "frameHeight": 720,
+          "cols": 1, "rows": 1, "count": 1,
+        }
+        """);
+        Check(lenient.Ok, "带注释和尾逗号的帧表也能解析" + (lenient.Ok ? "" : "：" + lenient.Error));
+
+        // ------------------------------------------------------------------
+        Section("动态素材：动作名归一化");
+
+        CheckEq(AnimActions.Canonical("clickBounce"), AnimActions.Click, "clickBounce 本身");
+        CheckEq(AnimActions.Canonical("Click_Bounce"), AnimActions.Click, "Click_Bounce（大小写+下划线）");
+        CheckEq(AnimActions.Canonical("click"), AnimActions.Click, "click 是别名");
+        CheckEq(AnimActions.Canonical("Idle"), AnimActions.Blink, "Idle 归到 blink");
+        CheckEq(AnimActions.Canonical("blink-idle"), AnimActions.Blink, "blink-idle 归到 blink");
+        CheckEq(AnimActions.Canonical("Reminder"), AnimActions.Alert, "Reminder 归到 alert");
+        CheckEq(AnimActions.Canonical("  myCustom  "), "myCustom", "认不出来的动作原样保留（去空格）");
+        Check(!AnimActions.IsKnown("myCustom"), "自定义动作不会被界面主动播放");
+
+        // ------------------------------------------------------------------
+        Section("动态素材：目录扫描");
+
+        var assetDir = Path.Combine(workspace, "anim-assets");
+        var animDir = Path.Combine(assetDir, AnimLibrary.FolderName);
+
+        var missing = AnimLibrary.Scan(assetDir);
+        Check(missing.IsEmpty && missing.Problems.Count == 0,
+            "素材目录还不存在时安静地退回静态形象（不算错误）");
+
+        Directory.CreateDirectory(animDir);
+
+        // 一个正常动作 + 同画布的静态本体
+        AddAction(animDir, "clickBounce", SampleSheetJson, withSheetPng: true);
+        File.WriteAllText(Path.Combine(animDir, AnimLibrary.BaseImageName), "not a real png");
+        // 动作名归一化之后要和 clickBounce 撞车，只认先扫到的
+        AddAction(animDir, "Click-Bounce", SampleSheetJson, withSheetPng: true);
+        // 目录名写成下划线形式，也该归到 blink
+        AddAction(animDir, "Blink_Idle", SampleSheetJson, withSheetPng: true);
+        // 帧表在、精灵图不在
+        AddAction(animDir, "halfBaked", SampleSheetJson, withSheetPng: false);
+        // 帧表本身是坏的
+        AddAction(animDir, "broken", "{ 这不是 json", withSheetPng: true);
+        // 目录里连帧表都没有
+        Directory.CreateDirectory(Path.Combine(animDir, "emptyDir"));
+
+        var lib = AnimLibrary.Scan(assetDir);
+
+        CheckEq(string.Join(",", lib.ActionNames), $"{AnimActions.Blink},{AnimActions.Click}",
+            "只认能用的动作，且名字已归一化");
+        Check(lib.Find("clickbounce") != null && lib.Find("CLICK") != null,
+            "动作名不区分大小写、也认别名");
+        Check(lib.BaseImagePath != null, "anim\\base.png 被认成静态本体");
+
+        var box2 = lib.DisplayBoxHeight(AnimLibrary.FloatingCharacterDesignHeight);
+        Check(box2.HasValue && Math.Abs(box2.Value - 198) < 0.6,
+            $"扫描结果给出的鲸鱼框高度：{box2?.ToString("0.#") ?? "null"}");
+
+        Check(lib.Problems.Any(p => p.Contains("找不到精灵图", StringComparison.Ordinal)),
+            "缺精灵图的动作被记下来：" + string.Join(" / ", lib.Problems));
+        Check(lib.Problems.Any(p => p.Contains("不是合法的 JSON", StringComparison.Ordinal)),
+            "坏帧表被记下来，且不影响同目录下别的动作");
+        Check(lib.Problems.Any(p => p.Contains("没有帧表", StringComparison.Ordinal)),
+            "连帧表都没有的目录被记下来");
+        Check(lib.Problems.Any(p => p.Contains("重复", StringComparison.Ordinal)),
+            "动作名撞车的第二份被跳过并说明原因");
+
+        // 精灵图路径要落到动作自己的目录里 —— 拼错就会"素材在但不生效"
+        var sheetPath = lib.SheetImagePath(AnimActions.Click);
+        Check(sheetPath != null &&
+              Path.GetDirectoryName(sheetPath).EndsWith("clickBounce", StringComparison.Ordinal) &&
+              File.Exists(sheetPath),
+            $"精灵图路径指向动作自己的目录：{sheetPath}");
+
+        // 撞车时该让"名字就是动作键"的那份赢，而不是字母序更靠前的那个
+        Check(sheetPath != null && Path.GetDirectoryName(sheetPath)!.EndsWith("clickBounce", StringComparison.Ordinal),
+            "同名撞车时，目录名与动作键一致的那份优先于 Click-Bounce");
+
+        Check(lib.Describe().Contains("启用", StringComparison.Ordinal),
+            "诊断报告能说清认出了几个动作");
+
+        // 扫描不应该把文件写坏、也不该依赖调用方先建目录
+        Check(!lib.IsEmpty && lib.Find(AnimActions.Alert) == null,
+            "没放的 alert 动作就是没有（不会凭空多出来）");
+    }
+
+    /// <summary>在扫描测试里造一个动作目录。</summary>
+    private static void AddAction(string animDir, string name, string manifest, bool withSheetPng)
+    {
+        var dir = Path.Combine(animDir, name);
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(Path.Combine(dir, AnimLibrary.ManifestName), manifest);
+
+        if (withSheetPng)
+            File.WriteAllText(Path.Combine(dir, "sheet.png"), "not a real png");
+    }
+
     private static void Section(string name)
     {
         Console.WriteLine();
         Console.WriteLine("== " + name);
     }
-
     private static void Check(bool ok, string description)
     {
         if (ok)

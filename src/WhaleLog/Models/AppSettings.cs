@@ -62,6 +62,15 @@ public sealed class AppSettings
     public bool FloatingSnapToEdge { get; set; } = true;
     public bool FloatingAutoCollapse { get; set; } = true;
 
+    /// <summary>
+    /// 小鲸鱼播不播动态素材（素材目录 anim\ 下的精灵图动画）。
+    ///
+    /// 默认开。留这个开关是因为动态素材是用户可以自己做的：画得不好、
+    /// 抖得厉害、或者干脆不喜欢动，都要有一条不用删文件的退路。
+    /// 关掉之后行为和以前完全一样（静态形象 + 到点上下弹一下）。
+    /// </summary>
+    public bool FloatingAnimations { get; set; } = true;
+
     // ---- 文件归档 ----
     /// <summary>
     /// true = 额外把每个版本复制一份到 archive\ 目录，版本可回滚（占磁盘）。

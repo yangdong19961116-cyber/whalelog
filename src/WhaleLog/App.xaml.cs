@@ -387,6 +387,24 @@ public partial class App : Application
         else ShowFloating();
     }
 
+    /// <summary>
+    /// 开关小鲸鱼的动态素材。
+    ///
+    /// 不用手动去通知悬浮窗：改设置会抛 <c>Changed</c>，悬浮窗的 ApplySettings
+    /// 发现这个开关翻动了就会重建播放器。
+    /// </summary>
+    private void ToggleFloatingAnimations()
+    {
+        Settings.Update(s => s.FloatingAnimations = !s.FloatingAnimations);
+        var on = Settings.Settings.FloatingAnimations;
+
+        _floatingWindow?.ShowBubble(
+            on ? "小鲸鱼动画已开启" : "小鲸鱼动画已关闭",
+            on
+                ? "会播放素材目录 anim\\ 下的精灵图动画。"
+                : "回到静态形象；素材文件不用删。");
+    }
+
     private void ShowTrayMenu(int x, int y)
     {
         try
@@ -402,6 +420,7 @@ public partial class App : Application
             _trayMenu.AddItem("生成今日日报", () => ShowDailyReport(DateTime.Today));
             _trayMenu.AddItem("生成本周周报", () => ShowWeeklyReport(DateTime.Today));
             _trayMenu.AddItem("桌面小鲸鱼", ToggleFloating, s.FloatingEnabled, isLast: true);
+            _trayMenu.AddItem("小鲸鱼动画", ToggleFloatingAnimations, s.FloatingAnimations);
             _trayMenu.AddItem("今天别再提醒", () =>
             {
                 Settings.Update(x2 => x2.ReminderEnabled = false);
