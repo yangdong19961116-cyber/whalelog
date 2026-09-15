@@ -131,6 +131,12 @@
   编出来的产物没有 `runtimeconfig.json`，直接启动报 `hostpolicy.dll not found`。
 - 本会话里 PowerShell 工具不返回 stdout（命令 exit code 正常但抓不到输出），
   要读输出优先用 bash 或直接看文件。
+- **给 .NET 程序传路径必须用 Windows 风格**（`C:/...` 或 `C:\...`）。Git Bash 里 `$PWD`
+  是 `/c/Users/...` 这种 POSIX 路径，.NET 不认 —— 程序会**静默失败**：退出码 0、不报错、
+  `WHALELOG_DATA_DIR` 指向的目录一个文件都不生成。凡"跑条命令看结果"的验证，
+  **判定标准看产物文件，不看退出码**。
+- **改同一个文件必须串行 Edit**：同一条消息里并行发两个改同一文件的 Edit，会丢其中一处
+  （本会话栽过两次）。
 
 ## 六、发布例行（发 1.2 时定下来的）
 - 版本唯一来源是 `src/WhaleLog/WhaleLog.csproj` 的 `<Version>`，界面读 `Assembly.GetName().Version` 自动跟，改一处即可。
