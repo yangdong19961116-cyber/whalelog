@@ -1,7 +1,7 @@
 # 交接单 · 鲸记 WhaleLog（桌面工作记录台）
 
 > 用途：把「桌面笔记 / 工作记录工具」的完整上下文迁到新任务，新任务读这一份即可接续。
-> 交接时间：2026-09-15 15:45 · 上一轮工作止于 2026-09-15 15:34（发 1.2，接入精灵图动画）
+> 交接时间：2026-09-15 17:05 · 上一轮工作止于 2026-09-15 17:00（发 1.3，悬浮闭眼差分）
 
 ---
 
@@ -41,14 +41,14 @@
 
 | 项 | 值 |
 |---|---|
-| 版本 | `1.2.0`（`src/WhaleLog/WhaleLog.csproj` 的 `<Version>`，界面读 `Assembly.GetName().Version` 自动跟） |
+| 版本 | `1.3.0`（`src/WhaleLog/WhaleLog.csproj` 的 `<Version>`，界面读 `Assembly.GetName().Version` 自动跟） |
 | TFM | `net8.0-windows`（**不要加 OS 版本号**） |
 | 平台 | AnyCPU（**不能设 x64**，见第 5 节） |
 | 主程序 | `src/WhaleLog/`：App + MainWindow + `Views/`(6 个窗口 + `SpritePlayer`/`Converters`/`AssetImageExtension`) + `Services/`(21 个，含 `AnimSheet`/`AnimLibrary`) + `Models/`(4 个) |
-| 可运行产物 | `src/WhaleLog/bin/Release/net8.0-windows/WhaleLog.exe`；解压态副本 `build/portable/鲸记 WhaleLog/`（248 个文件） |
-| 桌面安装包 | `C:\Users\Administrator\Desktop\鲸记 WhaleLog 1.2.zip`（57.3 MB，自包含，解压即用） |
-| 自测 | `tools/selftest/` 213 项断言，直接编译主程序非界面部分，测的是发货代码 |
-| 诊断自检 | `WhaleLog.exe --selfcheck` → `logs\selfcheck.log`（154 项，18 个段落） |
+| 可运行产物 | `src/WhaleLog/bin/Release/net8.0-windows/WhaleLog.exe`；解压态副本 `build/portable/鲸记 WhaleLog/` |
+| 桌面安装包 | `C:\Users\Administrator\Desktop\鲸记 WhaleLog 1.3.zip`（自包含，解压即用） |
+| 自测 | `tools/selftest/` 216 项断言，直接编译主程序非界面部分，测的是发货代码 |
+| 诊断自检 | `WhaleLog.exe --selfcheck` → `logs\selfcheck.log`（164 项，19 个段落） |
 | 版本控制 | ✅ 有 git 仓库（`workwork\.git`），基线 `f05c39b`，当前 HEAD 见 `git log` |
 
 ---
@@ -60,12 +60,13 @@
 3. **版本标记** —— SHA-256 指纹判版本链（同路径同指纹=重复、同路径异指纹=v2/v3、链内已有同指纹=「与 vN 内容一致」）；版本链键 = 归一化主名（剥掉 `v2`/`第3版`/(1)/`_final`/`_副本`）；大文件（默认 >200MB）走 `sample:` 前缀的采样指纹，永不与全量指纹相等。
 4. **快速记录** —— 全局快捷键 `Ctrl+Alt+N` 光标旁弹输入框，`Enter` 存、`Shift+Enter` 换行、`#标签` 打标；用 `HWND_MESSAGE` 消息专用窗口，托盘静默启动也能生效。
 5. **日报 / 周报** —— 纯读取渲染，不改原始记录，可一键复制。
-6. **桌面小鲸鱼** —— 无边框透明置顶，拖动松手吸边，闲置收成贴边小头像；位置/大小/透明度全记忆；大小范围 0.7×–1.6×，**窗口尺寸与内容缩放出自同一个系数**（`RootGrid.LayoutTransform`），滑杆拖动实时生效不等落盘节流。
+6. **桌面小鲸鱼** —— 无边框透明置顶，拖动松手吸边，闲置收成贴边小头像；位置/大小/透明度全记忆；大小范围 0.7×–1.6×，**窗口尺寸与内容缩放出自同一个系数**（`RootGrid.LayoutTransform`），滑杆拖动实时生效不等落盘节流。鼠标停上去时整张换成表情差分（默认闭眼，见第 4 节 B）。
 7. **下班提醒 + 托盘** —— 默认 18:00 提前 15 分钟，气泡弹跳 + 音效 + 托盘通知三通道；文案按当天状态自动调语气；托盘常驻、开机自启、桌面快捷方式（程序内 `--create-shortcut` 创建，绕开 `.cmd` 中文编码坑）。
 
 **配套机制**：外部素材目录（`Assets\` 同名文件优先于内置，`{v:AssetImage}` 扩展引用，托盘可「重新加载素材」）、
-诊断自检（快捷键/图标/快捷方式/窗口/页签互斥/文件筛选/日期分组/日期解析/滑杆/悬浮窗缩放，且**探针零副作用**）、
-离屏截图（`--shot` / `--shot-notes` / `--shot-floating`）、合成真实鼠标的交互探针（`tools/drag_probe.py`）。
+诊断自检（快捷键/图标/快捷方式/窗口/页签互斥/文件筛选/日期分组/日期解析/滑杆/悬浮窗缩放/小鲸鱼动画/悬浮态形象，且**探针零副作用**）、
+离屏截图（`--shot` / `--shot-notes` / `--shot-floating`）、合成真实鼠标的交互探针（`tools/drag_probe.py`）、
+差分图对齐工具（`tools/prepare_expression.py`）。
 
 ---
 
@@ -151,7 +152,29 @@
 1. 采样渲染时钟必须跑真消息循环，用 `Thread.Sleep` 堵 UI 线程会得出「渲染时钟不可用」的错误结论。
 2. 目标 24fps；`fps` 上限卡 30（悬浮窗尺寸小，更高纯属浪费）。
 
-### B. README 里自己列的待办（还没动）
+### B. 悬浮态形象（表情差分）—— 已完成
+
+鼠标停在悬浮窗上时，小鲸鱼整张换成另一张形象（默认闭眼），移开换回来。
+
+| 产出 | 说明 |
+|---|---|
+| `Resources/Assets/closeeye.png` | 闭眼差分，610×610，与 `DSniang1.png` 逐像素对齐（IoU 0.9894） |
+| 素材位 `whale-hover` | `AssetCatalog` 新增；候选名 `whale-hover.png` / `closeeye.png` / `anim/closeeye.png`，没配就安静回落，悬浮毫无变化 |
+| `FloatingWindow` 的 `_stillImage` / `_hoverImage` / `_hovering` / `RestingImage` | 切换逻辑；`SetHovering()` 里同时把播放器的 `BaseImage` 一起切过去 |
+| `tools/prepare_expression.py` | **新工具**：抠白底 + 归到基准画布 + 搜索最佳平移对齐 + 报 IoU 与差异图 |
+
+**两个必须守住的点（都写进断言了）：**
+
+1. **`OnMouseLeave` 里「要不要自动收起」那个分支会提前 `return`**，
+   形象还原必须排在它前面 —— 否则关掉自动收起的用户鼠标一移开就永远停在闭眼状态。
+   自检的悬浮探针走的是**真实的处理函数**（`SimulateMouseEnter/Leave`），专门守这条顺序。
+2. **悬浮期间动画播完，落的必须是悬浮那张。** 播放器播完落回 `BaseImage`，
+   它得跟着悬浮状态一起切，不然会闪一下睁眼。
+
+**差分图的硬要求**：和 `whale.png` **同画布、逐像素对齐**。不一致的话鼠标一移上去角色就跳一下，
+而这在界面上只表现为"好像抖了一下"，极难归因。自检会把两张图的像素尺寸并排写进报告，不一致直接判失败。
+
+### C. README 里自己列的待办（还没动）
 
 - 周报 / 月报的对比视图（本周 vs 上周的文件与事项变化）
 - 拖入文件时按当前选中的分类自动打标
@@ -198,7 +221,7 @@ build-whalelog.cmd
 :: 只编译不发布
 dotnet build WhaleLog.sln -c Release
 
-:: 自测（213 项断言，直接编译主程序非界面部分）
+:: 自测（216 项断言，直接编译主程序非界面部分）
 dotnet build tools\selftest\selftest.csproj -c Release
 dotnet tools\selftest\bin\Release\net8.0\WhaleLog.SelfTest.dll
 ::  加 --keep 保留临时目录，方便翻看产出的 Markdown 和 index.json
@@ -213,14 +236,17 @@ WhaleLog.exe --shot-floating D:\tmp\floating-scales.png
 WhaleLog.exe --export-assets D:\tmp\Assets
 
 :: 打包自包含 zip（不带参数会输出到桌面：鲸记 WhaleLog.zip；
-:: 按本仓惯例要显式带版本号，例如 鲸记 WhaleLog 1.2.zip）
+:: 按本仓惯例要显式带版本号，例如 鲸记 WhaleLog 1.3.zip）
 python tools\make_portable_zip.py
 python tools\make_portable_zip.py D:\某目录
-python tools\make_portable_zip.py "C:\Users\Administrator\Desktop\鲸记 WhaleLog 1.2.zip"
+python tools\make_portable_zip.py "C:\Users\Administrator\Desktop\鲸记 WhaleLog 1.3.zip"
 
 :: 素材
 python tools\make_icon.py                                   :: 610×610 PNG → 7 尺寸 ICO
 python tools\check_anim_assets.py outputs\样例-点击弹跳       :: 动态素材交付前校验
+python tools\prepare_expression.py 新图.png out\whale-hover.png
+                                                            :: 表情差分：抠白底 + 对齐基准画布 + 报 IoU
+                                                            :: 需要 pip install pillow numpy
 
 :: 交互行为探针（会真的移动鼠标光标、会先结束正在运行的鲸记 → 手动跑）
 python tools\drag_probe.py
@@ -265,18 +291,27 @@ python tools\drag_probe.py
 `桌面\鲸记 WhaleLog 1.2.zip`（57.3 MB）、修掉样例素材「最高帧头顶被裁」的缺陷、
 修掉自测里一处 `CS8602` 警告。
 
+之后用户提出「鼠标悬浮时换成闭眼形象」，做成后版本升到 **1.3.0**，
+再重建 Release、打出 `桌面\鲸记 WhaleLog 1.3.zip`。详见第 4 节 B。
+
 ---
 
-## 9. 建议的下一步（2026-09-15 留下的）
+## 9. 建议的下一步
 
 1. **`tools/drag_probe.py` 一直没跑过**（会真的移动鼠标光标、并先结束正在运行的鲸记，
    所以只能手动、且要先退掉你正开着的实例）。拖拽归档是本项目最核心的交互，
    但至今只靠离屏截图和自测覆盖，真实鼠标路径没验证过。
-2. **出厂要不要自带一份动画素材？** 现在 `Assets\anim\` 解压后是空的，用户开箱看不到任何动画效果，
-   得自己按规格做。把 `outputs/样例-点击弹跳` 塞进包的 `Assets\anim\clickBounce\`
-   就能开箱即见 —— 但这是产品决策（样例画风是否代表最终形象），要用户拍板。
-3. **接入真实素材后**，先跑 `python tools\check_anim_assets.py <目录>` 过一遍（退出码 0 才算合格），
+2. **悬浮态形象没有做过真实鼠标的目视确认。** 自检的悬浮探针走的是真实处理函数、
+   9 条断言全过，但那是**代码路径**的验证；真光标移上去长什么样没看过
+   （不自动移光标是既定纪律）。想确认就自己把鼠标挪上去看一眼。
+3. **出厂素材是不是该补动画样例？** 现在 `Assets\anim\` 解压后是空的，
+   用户开箱看不到动画效果，得自己按规格做。把 `outputs/样例-点击弹跳` 塞进包的
+   `Assets\anim\clickBounce\` 就能开箱即见 —— 但这是产品决策（样例画风是否代表最终形象），
+   要用户拍板。`Assets\whale-hover.png` 已经随包出厂了，所以悬浮那一下是开箱可见的。
+4. **接入真实素材后**，先跑 `python tools\check_anim_assets.py <目录>` 过一遍（退出码 0 才算合格），
    再放进 `Assets\anim\<动作名>\` 点托盘「重新加载素材」。
-4. **README 自列的四项待办**（第 4 节 B）：周报对比视图、拖入自动打标、历史导出、语音输入。
-5. 桌面上还留着旧的 `鲸记 WhaleLog 1.1.zip`（不含动画）。**删除桌面文件需用户明确同意**，
-   别自作主张清桌面。
+   表情差分走 `python tools\prepare_expression.py 新图.png out\whale-hover.png`，IoU ≥ 0.98 才算合格。
+5. **README 自列的四项待办**（第 4 节 C）：周报对比视图、拖入自动打标、历史导出、语音输入。
+6. 桌面上累积了三个包：`鲸记 WhaleLog 1.1.zip`（无动画）、`1.2.zip`（有动画、无悬浮差分）、
+   `1.3.zip`（当前）。**删除桌面文件需用户明确同意**，别自作主张清桌面 ——
+   已经问过一次，用户还没表态。
