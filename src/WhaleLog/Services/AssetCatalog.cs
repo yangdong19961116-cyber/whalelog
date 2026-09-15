@@ -35,6 +35,18 @@ public static class AssetCatalog
             "    要做动画：把同画布的静态本体放成 anim\\base.png（详见动态素材说明）。"),
 
         new Entry(
+            "whale-hover",
+            "鼠标悬浮时的形象（闭眼）",
+            // 差分图的命名随便挑一个都行，但**必须和「桌面小鲸鱼形象」同画布、逐像素对齐** ——
+            // 鼠标移上去是整张替换，画布或位置差一点就会看到角色跳一下。
+            new[] { "whale-hover.png", "closeeye.png", "anim/closeeye.png" },
+            "pack://application:,,,/Resources/Assets/closeeye.png",
+            "PNG，带透明通道。**和「桌面小鲸鱼形象」同一画布、角色位置逐像素对齐**。\n" +
+            "    鼠标移到悬浮窗上时整张换成这张（移开换回），所以尺寸或位置不一致就会跳一下。\n" +
+            "    对齐和抠背景可以用 tools\\prepare_expression.py 做，它会报出对齐误差（IoU）。\n" +
+            "    没放这张图时，鼠标悬浮不会有任何变化。"),
+
+        new Entry(
             "whale-head",
             "小头像（收起态 / 标题栏 / 空状态）",
             new[] { "whale-head.png", "head.png" },

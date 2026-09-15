@@ -39,7 +39,7 @@ src/WhaleLog/
 │   ├── AssetCatalog.cs        素材清单：逻辑名 ↔ 候选文件名 ↔ 内置资源（纯逻辑，可自测）
 │   └── IconAssets.cs          素材加载：外部文件优先，缺失/损坏回落内置
 └── Resources/
-    ├── Assets/                DSniang1.png / whale-head.png / whalelog.ico
+    ├── Assets/                DSniang1.png / closeeye.png / whale-head.png / whalelog.ico
     ├── Styles/Shared.xaml     控件样式（不随主题切换）
     └── Themes/Light|Dark.xaml 主题配色
 ```
@@ -340,6 +340,35 @@ Assets\anim\
 
 不想让小鲸鱼动：托盘菜单 →「小鲸鱼动画」，素材文件不用删。
 
+### 9. 悬浮时的表情差分
+
+鼠标停在悬浮窗上时，小鲸鱼整张换成另一张形象（默认是闭眼版），移开换回来。
+
+- 素材位 `whale-hover.png`（别名 `closeeye.png`）：外部文件优先，没放就用内置那张
+- **必须和主体（`whale.png`）同画布、逐像素对齐。** 差分切换是"整张换掉"，
+  画布或位置差一点，鼠标一移上去角色就会跳一下 —— 而这在界面上只表现为"好像抖了一下"，
+  极难归因。自检的报告里会把两张图的像素尺寸并排写出来，不一致会直接判失败
+- 没放这张图时，悬浮**完全不会**有任何变化（不报错，也不会空一块）
+- 和动画的配合（这一段最容易写错）：
+  - 正在播动画时切换**不打断**动作，否则会截断成半张脸；
+  - **动画播完落回的是"悬浮那张"**，所以悬停期间眨完一次眼不会闪一下睁眼。
+    实现上就是让播放器的 `BaseImage` 跟着悬浮状态一起切
+- 托盘菜单里没有单独的开关，不想用就删掉素材文件
+
+手里只有一张白底新图也能做：
+
+```bat
+python tools\prepare_expression.py 新图.png out\whale-hover.png
+```
+
+它会把与四边相连的背景抠成透明、归到基准画布、搜索最佳平移做逐像素对齐，
+并报出对齐误差（IoU）和一张差异图：**IoU ≥ 0.98 算合格**，低于 0.95 基本说明
+两张图不是同一套画布或同一版形象，别硬用。
+
+一个容易漏的坑：`OnMouseLeave` 里"要不要自动收起"那个分支会**提前 return**，
+形象还原必须排在它前面 —— 否则关掉自动收起的用户鼠标一移开，就永远停在闭眼状态。
+自检的悬浮探针走的是真实的处理函数，专门守这条顺序。
+
 ## 构建
 
 需要在 Windows 10/11 上装 **.NET 8 SDK**。
@@ -530,6 +559,7 @@ python tools/make_icon.py
 WhaleLog.exe 旁边
 └── Assets/
     ├── whale.png          桌面小鲸鱼形象（也认 DSniang1.png、anim\base.png）
+    ├── whale-hover.png    鼠标悬浮时的形象（也认 closeeye.png），必须与 whale.png 同画布
     ├── whale-head.png     小头像（也认 head.png）
     ├── whalelog.ico       程序与托盘图标（也认 app.ico）
     ├── whalelog-256.png   关于页预览图（也认 preview.png）
@@ -538,6 +568,9 @@ WhaleLog.exe 旁边
     │   └── clickBounce\   sheet.png + sheet.json
     └── 素材说明.txt       每个文件的规格，程序自己生成
 ```
+
+`whale.png` 和 `whale-hover.png` 是**同一套形象的两张差分**，所以画布和角色位置必须逐像素一致
+（详见「9. 悬浮时的表情差分」）。
 
 首次运行时程序会把内置素材导出到这个目录 —— 用户打开就能看到该换哪个文件，
 而不是对着一份文档猜文件名。**已存在的文件一概不覆盖**，所以自己换过之后不会被程序冲掉；

@@ -387,8 +387,11 @@ public static class IconAssets
         sb.AppendLine("几点注意");
         sb.AppendLine("  · PNG 必须带透明通道，否则会显示成一块方形底色。");
         sb.AppendLine("  · 形象图按 Uniform 等比缩放，不用刻意裁成固定尺寸；");
-        sb.AppendLine("    但如果之后要做表情差分，所有图请用同一画布、角色位置逐像素对齐，");
-        sb.AppendLine("    否则切换时角色会跳。");
+        sb.AppendLine("    **但表情差分（whale-hover.png）必须和 whale.png 同画布、逐像素对齐** ——");
+        sb.AppendLine("    鼠标悬浮时会整张换成它，画布或位置差一点，鼠标一移上去角色就会跳一下。");
+        sb.AppendLine("    手里只有白底的新图也没关系：");
+        sb.AppendLine("        python tools\\prepare_expression.py 新图.png out\\whale-hover.png");
+        sb.AppendLine("    它会抠掉背景、对齐到你们那张基准图，并报出对齐误差（IoU，0.98 以上算合格）。");
         sb.AppendLine("  · 素材缺失或读不出来会自动回落成内置图，不会让程序起不来。");
         sb.AppendLine();
 

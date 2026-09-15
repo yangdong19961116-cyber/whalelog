@@ -396,6 +396,12 @@ public static class DiagnosticsService
         Section("小鲸鱼动画");
         ProbeFloatingAnimations(Check, sb);
 
+        // ---- 悬浮态形象 ----
+        // 鼠标移上去换一张图。最容易错的是"移出要换回来"（处理函数里有个提前 return）
+        // 和"悬浮期间动画播完该落回哪张"（落回本体就会闪一下睁眼）。
+        Section("悬浮态形象（表情差分）");
+        ProbeHoverImage(Check, sb);
+
         // ---- 月历面板 ----
         // 网格偏移、42 格、跨月边界这类算错的话，日历"看着正常"但日期整体错位，
         // 肉眼很难发现。这里把几何和事件都断言一遍。
@@ -1078,7 +1084,6 @@ public static class DiagnosticsService
 
         var probeRoot = Path.Combine(AppPaths.LogDir, "anim-probe");
         var assetDir = Path.Combine(probeRoot, "Assets");
-        var actionDir = Path.Combine(assetDir, AnimLibrary.FolderName, AnimActions.Click);
 
         // 帧表里的数字刻意和样例一致：帧高 720、角色 600 → 显示框应当是 198。
         // 对不上就说明换算写错了，而这在界面上只表现为"鲸鱼变大了一点点"。
@@ -1103,25 +1108,7 @@ public static class DiagnosticsService
             settings.FloatingLeft = Offscreen;
             settings.FloatingTop = Offscreen;
 
-            Directory.CreateDirectory(actionDir);
-
-            WriteProbeSheet(Path.Combine(actionDir, "sheet.png"), frameSize, cols, count);
-
-            File.WriteAllText(Path.Combine(actionDir, AnimLibrary.ManifestName), $$"""
-            {
-              "name": "clickBounce", "version": 1, "type": "sheet",
-              "sheet": "sheet.png",
-              "frameWidth": {{frameSize}}, "frameHeight": {{frameSize}},
-              "cols": {{cols}}, "rows": 1, "count": {{count}},
-              "fps": 10, "loop": false,
-              "anchor": { "x": 360, "y": 660 },
-              "characterHeight": 600, "returnTo": "base", "sound": ""
-            }
-            """);
-
-            // 同画布的静态本体，让"静止 → 播放"不跳
-            WriteProbeSheet(Path.Combine(assetDir, AnimLibrary.FolderName, AnimLibrary.BaseImageName),
-                frameSize, 1, 1);
+            WriteProbeAnimation(assetDir, AnimActions.Click, frameSize, cols, count);
 
             // 扫描结果先单独断言一遍，免得后面界面出的问题被赖到扫描上
             var probeLib = AnimLibrary.Scan(assetDir);
@@ -1244,6 +1231,208 @@ public static class DiagnosticsService
             try { Directory.Delete(probeRoot, true); }
             catch { /* 删不掉不影响结论 */ }
         }
+    }
+
+    /// <summary>
+    /// 悬浮态形象（表情差分）：鼠标停在悬浮窗上时整张换成另一张图。
+    ///
+    /// 看着简单，但有两处极易做错，这里各用一条断言钉住：
+    ///
+    ///   1. **移出必须换回本体。** <c>OnMouseLeave</c> 里"要不要自动收起"那个分支会提前
+    ///      return，形象还原要是排在它后面，关掉自动收起的用户鼠标一移开就永远停在闭眼状态。
+    ///      探针走的是**真实的处理函数**（而不是绕到内部方法），所以这条断言是有效的。
+    ///   2. **悬浮期间动画播完，要落回悬浮那张。** 播放器播完落回的是 BaseImage，
+    ///      它必须跟着悬浮状态一起切，否则会闪一下本体。
+    ///
+    /// 同样自己造素材（蓝底本体 + 红底悬浮图 + 一份能播的动画），把
+    /// <c>WHALELOG_ASSET_DIR</c> 指过去，跑完还原环境变量并删掉临时目录 ——
+    /// 绝不碰用户自己的素材，也不让探针素材留在界面上。
+    /// </summary>
+    private static void ProbeHoverImage(CheckFn check, StringBuilder sb)
+    {
+        // 先报告用户这边实际生效的是哪一张："我换了图没反应"时这一行最有用
+        sb.AppendLine(Indent(AssetCatalog.Describe("whale-hover")));
+
+        var probeRoot = Path.Combine(AppPaths.LogDir, "hover-probe");
+        var assetDir = Path.Combine(probeRoot, "Assets");
+
+        string? previousAssetDir = null;
+        FloatingWindow? window = null;
+        var settings = App.Settings.Settings;
+
+        static string Fmt((int Width, int Height)? size)
+            => size.HasValue ? $"{size.Value.Width}×{size.Value.Height}" : "（没取到）";
+
+        try
+        {
+            previousAssetDir = Environment.GetEnvironmentVariable("WHALELOG_ASSET_DIR");
+
+            // 关掉自动收起，才走得到 OnMouseLeave 里那个提前 return 的分支 ——
+            // 那正是最容易把"形象还原"漏掉的一条路
+            settings.FloatingAutoCollapse = false;
+            settings.FloatingLeft = Offscreen;
+            settings.FloatingTop = Offscreen;
+            settings.FloatingAnimations = true;      // 悬浮与动画的配合要一起验
+
+            Directory.CreateDirectory(assetDir);
+
+            // 本体蓝、悬浮红：日志和出图里一眼看出此刻贴的是哪一张
+            WriteProbeSolid(Path.Combine(assetDir, "whale.png"), 200, 200, 0, 0, 255);
+            WriteProbeSolid(Path.Combine(assetDir, "whale-hover.png"), 200, 200, 255, 0, 0);
+
+            // 放一份能播的动画：验"悬浮期间播完该落回哪张"要用到播放器
+            WriteProbeAnimation(assetDir, AnimActions.Click, 720, 2, 2);
+
+            Environment.SetEnvironmentVariable("WHALELOG_ASSET_DIR", assetDir);
+
+            window = new FloatingWindow
+            {
+                WindowStartupLocation = WindowStartupLocation.Manual,
+                ShowInTaskbar = false,
+                ShowActivated = false,
+                BackgroundProbeMode = true,
+                Left = Offscreen,
+                Top = Offscreen,
+            };
+            window.Show();
+            window.UpdateLayout();
+
+            check("探针窗口落在屏幕外（不会闪到用户的桌面）",
+                window.Left <= Offscreen + 1 && window.Top <= Offscreen + 1,
+                $"窗口位置 ({window.Left:0.#}, {window.Top:0.#})");
+
+            check("悬浮形象已配上（没配时悬浮毫无变化，而不是报错）",
+                window.HasHoverImage, AssetCatalog.Describe("whale-hover"));
+
+            // 两张图必须同画布：不同的话鼠标一移上去角色就跳一下，
+            // 而这在界面上只表现为"好像抖了一下"，几乎没法归因
+            check("本体与悬浮形象同画布（不同就会在悬浮瞬间跳一下）",
+                window.StillImageSize.HasValue && window.StillImageSize == window.HoverImageSize,
+                $"本体 {Fmt(window.StillImageSize)}，悬浮 {Fmt(window.HoverImageSize)}");
+
+            check("还没悬浮时贴的是本体", window.ShowingStillImage,
+                $"配上悬浮图={window.HasHoverImage}");
+
+            window.SimulateMouseEnter();
+            window.UpdateLayout();
+
+            check("鼠标移入换成悬浮形象", window.ShowingHoverImage, "应当贴的是悬浮那张");
+
+            // 播放期间不能抢 Source，否则动作会被截断成半张
+            var player = window.AnimPlayer;
+            if (player != null && player.Play(AnimActions.Click))
+            {
+                check("悬浮期间点一下照常播（切换形象不打断动作）",
+                    player.IsPlaying && window.ShowingAnimationFrame,
+                    $"播放中={player.IsPlaying} 贴的是动画帧={window.ShowingAnimationFrame}");
+
+                player.AdvanceBy(TimeSpan.FromSeconds(2));   // 10fps × 2 帧，足够播完
+
+                check("悬浮期间动画播完，落回的是悬浮形象（不是本体）",
+                    !player.IsPlaying && window.ShowingHoverImage,
+                    $"播放中={player.IsPlaying} 贴悬浮图={window.ShowingHoverImage}");
+            }
+            else
+            {
+                check("悬浮态下能播动画（探针素材应当可用）", false, "Play 返回 false");
+            }
+
+            // 移出走的是真实的 OnMouseLeave：里面"要不要自动收起"那个分支会提前 return，
+            // 顺序写反就会停在被换掉的那张上 —— 这正是这条断言要守的东西
+            window.SimulateMouseLeave();
+            window.UpdateLayout();
+
+            check("鼠标移出换回本体（自动收起关着时也必须换回来）",
+                window.ShowingStillImage,
+                $"贴悬浮图={window.ShowingHoverImage}，贴本体={window.ShowingStillImage}");
+
+            // 连进两次不该把形象弄丢（真实环境里移入会重复触发）
+            window.SimulateMouseEnter();
+            window.SimulateMouseEnter();
+
+            check("重复移入不会把形象弄丢", window.ShowingHoverImage, "仍应贴悬浮那张");
+        }
+        catch (Exception ex)
+        {
+            check("悬浮态形象", false, ex.Message);
+            sb.AppendLine("      " + ex);
+        }
+        finally
+        {
+            // 顺序和动画那段一致：先关窗口（它还挂着播放器），再还原环境变量和缓存
+            try { window?.Close(); }
+            catch { /* 关不掉不影响结论 */ }
+
+            try
+            {
+                Environment.SetEnvironmentVariable("WHALELOG_ASSET_DIR", previousAssetDir);
+                IconAssets.Reload();
+            }
+            catch { /* 还原失败也只能继续 */ }
+
+            try { Directory.Delete(probeRoot, true); }
+            catch { /* 删不掉不影响结论 */ }
+        }
+    }
+
+    /// <summary>
+    /// 在临时素材目录里造一份最小可用的动画素材（真 PNG + 真帧表 + 同画布静态本体）。
+    /// 「小鲸鱼动画」和「悬浮态形象」两段探针共用它。
+    /// </summary>
+    private static void WriteProbeAnimation(
+        string assetDir, string action, int frameSize, int cols, int count)
+    {
+        var actionDir = Path.Combine(assetDir, AnimLibrary.FolderName, action);
+        Directory.CreateDirectory(actionDir);
+
+        WriteProbeSheet(Path.Combine(actionDir, "sheet.png"), frameSize, cols, count);
+
+        File.WriteAllText(Path.Combine(actionDir, AnimLibrary.ManifestName), $$"""
+        {
+          "name": "{{action}}", "version": 1, "type": "sheet",
+          "sheet": "sheet.png",
+          "frameWidth": {{frameSize}}, "frameHeight": {{frameSize}},
+          "cols": {{cols}}, "rows": 1, "count": {{count}},
+          "fps": 10, "loop": false,
+          "anchor": { "x": 360, "y": 660 },
+          "characterHeight": 600, "returnTo": "base", "sound": ""
+        }
+        """);
+
+        // 同画布的静态本体，让"静止 → 播放"不跳
+        WriteProbeSheet(Path.Combine(assetDir, AnimLibrary.FolderName, AnimLibrary.BaseImageName),
+            frameSize, 1, 1);
+    }
+
+    /// <summary>造一张纯色 PNG。用来区分"此刻贴的是本体还是悬浮态那张图"。</summary>
+    private static void WriteProbeSolid(string path, int width, int height, byte r, byte g, byte b)
+    {
+        int stride = width * 4;
+        var pixels = new byte[stride * height];
+
+        for (int y = 0; y < height; y++)
+        {
+            for (int x = 0; x < width; x++)
+            {
+                int p = y * stride + x * 4;
+                pixels[p] = b;
+                pixels[p + 1] = g;
+                pixels[p + 2] = r;
+                pixels[p + 3] = 255;
+            }
+        }
+
+        var bmp = System.Windows.Media.Imaging.BitmapSource.Create(
+            width, height, 96, 96, System.Windows.Media.PixelFormats.Bgra32, null, pixels, stride);
+
+        var encoder = new System.Windows.Media.Imaging.PngBitmapEncoder();
+        encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(bmp));
+
+        var dir = Path.GetDirectoryName(path);
+        if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+
+        using var fs = File.Create(path);
+        encoder.Save(fs);
     }
 
     /// <summary>

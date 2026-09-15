@@ -329,6 +329,19 @@ internal static class Program
         Check(AssetCatalog.Find("whale") != null && AssetCatalog.Find("WHALE") != null,
             "素材名应当大小写不敏感");
 
+        // 候选文件名跨素材不能重复：一个文件被两个素材同时认领，
+        // 后果是"本体"和"悬浮态"变成同一张图 —— 切了等于没切，而且一声不响
+        var allCandidates = AssetCatalog.All.SelectMany(e => e.Files).ToList();
+        Check(allCandidates.Count == allCandidates.Distinct(StringComparer.OrdinalIgnoreCase).Count(),
+            "候选文件名不能跨素材重复，否则一个文件会被两个素材同时认领");
+
+        // 悬浮态形象（表情差分）这个位子要在，且必须写清"和本体同画布"这条硬要求 ——
+        // 画布不一致时鼠标一移上去角色就会跳一下，而这在界面上极难归因
+        var hover = AssetCatalog.Find("whale-hover");
+        Check(hover != null, "要有「鼠标悬浮时的形象」这个素材位");
+        Check(hover != null && hover.Spec.Contains("画布", StringComparison.Ordinal),
+            "悬浮形象的规格说明必须写明「和本体同画布」，否则画师无从知道要对齐");
+
         // Describe 的措辞是自检报告和界面提示的来源
         var withExternal = AssetCatalog.Describe("whale", dir);
         Check(withExternal.Contains("whale.png"),

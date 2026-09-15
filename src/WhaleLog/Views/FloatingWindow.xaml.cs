@@ -80,6 +80,32 @@ public partial class FloatingWindow : Window
     private bool _animationsSettingApplied;
     private bool _animationsSettingKnown;
 
+    // ---- 悬浮态形象（表情差分）----
+
+    /// <summary>鼠标悬浮时替换成的形象。没配这张图时为 null，悬浮就什么都不发生。</summary>
+    private BitmapSource? _hoverImage;
+
+    /// <summary>静态本体。没在播动画、鼠标也不在上面时，显示的就是它。</summary>
+    private BitmapSource? _stillImage;
+
+    /// <summary>
+    /// 鼠标此刻是不是在悬浮窗上。
+    ///
+    /// 显式记一个字段，而不是到处读 IsMouseOver —— 在 MouseLeave 处理函数里
+    /// IsMouseOver 的取值时机依赖 WPF 内部顺序，拿不准；事件里自己置位就没这个问题。
+    /// </summary>
+    private bool _hovering;
+
+    /// <summary>
+    /// 此刻"静止"该显示哪一张：鼠标在上面且配了悬浮形象就用它，否则用本体。
+    ///
+    /// 不只是给 MouseEnter/Leave 用的 —— 动画播完要落回的那张"底图"（
+    /// <see cref="SpritePlayer.BaseImage"/>）也必须是它。否则会出现
+    /// 「鼠标悬停期间恰好播完一次眨眼，落回睁眼图」这种跳变。
+    /// </summary>
+    private BitmapSource? RestingImage
+        => _hovering && _hoverImage != null ? _hoverImage : _stillImage;
+
     /// <summary>
     /// 展开态的设计高度。
     ///
@@ -186,13 +212,12 @@ public partial class FloatingWindow : Window
     /// </summary>
     public void ReloadAssets()
     {
-        var whale = IconAssets.Load("whale");
-        if (whale != null) WhaleImage.Source = whale;
-
         var head = IconAssets.Load("whale-head");
         if (head != null) HeadImage.Source = head;
 
-        // 动态素材跟着一起重扫：用户刚把 sheet.png / sheet.json 拷进来，就该立刻能播
+        // 鲸鱼本体、悬浮态差分、动态素材都在这一处重扫：用户刚把 sheet.png / sheet.json
+        // 或差分图拷进来，就该立刻生效。鲸鱼图贴哪一张由它按"此刻是不是悬停"决定，
+        // 所以这里不再直接给 WhaleImage.Source 赋值（否则悬停状态会被这一下覆盖掉）。
         ReloadAnimations();
     }
 
@@ -432,13 +457,54 @@ public partial class FloatingWindow : Window
     {
         _collapseTimer.Stop();
         Expand();
+        SetHovering(true);
     }
 
     private void OnMouseLeave(object sender, MouseEventArgs e)
     {
+        // 先还原形象，再决定要不要排「自动收起」。顺序不能反 ——
+        // 下面那个分支会提前 return，把形象切换写在它后面的话，
+        // 关掉了自动收起的用户鼠标移开后就永远回不到本体形象了。
+        SetHovering(false);
+
         if (!App.Settings.Settings.FloatingAutoCollapse) return;
         _collapseTimer.Stop();
         _collapseTimer.Start();
+    }
+
+    /// <summary>
+    /// 切换悬浮态形象（表情差分）。
+    ///
+    /// 没配悬浮图时 <see cref="RestingImage"/> 会退回本体，这个函数就等于"把本体再贴一遍"，
+    /// 不会出错 —— 所以调用方不需要先判断有没有配图。
+    ///
+    /// 正在播动画时不抢 Source：抢了会把动作截断成半张脸。播放器播完会自己落回
+    /// <see cref="SpritePlayer.BaseImage"/>，而下面已经把它一起切过去了，
+    /// 所以不会出现"悬停期间播完一次眨眼、落回睁眼"的跳变。
+    /// </summary>
+    private void SetHovering(bool hovering)
+    {
+        if (_hovering == hovering) return;
+        _hovering = hovering;
+
+        // 播完要落回的那张也得跟着切
+        if (_player != null) _player.BaseImage = RestingImage;
+
+        if (_player is { IsPlaying: true }) return;
+        ApplyRestingImage();
+    }
+
+    /// <summary>
+    /// 把「此刻该显示的静止图」贴到鲸鱼上。
+    /// 取不到就保持原样 —— 绝不把 Source 置成 null，否则鲸鱼会凭空消失。
+    /// </summary>
+    private void ApplyRestingImage()
+    {
+        var resting = RestingImage;
+        if (resting == null) return;
+        if (ReferenceEquals(WhaleImage.Source, resting)) return;
+
+        WhaleImage.Source = resting;
     }
 
     public void Collapse()
@@ -628,8 +694,12 @@ public partial class FloatingWindow : Window
 
             // 静态图先取出来：无论开不开动画，它都是"没在播"时的底图。
             // anim\base.png 也在素材清单里，取到了它就是这张。
-            var still = IconAssets.Load("whale") as BitmapSource;
-            if (still != null) WhaleImage.Source = still;
+            _stillImage = IconAssets.Load("whale") as BitmapSource;
+            _hoverImage = IconAssets.Load("whale-hover") as BitmapSource;
+
+            // 悬浮态要立刻生效 —— 重扫素材时鼠标可能正停在鲸鱼上
+            var resting = RestingImage;
+            if (resting != null) WhaleImage.Source = resting;
 
             _animationsOn = wanted && _anim.HasAny;
 
@@ -646,7 +716,7 @@ public partial class FloatingWindow : Window
                     ? Math.Clamp(box.Value, MinWhaleHeight, MaxWhaleHeight)
                     : StaticWhaleHeight;
 
-                _player = new SpritePlayer(WhaleImage) { BaseImage = still };
+                _player = new SpritePlayer(WhaleImage) { BaseImage = resting };
 
                 foreach (var action in _anim.ActionNames)
                 {
@@ -773,6 +843,49 @@ public partial class FloatingWindow : Window
 
     /// <summary>自检用：鲸鱼框的当前高度（设计像素）。</summary>
     public double WhaleHeight => _whaleHeight;
+
+    /// <summary>
+    /// 自检用：走一遍**真实的**鼠标移入 / 移出处理函数，而不是绕到 <see cref="SetHovering"/>。
+    ///
+    /// 移出那条路上有一个"要不要自动收起"的提前 return，形象还原必须排在它前面 ——
+    /// 这个顺序错了只有真的把处理函数跑一遍才看得出来（探针不能真去移动用户的光标，
+    /// 所以直接调用；两个处理函数都不读事件参数）。
+    /// </summary>
+    public void SimulateMouseEnter() => OnMouseEnter(this, null!);
+
+    /// <inheritdoc cref="SimulateMouseEnter"/>
+    public void SimulateMouseLeave() => OnMouseLeave(this, null!);
+
+    /// <summary>自检用：配上了悬浮形象（差分图）没有。</summary>
+    public bool HasHoverImage => _hoverImage != null;
+
+    /// <summary>
+    /// 自检用：此刻贴在鲸鱼上的就是悬浮形象那张吗。
+    ///
+    /// 比的是引用而不是像素 —— 悬浮切换本来就是"整张换掉"，
+    /// 换成同一张图不会有任何视觉变化，所以引用相等正是这里要断言的东西。
+    /// </summary>
+    public bool ShowingHoverImage
+        => _hoverImage != null && ReferenceEquals(WhaleImage.Source, _hoverImage);
+
+    /// <summary>自检用：此刻贴在鲸鱼上的是不是静态本体那张。</summary>
+    public bool ShowingStillImage
+        => _stillImage != null && ReferenceEquals(WhaleImage.Source, _stillImage);
+
+    /// <summary>自检用：此刻贴的是不是动画的某一帧。</summary>
+    public bool ShowingAnimationFrame => WhaleImage.Source is CroppedBitmap;
+
+    /// <summary>自检用：动画播完会落回的那张图（悬浮时为悬浮形象，否则为本体）。</summary>
+    public BitmapSource? AnimBaseImage => _player?.BaseImage;
+
+    /// <summary>自检用：静态本体的像素尺寸。和悬浮形象不一致就会在切换时跳一下。</summary>
+    public (int Width, int Height)? StillImageSize => SizeOf(_stillImage);
+
+    /// <summary>自检用：悬浮形象的像素尺寸。</summary>
+    public (int Width, int Height)? HoverImageSize => SizeOf(_hoverImage);
+
+    private static (int Width, int Height)? SizeOf(BitmapSource? image)
+        => image == null ? null : (image.PixelWidth, image.PixelHeight);
 
     // ------------------------------------------------------------------
     // 状态显示
