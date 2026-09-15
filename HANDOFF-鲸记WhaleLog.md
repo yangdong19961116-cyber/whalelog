@@ -319,21 +319,22 @@ python tools\drag_probe.py
 6. 桌面上累积了三个包：`鲸记 WhaleLog 1.1.zip`（无动画）、`1.2.zip`（有动画、无悬浮差分）、
    `1.3.zip`（当前）。**删除桌面文件需用户明确同意**，别自作主张清桌面 ——
    已经问过一次，用户还没表态。
-7. **Git 远端已接上半程 —— 仓库建好了，但全量还没推上去。**
+7. **Git 远端已建好，但仓库是空的 —— 第一次推送只能在新设备上做。**
    仓库：`https://github.com/yangdong19961116-cyber/whalelog.git`（私有，默认分支 `main`）。
-   2026-09-15 实测：
-   - **仓库里目前只有文档快照**（`README.md` / 交接单 / `新设备继续指令.md` /
-     `.workbuddy\memory\MEMORY.md` / `LICENSE` / `.gitignore`），是本机通过平台 GitHub
-     连接器逐文件写上去的。
-   - **全量（962 KB 文本 + 1 MB 二进制图）传不上去**：连接器是把文件内容当文本参数写的，
-     等于要先把内容读进模型上下文，这个量级不允许；而本机 `github.com` 被代理拦
-     （`CONNECT tunnel failed, response 502`），`git push` 走不通。
-   - → **全量推送必须由新设备做一次**（7 行命令，见 `新设备继续指令.md` 第 6 节）。
-     推完 `main` 才是唯一事实源。
-   - ⚠️ **本机仍然推不了、也 `pull` 不了**（同为 `github.com` 被拦）。GitHub 这条通道
-     只对新设备有效，本机继续走「拷包」老路。
-   - 连接器权限边界（供后续参考）：**有文件写权限**（往不存在的仓库写返回 404 而非 403），
-     **没有建仓库权限**（`create_repository` → `403 Resource not accessible by integration`）。
+   2026-09-15 实测，**本机的上传路全断**：
+   - **git 通道**：`github.com` 被代理拦，`git push` 报 `CONNECT tunnel failed, response 502`
+     （同一时刻 `api.github.com` 返回 200）。git 协议走的正是 `github.com`。
+   - **连接器通道**：平台 GitHub 连接器走 `api.github.com` 通，但**只有读权限** ——
+     `create_or_update_file` / `push_files` 一律 `403 Resource not accessible by integration`。
+   - **连接器 + 文本兜底**：即便有写权限也不行 —— 它是逐文件写、内容要当文本参数传，
+     全仓 962 KB 文本 + 1 MB 二进制图这个量级传不动。
+   - → **新设备上 4 行命令推一次**（`git branch -M master main` + `git push -u origin main`，
+     仓库是空的，所以是干净首发，不需要 force / merge），推完 `main` 才是唯一事实源。
+     详见 `新设备继续指令.md` 第 0 节与第 6 节。
+   - ⚠️ **本机推不了、也 `pull` 不了**。GitHub 这条通道只对新设备有效，本机继续走「拷包」。
+   - **教训（已写进 MEMORY.md）**：别用「往不存在的仓库写返回 404 而非 403」判断写权限 ——
+     GitHub 对当前凭据看不到的仓库也返回 404，只能说明仓库不存在。
+     判权限必须看**仓库存在之后**的返回码。这个推断错过一次。
 8. **仓库根 README 已归位。** 原先放在根目录的 `README.md` 其实是工作区里**另一个项目
    AudioRoute**（音频设备切换托盘应用）的，已移到 `src/AudioRoute/README.md`；
    根 README 重写成工作区总览，并加了「仓库暂不完整」的显眼警告。
