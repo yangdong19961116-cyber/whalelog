@@ -1,198 +1,61 @@
-# Audio Route
+# 工作区 · workwork
 
-> A lightweight tray-resident Windows 10 / 11 utility that switches the default
-> audio output device with global hotkeys, and **auto-switches to your 2.4G
-> wireless dongle the moment it pairs up** — then falls back to your desktop
-> speakers when you walk away.
+两个 Windows 桌面项目放在一起：
 
-![tech](https://img.shields.io/badge/.NET-8-blueviolet) ![tech](https://img.shields.io/badge/WPF-native-lightgrey) ![tech](https://img.shields.io/badge/OS-Win10%20%2F%20Win11-0078D4)
-
----
-
-## Features
-
-- **Global hotkeys**
-  - Cycle (default `Ctrl+Alt+F11`) — rotates through every active output.
-  - Next device (`Ctrl+Alt+Right`) / Previous device (`Ctrl+Alt+Left`).
-  - Mute toggle (`Ctrl+Alt+M`).
-  - All four hotkeys are captured by an interactive "press any key" editor in
-    the UI, validated, and re-registered live.
-- **Auto-switch on device events**
-  - Pick a substring (e.g. `2.4G`, `G733`, `HyperX`) that matches the
-    dongle's friendly name. When any device-added / state-changed event
-    fires from `IMMNotificationClient`, the helper re-evaluates and switches.
-  - Pick a *fallback* device — the moment the trigger disappears, output
-    jumps back to your speakers / DAC.
-  - 800 ms rate-limit and a configurable debounce keep a flaky dongle from
-    thrashing the default endpoint.
-- **Modern, themeable UI**
-  - Two visual states (light + dark) implemented as `ResourceDictionary`
-    files at `src/AudioRoute/Resources/Themes/`.
-  - Auto-follows `HKCU\…\Themes\Personalize\AppsUseLightTheme` (live
-    `SystemEvents.UserPreferenceChanged`) and supports per-app override.
-  - Responsive 2 × 2 card grid with scroll fallback, DPI-per-monitor aware,
-    clean typography.
-- **Tray-resident**
-  - Closing the window hides to the system tray. Right-click for "Cycle next
-    output" or "Exit".
-  - "Start with Windows" / "Start minimized" toggles via the standard
-    `HKCU\…\Run` registry key.
-- **Self-contained single-file build** — `AudioRoute.exe` runs on a stock
-  Windows 10 box with no .NET runtime installed (publishes as
-  `PublishSingleFile=true SelfContained=true`).
-
----
-
-## Quick start
-
-### 1. Build it (Windows 10 / 11)
-
-Install the [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)
-once. Then from the repo root:
-
-```cmd
-build.cmd
-```
-
-This produces a fully self-contained single-file binary at:
-
-```
-.\Publish\AudioRoute.exe
-```
-
-You can copy that single `.exe` anywhere — no installer, no runtime, no
-side-by-side files.
-
-To build with Visual Studio: open `AudioRoute.sln` and press F5.
-
-### 2. Use it
-
-1. Launch `AudioRoute.exe`.
-2. Under **Auto-switch on 2.4G dongle**:
-   - Toggle on.
-   - Type or pick your dongle's friendly name pattern (anything containing
-     it counts — e.g. `2.4G`, `G733`, `HyperX`).
-   - Pick a *Fallback device* for when the dongle goes to sleep.
-3. Plug/unplug the dongle — output should snap to it within ~1 s.
-4. Use `Ctrl+Alt+F11` (or whatever you mapped Cycle to) to hand-cycle
-   between speakers, dongle, headset, etc.
-
-Settings persist at `%LocalAppData%\AudioRoute\settings.json`.
-Logs (only on crash) at `%LocalAppData%\AudioRoute\logs\`.
-
----
-
-## Tech stack
-
-| Layer | Choice |
-|---|---|
-| UI | WPF on .NET 8 (Windows) with custom-themed `ResourceDictionary` |
-| Audio | [NAudio 2.2](https://github.com/naudio/NAudio) — `MMDeviceEnumerator`, `IMMNotificationClient`, `PolicyClient` |
-| Hotkeys | Win32 `RegisterHotKey` via `HwndSource.AddHook(WM_HOTKEY)` |
-| Theme detection | `Registry` + `SystemEvents.UserPreferenceChanged` |
-| Persistence | `System.Text.Json` → `%LocalAppData%` |
-| Autostart | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` |
-| Single-file publish | `PublishSingleFile=true SelfContained=true IncludeNativeLibrariesForSelfExtract=true` |
-
-### Architecture
-
-```
-App.xaml(.cs)
- ├── SettingsService        – load/save + change events
- ├── ThemeService           – registry + Manual + dynamic theme swap
- ├── AudioDeviceService     – NAudio wrapper; plug/unplug + volume + default
- ├── HotKeyService          – RegisterHotKey + combo parser
- └── AutoSwitchService      – subscribes to device events, applies rules
-
-MainWindow.xaml(.cs)        – UI; closes only hide-to-tray
-```
-
-`AudioRoute.exe` is a single-instance tray app: closing the window hides to
-the tray. `App.OnExit` unwinds services cleanly.
-
----
-
-## Hotkey reference
-
-| Action | Default | Notes |
+| 项目 | 状态 | 说明 |
 |---|---|---|
-| Cycle playback | `Ctrl+Alt+F11` | Rotates through *active* outputs |
-| Next device | `Ctrl+Alt+Right` | Skip-style next |
-| Previous device | `Ctrl+Alt+Left` | |
-| Mute toggle | `Ctrl+Alt+M` | Toggles the default endpoint's mute |
-
-Use any combo the Win32 `RegisterHotKey` accepts, e.g. `Ctrl+Shift+F12`,
-`Win+Alt+Y`. Modifier-less or already-system-bound shortcuts (e.g.
-`Win+L`) will be refused at apply time.
+| **鲸记 WhaleLog** | **在做** | 桌面工作记录台。小鲸鱼常驻桌面，拖文件进去归档，记录 / 复盘 / 周报在一个窗口里完成。`src/WhaleLog/` |
+| AudioRoute | 已完成 | 托盘音频设备切换器：全局热键切默认输出设备，插上 2.4G 接收器自动切过去。`src/AudioRoute/`，说明见 `src/AudioRoute/README.md` |
 
 ---
 
-## Project layout
+## ⚠️ 这个仓库现在是「不完整」的 —— 先读这段
 
-```
-AudioRoute/
-├── AudioRoute.sln
-├── build.cmd                              one-shot build + publish
-├── LICENSE                                MIT
-├── README.md                              you are here
-├── .gitignore
-└── src/
-    └── AudioRoute/
-        ├── AudioRoute.csproj              .NET 8 Windows, NAudio 2.2
-        ├── App.xaml(.cs)                  entry point, tray + autostart
-        ├── MainWindow.xaml(.cs)           UI
-        ├── app.manifest                   asInvoker + DPI per-monitor
-        ├── AssemblyInfo.cs
-        ├── Models/
-        │   ├── AppSettings.cs             serialised to disk
-        │   └── AudioDeviceInfo.cs
-        ├── Resources/Themes/
-        │   ├── Light.xaml
-        │   └── Dark.xaml
-        └── Services/
-            ├── SettingsService.cs
-            ├── ThemeService.cs
-            ├── AudioDeviceService.cs
-            ├── HotKeyService.cs
-            ├── AutoSwitchService.cs
-            └── StartupService.cs
-```
+**仓库里目前只有文档，没有源码。** 这是有意为之，不是传错了。
+
+| 情况 | 说明 |
+|---|---|
+| 现在有什么 | `README.md`、`HANDOFF-鲸记WhaleLog.md`、`新设备继续指令.md`、`.workbuddy/memory/MEMORY.md`、`LICENSE`、`.gitignore` |
+| 为什么没有源码 | 上传这批文档的那台机器**出网受限**：`api.github.com` 通，但 `github.com` 被挡 —— `git push` 报 `CONNECT tunnel failed, response 502`（git 协议走的正是后者）。退而用连接器逐文件写也不行：它是把内容当文本参数传的，全仓 962 KB 文本 + 1 MB 图片这个量级传不动 |
+| 怎么补全 | **在新设备上推一次全量**，一条命令的事，见 [`新设备继续指令.md`](新设备继续指令.md) 第 6 节 |
+
+**所以现在别 `git clone` 它当源码用**（会是个空工程）。正确开工方式：解压
+`鲸记 WhaleLog 项目交接包 2026-09-15.zip`（含全量源码 + 完整提交历史），
+按 `新设备继续指令.md` 推上来。推完之后这个仓库就是唯一事实源。
 
 ---
 
-## Inspiration
+## 从哪读起
 
-This project is a from-scratch implementation informed by the excellent
-open-source work of:
+| 想干什么 | 读哪个 |
+|---|---|
+| **在新设备上接着干** | [`新设备继续指令.md`](新设备继续指令.md) —— 操作手册，照着做 |
+| 了解鲸记做到哪一步、下一步做什么 | [`HANDOFF-鲸记WhaleLog.md`](HANDOFF-鲸记WhaleLog.md) —— 交接单 |
+| 技术决策与踩过的坑（两个项目合在一起） | [`.workbuddy/memory/MEMORY.md`](.workbuddy/memory/MEMORY.md) |
+| 鲸记的功能全貌 / 构建 / 打包 / 自测 | `src/WhaleLog/README.md`（补全源码后可见） |
+| AudioRoute 的用法 | `src/AudioRoute/README.md` |
+| 动态素材规格（发给做素材的人） | `docs/动态素材规格.md`（补全源码后可见） |
 
-- **[Belphemur / SoundSwitch](https://github.com/Belphemur/SoundSwitch)** —
-  the gold standard for Windows audio device hotkey switching on .NET.
-- **[File-New-Project / EarTrumpet](https://github.com/File-New-Project/EarTrumpet)**
-  — the reference design for a per-app / system-tray audio mixer with a
-  modern look.
-- **[xammen / BetterTrumpet](https://github.com/xammen/BetterTrumpet)** —
-  fork of EarTrumpet showcasing themes, profiles, and CLI.
+## 鲸记 WhaleLog 速览
 
-Audio Route is a smaller, focused tool: hotkeys + auto-switch on connect,
-themed WPF UI, no per-app routing required.
+- **形态**：无边框、透明、置顶的桌面悬浮窗，贴着屏幕边缘，闲置收成小头像。
+- **核心交互**：把文件拖到小鲸鱼身上 → 按日期自动归档。
+- **辅助功能**：记录与复盘编辑、周报视图、全局快捷键、托盘菜单、浅色/深色主题、开机自启。
+- **形象可换**：程序旁边的 `Assets\` 里放同名文件即可，不用重新编译。
+- **动态素材**：精灵图 + 帧表（PNG + JSON）。已接点击弹跳 / 闲置眨眼 / 提醒三个动作，
+  以及鼠标悬浮时的闭眼差分形象。
+
+## 新设备上要注意的技术约束
+
+- `net8.0-windows`，**AnyCPU**（不能设 x64）。
+- 要装 **.NET 8 SDK**（只有 Runtime 不够）；`tools/make_apphost.py` 还需要本机的
+  `Microsoft.WindowsDesktop.App` 运行时。
+- 编译完要跑一次 `python tools/make_apphost.py` 生成 GUI 子系统的 exe，
+  否则启动会挂一个黑控制台窗口。
+- 诊断探针（`--selfcheck`）**绝不能写用户的真实配置**，必须用 `WHALELOG_DATA_DIR`
+  隔离到临时目录，且路径要给 Windows 风格（`C:/...`）。
 
 ---
 
-## Known limitations
-
-- **No per-application routing.** Audio Route only changes the system
-  default (Multimedia + Communications). For Spotify-to-headset-while-game-to-
-  speakers, you'll want EarTrumpet.
-- **Acrylic / Mica backdrop not implemented.** The window paints a flat
-  themed `BackgroundBrush`. The `UseAcrylicBackdrop` setting is reserved for
-  a future addition (would require `SetWindowCompositionAttribute` on Win10
-  Build 1903+ for Acrylic, or Windows 11 Build 22000+ for Mica).
-- **Single instance enforcement is via tray, not a kernel object** — closing
-  the launcher window does nothing because the app continues running in
-  the tray. Use the tray menu "Exit" to fully quit.
-
----
-
-## License
-
-MIT — see [`LICENSE`](./LICENSE).
+*本文件由交接流程维护。补全源码后，上面那段「不完整」的警告可以删掉。*
+*2026-09-15：原先放在根目录的 README 是 AudioRoute 的，已归位到 `src/AudioRoute/README.md`。*

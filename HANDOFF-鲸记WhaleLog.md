@@ -319,12 +319,23 @@ python tools\drag_probe.py
 6. 桌面上累积了三个包：`鲸记 WhaleLog 1.1.zip`（无动画）、`1.2.zip`（有动画、无悬浮差分）、
    `1.3.zip`（当前）。**删除桌面文件需用户明确同意**，别自作主张清桌面 ——
    已经问过一次，用户还没表态。
-7. **Git 远端还没接上。** 交接包（`桌面\鲸记 WhaleLog 项目交接包 2026-09-15.zip`，带完整历史）
-   和操作手册（`新设备继续指令.md`）都做好了，但仓库本身还没有远端。
-   卡在两处环境限制，2026-09-15 实测：
-   - **本机网络**：`api.github.com` 通（HTTP 200），但 **`github.com` 被代理拦**
-     （`CONNECT tunnel failed, response 502`）→ **本机无法 `git push`**，换机器才行。
-   - **平台 GitHub 连接器**：**有文件写权限**（往不存在的仓库写返回的是 404，不是 403），
-     但**没有建仓库权限**（`create_repository` → `403 Resource not accessible by integration`）。
-   → 所以**建仓库那一步只能用户手动**（网页 30 秒），首次 push 在能访问 `github.com`
-   的机器上做。完整流程 + 约定地址写在 `新设备继续指令.md` 第 6 节。
+7. **Git 远端已接上半程 —— 仓库建好了，但全量还没推上去。**
+   仓库：`https://github.com/yangdong19961116-cyber/whalelog.git`（私有，默认分支 `main`）。
+   2026-09-15 实测：
+   - **仓库里目前只有文档快照**（`README.md` / 交接单 / `新设备继续指令.md` /
+     `.workbuddy\memory\MEMORY.md` / `LICENSE` / `.gitignore`），是本机通过平台 GitHub
+     连接器逐文件写上去的。
+   - **全量（962 KB 文本 + 1 MB 二进制图）传不上去**：连接器是把文件内容当文本参数写的，
+     等于要先把内容读进模型上下文，这个量级不允许；而本机 `github.com` 被代理拦
+     （`CONNECT tunnel failed, response 502`），`git push` 走不通。
+   - → **全量推送必须由新设备做一次**（7 行命令，见 `新设备继续指令.md` 第 6 节）。
+     推完 `main` 才是唯一事实源。
+   - ⚠️ **本机仍然推不了、也 `pull` 不了**（同为 `github.com` 被拦）。GitHub 这条通道
+     只对新设备有效，本机继续走「拷包」老路。
+   - 连接器权限边界（供后续参考）：**有文件写权限**（往不存在的仓库写返回 404 而非 403），
+     **没有建仓库权限**（`create_repository` → `403 Resource not accessible by integration`）。
+8. **仓库根 README 已归位。** 原先放在根目录的 `README.md` 其实是工作区里**另一个项目
+   AudioRoute**（音频设备切换托盘应用）的，已移到 `src/AudioRoute/README.md`；
+   根 README 重写成工作区总览，并加了「仓库暂不完整」的显眼警告。
+   ⚠️ 注意：`workwork` 是**双项目工作区**（AudioRoute + WhaleLog），
+   建基线时 AudioRoute 的 20 个文件也一并进了仓库 —— 交接时别把它只当鲸记一个项目看。

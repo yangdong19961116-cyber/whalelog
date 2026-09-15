@@ -153,3 +153,19 @@
 - **文档里的项数必须 grep 校验**。交接单的断言数漂过 151 → 163 → 213，
   每次都是改代码忘了改数字；发版前 `grep -n "163\|151\|144"` 一遍成本极低。
 - **桌面属于个人目录：删桌面上的旧包必须用户明确同意**，不要自作主张清理。
+
+## 七、Git 远端与「上传通道」的边界（2026-09-15 实测）
+- 远端：`https://github.com/yangdong19961116-cyber/whalelog.git`（私有，默认分支 `main`）。
+  本地分支叫 `master`，推之前记得 `git branch -M master main` 对齐。
+- ⚠️ **本机连不上 `github.com`**：`api.github.com` 通（HTTP 200），`github.com` 被代理拦
+  （`CONNECT tunnel failed, response 502`）。→ **本机既不能 push 也不能 pull**。
+  远端这条通道只对另一台设备有效，本机仍走「拷交接包 zip」的老路。
+- **平台 GitHub 连接器只能逐文件写文本**：内容要当工具参数传，等于先读进模型上下文。
+  全仓 962 KB 文本 + 1 MB 二进制图，这个量级传不动；PNG/ICO/ZIP 这类二进制本来也传不了。
+  → 连接器只适合放几份文档，别指望它同步源码。
+- 连接器权限判据：**有文件写权限**（往不存在的仓库写返回 404 而非 403），
+  **没有建仓库权限**（`create_repository` → `403 Resource not accessible by integration`）。
+- **`workwork` 是双项目工作区**：AudioRoute（`src/AudioRoute/`，已完成）+ WhaleLog
+  （`src/WhaleLog/`，在做）。建基线时 AudioRoute 的文件一并进了仓库 ——
+  交接时别把它只当鲸记一个项目。它的 README 原先在仓库根目录，已归位到
+  `src/AudioRoute/README.md`。
