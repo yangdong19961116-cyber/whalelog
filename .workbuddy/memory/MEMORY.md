@@ -121,3 +121,22 @@
   -p:GenerateRuntimeConfigurationFiles=false` 编译。
 - `dotnet.exe` 是 32 位宿主 → **项目不要设 `PlatformTarget=x64`**（FileLoadException），用 AnyCPU。
 - apphost 只能按本机已安装的运行时架构选（本机只有 x86）。
+- `dotnet.exe` 在 `C:\Program Files (x86)\dotnet\dotnet.exe`，**不在 bash 的 PATH 里**，
+  要用完整路径（带空格，记得引号）。
+- **不能从 bash 调 `cmd.exe`**（安全策略：`Invoking cmd.exe from Bash bypasses all command validation`），
+  所以 `build-whalelog-offline.cmd` / `build-whalelog.cmd` 在只能执行 bash 的会话里跑不了，
+  要手工复现它那四步（`offline_restore.py` → `dotnet build …` → 再跑一次
+  `offline_restore.py` → `make_apphost.py`）。
+  **第三次的 `offline_restore.py` 不能省**：带 `-p:GenerateRuntimeConfigurationFiles=false`
+  编出来的产物没有 `runtimeconfig.json`，直接启动报 `hostpolicy.dll not found`。
+- 本会话里 PowerShell 工具不返回 stdout（命令 exit code 正常但抓不到输出），
+  要读输出优先用 bash 或直接看文件。
+
+## 六、发布例行（发 1.2 时定下来的）
+- 版本唯一来源是 `src/WhaleLog/WhaleLog.csproj` 的 `<Version>`，界面读 `Assembly.GetName().Version` 自动跟，改一处即可。
+- 打包产物命名带版本号：`桌面\鲸记 WhaleLog <版本>.zip`
+  （`make_portable_zip.py` 不带参数会输出成 `鲸记 WhaleLog.zip`，要显式传路径加上版本号）。
+- 顺序：升版本 → 重建 Release + apphost → 打包 → **同步 HANDOFF 与 README 里所有数字** → 提交。
+- **文档里的项数必须 grep 校验**。交接单的断言数漂过 151 → 163 → 213，
+  每次都是改代码忘了改数字；发版前 `grep -n "163\|151\|144"` 一遍成本极低。
+- **桌面属于个人目录：删桌面上的旧包必须用户明确同意**，不要自作主张清理。
