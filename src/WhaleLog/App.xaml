@@ -1,0 +1,22 @@
+<Application x:Class="WhaleLog.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:v="clr-namespace:WhaleLog.Views"
+             ShutdownMode="OnExplicitShutdown">
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <!-- 控件样式与主题分开：切主题时只换下面 Themes 里的那一个字典 -->
+                <ResourceDictionary Source="/Resources/Styles/Shared.xaml" />
+                <ResourceDictionary Source="/Resources/Themes/Light.xaml" />
+            </ResourceDictionary.MergedDictionaries>
+
+            <BooleanToVisibilityConverter x:Key="BoolToVis" />
+            <v:CategoryBrushConverter x:Key="CategoryBrush" />
+            <v:InverseBoolToVisibilityConverter x:Key="InverseBoolToVis" />
+            <v:NonEmptyToVisibilityConverter x:Key="NonEmptyToVis" />
+            <v:MissingToBrushConverter x:Key="MissingToBrush" />
+            <v:DateGroupLabelConverter x:Key="DateGroupLabel" />
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>

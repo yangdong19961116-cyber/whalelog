@@ -1,0 +1,1555 @@
+using System.IO;
+using System.Reflection;
+using System.Text;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Media.Imaging;
+using WhaleLog.Models;
+using WhaleLog.Views;
+
+namespace WhaleLog.Services;
+
+/// <summary>
+/// 诊断自检。
+///
+/// 起因很实际：全局快捷键注册、桌面快捷方式创建、托盘图标加载这些路径
+/// 在正常使用中都是"点一下才知道好不好"，出问题时也看不出卡在哪一步。
+/// 自检把这些环节挨个跑一遍并写出结论，用户把日志发过来就能定位。
+///
+/// 用 `WhaleLog.exe --selfcheck` 触发，结果写在 logs\selfcheck.log。
+/// </summary>
+public static class DiagnosticsService
+{
+    /// <summary>
+    /// 断言回调。
+    ///
+    /// 刻意不用 <c>Action&lt;string, bool, string&gt;</c> —— 它不允许可选参数，
+    /// 于是在各探针里写 <c>check("标题", true)</c> 会编译不过，只能到处补一个多余的 <c>""</c>。
+    /// 自定义委托声明了 detail 的默认值，两参调用就能用。
+    /// </summary>
+    private delegate void CheckFn(string name, bool ok, string detail = "");
+
+    /// <summary>
+    /// 跑一轮自检并返回报告文本。
+    ///
+    /// 探针为了验证界面会去改内存里的设置对象（比如把浮窗缩放到 1.6 来量有没有被裁）；
+    /// 而程序退出时 <c>SettingsService.Save()</c> 会把这个对象整个写回 settings.json，
+    /// 探针的改动就"泄漏"进用户配置了。所以整体兜一层快照：
+    /// 不管探针怎么改、甚至中途抛异常，跑完都把设置还原回去。
+    /// </summary>
+    public static string RunReport()
+    {
+        var snapshot = App.Settings.Snapshot();
+        try
+        {
+            return RunReportCore();
+        }
+        finally
+        {
+            App.Settings.Restore(snapshot);
+        }
+    }
+
+    private static string RunReportCore()
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("鲸记 WhaleLog · 诊断自检");
+        sb.AppendLine($"时间：{DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+        sb.AppendLine(new string('-', 60));
+
+        var failures = 0;
+
+        void Section(string title)
+        {
+            sb.AppendLine();
+            sb.AppendLine($"【{title}】");
+        }
+
+        void Check(string name, bool ok, string detail = "")
+        {
+            if (!ok) failures++;
+            sb.AppendLine($"  {(ok ? "✓" : "✗")} {name}{(string.IsNullOrEmpty(detail) ? "" : "：" + detail)}");
+        }
+
+        // ---- 运行环境 ----
+        Section("运行环境");
+        var exe = Environment.ProcessPath ?? "(未知)";
+        sb.AppendLine($"  程序：{exe}");
+        sb.AppendLine($"  托管入口：{Assembly.GetEntryAssembly()?.Location ?? "(未知)"}");
+        sb.AppendLine($"  运行时：{Environment.Version}");
+        sb.AppendLine($"  系统：{Environment.OSVersion}");
+        var viaMuxer = Path.GetFileName(exe).Equals("dotnet.exe", StringComparison.OrdinalIgnoreCase);
+        sb.AppendLine($"  启动方式：{(viaMuxer ? "dotnet 宿主（框架依赖）" : "直接运行 WhaleLog.exe")}");
+
+        // 核心库在哪儿能一眼看出是框架依赖还是自包含（打包版排查首问）。
+        // 框架依赖时它在 C:\Program Files (x86)\dotnet\shared\...；自包含时就在程序目录里。
+        var corelib = typeof(object).Assembly.Location;
+        var exeDir = Path.GetDirectoryName(exe) ?? "";
+        bool appLocal = !string.IsNullOrEmpty(corelib) &&
+            string.Equals(Path.GetDirectoryName(corelib), exeDir, StringComparison.OrdinalIgnoreCase);
+        sb.AppendLine($"  运行时位置：{(appLocal ? "程序目录内（自包含）" : "系统共享目录（需装 .NET 8 桌面运行时）")}");
+        sb.AppendLine($"    {corelib}");
+
+        // ---- 数据目录 ----
+        Section("数据目录与落盘");
+        try
+        {
+            AppPaths.EnsureCreated();
+            Check("数据目录可写", true, AppPaths.Root);
+            Check("笔记目录存在", Directory.Exists(AppPaths.NotesDir), AppPaths.NotesDir);
+
+            var probe = Path.Combine(AppPaths.Root, ".write-probe");
+            File.WriteAllText(probe, "ok");
+            File.Delete(probe);
+            Check("目录读写正常", true);
+
+            // 索引、设置、规则这三个文件在**全新安装**时都还不存在 ——
+            // 自检刻意不写数据，所以不能断言"必须存在"，否则新用户跑一次自检
+            // 会看到几个 ✗，以为程序坏了。改为：存在就要能读出内容，不存在也算正常。
+            foreach (var (label, path) in new (string, string)[]
+                     {
+                         ("索引文件", AppPaths.IndexFile),
+                         ("设置文件", AppPaths.SettingsFile),
+                         ("分类规则文件", AppPaths.RulesFile),
+                     })
+            {
+                if (!File.Exists(path))
+                {
+                    Check(label, true, $"{path}（首次运行尚未生成，属正常）");
+                    continue;
+                }
+
+                try
+                {
+                    var text = File.ReadAllText(path, Encoding.UTF8);
+                    Check(label, text.Trim().Length > 0, $"{path}（{text.Length} 字符）");
+                }
+                catch (Exception ex)
+                {
+                    Check(label, false, $"{path} 读取失败：{ex.Message}");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Check("数据目录可用", false, ex.Message);
+        }
+
+        // ---- 设置 ----
+        Section("设置");
+        try
+        {
+            var s = App.Settings.Settings;
+            sb.AppendLine($"  上下班：{s.WorkStartHour:00}:{s.WorkStartMinute:00} — {s.WorkEndHour:00}:{s.WorkEndMinute:00}");
+            sb.AppendLine($"  提前提醒：{s.RemindMinutesBefore} 分钟（{(s.ReminderEnabled ? "已启用" : "已关闭")}）");
+            sb.AppendLine($"  悬浮窗：{(s.FloatingEnabled ? "开" : "关")}，缩放 {s.FloatingScale:0.00}，透明度 {s.FloatingOpacity:0.00}");
+            sb.AppendLine($"  归档快照：{(s.SnapshotMode ? "开" : "关")}，全量哈希阈值 {s.FullHashLimitMb} MB");
+            Check("设置读取正常", true);
+        }
+        catch (Exception ex)
+        {
+            Check("设置读取正常", false, ex.Message);
+        }
+
+        // ---- 图标与素材 ----
+        Section("图标与素材");
+        try
+        {
+            using var icon = IconAssets.LoadAppIcon();
+            Check("托盘图标可加载", icon != null, $"{icon?.Width}x{icon?.Height}");
+
+            var iconFile = IconAssets.EnsureIconFile();
+            Check("可导出的 .ico 文件", !string.IsNullOrEmpty(iconFile), iconFile ?? "导出失败");
+
+            var windowIcon = IconAssets.LoadWindowIcon();
+            Check("窗口图标资源", windowIcon != null);
+
+            var preview = IconAssets.LoadPreviewImage();
+            Check("关于页图片资源", preview != null);
+
+            // Image.Source 为 null 是合法的 —— 界面上只是一片空白，不会有任何报错。
+            // 所以"能不能加载出来"必须单独断言，否则图丢了也没人知道。
+            foreach (var entry in AssetCatalog.All.Where(e => e.Name != "icon"))
+            {
+                var image = IconAssets.Load(entry.Name);
+                Check($"{entry.Files[0]} 可加载", image != null,
+                    image is BitmapSource b
+                        ? $"{b.PixelWidth}×{b.PixelHeight}"
+                        : "读不出来 —— pack:// 资源或外部文件有问题");
+            }
+
+            // 实际生效的来源。刻意不等同于"磁盘上有没有外部文件"：
+            // 文件存在但读不出来时，界面上用的是内置图，报告若还写"外部"就是误导。
+            sb.AppendLine($"  素材目录：{AppPaths.AssetsDir}");
+            sb.AppendLine($"  目录存在：{(Directory.Exists(AppPaths.AssetsDir) ? "是" : "否")}");
+
+            var actual = IconAssets.LoadedFromExternal;
+            foreach (var entry in AssetCatalog.All)
+            {
+                var label = entry.Files[0];
+                var onDisk = AssetCatalog.FindExternal(entry.Name);
+
+                if (actual.TryGetValue(entry.Name, out var used))
+                    sb.AppendLine($"  {label,-20} 外部 {Path.GetFileName(used)}（生效）");
+                else if (onDisk != null)
+                    sb.AppendLine($"  {label,-20} 外部文件读不出来，已回落内置（{Path.GetFileName(onDisk)}）");
+                else
+                    sb.AppendLine($"  {label,-20} 内置默认");
+            }
+        }
+        catch (Exception ex)
+        {
+            Check("图标加载", false, ex.Message);
+        }
+
+        // ---- 全局快捷键 ----
+        Section("全局快捷键");
+        try
+        {
+            var settings = App.Settings.Settings;
+            var app = App.Instance;
+            app.ApplyQuickCaptureHotKey();
+
+            sb.AppendLine($"  配置的组合键：{settings.QuickCaptureHotkey}（{(settings.QuickCaptureEnabled ? "已启用" : "已关闭")}）");
+
+            if (settings.QuickCaptureEnabled)
+            {
+                bool otherInstance = App.IsAnotherInstanceRunning();
+
+                if (otherInstance)
+                {
+                    // 自检允许在程序运行时执行，这时快捷键抢不到是必然的，
+                    // 不能当成故障报出去 —— 否则每次都会出现一条假警报。
+                    sb.AppendLine("  · 检测到另一个鲸记实例正在运行，快捷键归它持有（正常）");
+                    sb.AppendLine("    要看真实注册结果，请先退出正在运行的那个鲸记再跑自检。");
+                }
+                else
+                {
+                    Check("注册成功", app.HotKeys.HasAnyRegistration,
+                        app.HotKeyError ?? HotKeyService.Format(
+                            ParseMods(settings.QuickCaptureHotkey), ParseKey(settings.QuickCaptureHotkey)));
+                }
+
+                // 组合键解析的往返校验
+                var ok = HotKeyService.TryParse(settings.QuickCaptureHotkey, out var mods, out var vk);
+                Check("组合键可解析", ok, ok ? HotKeyService.Format(mods, vk) : "解析失败");
+            }
+            else
+            {
+                sb.AppendLine("  （已关闭，跳过）");
+            }
+        }
+        catch (Exception ex)
+        {
+            Check("快捷键注册", false, ex.Message);
+        }
+
+        // ---- 桌面快捷方式 ----
+        // 只在临时目录里试创建，**不动用户桌面上那个**。
+        // 早期版本直接打桌面，于是"从解压出来的副本跑一次自检"就把快捷方式改指到临时目录，
+        // 副本一删快捷方式就废了 —— 自检必须是无副作用的。
+        Section("桌面快捷方式");
+        try
+        {
+            var target = ShortcutService.ResolveLaunchTarget();
+            sb.AppendLine($"  启动目标：{target.Target}");
+            if (!string.IsNullOrEmpty(target.Arguments)) sb.AppendLine($"  启动参数：{target.Arguments}");
+            sb.AppendLine($"  工作目录：{target.WorkingDirectory}");
+            sb.AppendLine($"  桌面路径：{ShortcutService.DesktopDirectory}");
+
+            var desktopLink = ShortcutService.ShortcutPath;
+            if (File.Exists(desktopLink))
+            {
+                var pointsTo = ShortcutService.TryReadTarget(desktopLink);
+                sb.AppendLine($"  桌面上已有快捷方式，指向：{pointsTo ?? "(读不出来)"}");
+                if (!string.IsNullOrEmpty(pointsTo) && !File.Exists(pointsTo))
+                    sb.AppendLine("  ⚠ 它指向的文件不存在了，建议在设置页里重新创建一次");
+            }
+            else
+            {
+                sb.AppendLine("  桌面上还没有快捷方式（设置页或托盘菜单里可以创建）");
+            }
+
+            var probeDir = Path.Combine(AppPaths.LogDir, "shortcut-probe");
+            Directory.CreateDirectory(probeDir);
+            var probeLink = Path.Combine(probeDir, ShortcutService.ShortcutName);
+
+            var created = ShortcutService.TryCreateAt(probeLink, out var message);
+            Check("能创建快捷方式（在临时目录里验证，不动桌面）", created, message);
+            Check("创建出来的文件存在", File.Exists(probeLink), probeLink);
+
+            var readBack = ShortcutService.TryReadTarget(probeLink);
+            Check("能读回它的启动目标", !string.IsNullOrEmpty(readBack), readBack ?? "读不出来");
+            Check("启动目标就是当前运行的 exe",
+                !string.IsNullOrEmpty(readBack) &&
+                string.Equals(readBack, Environment.ProcessPath, StringComparison.OrdinalIgnoreCase),
+                $"{readBack} / 当前 {Environment.ProcessPath}");
+
+            try { File.Delete(probeLink); Directory.Delete(probeDir, true); }
+            catch { /* 删不掉不影响结论 */ }
+        }
+        catch (Exception ex)
+        {
+            Check("创建快捷方式", false, ex.Message);
+        }
+
+        // ---- 开机自启 ----
+        Section("开机自启");
+        try
+        {
+            var registered = App.AutoStart.IsEnabled();
+            Check("注册表状态与设置一致", registered == App.Settings.Settings.StartWithWindows,
+                registered ? "已在注册表中" : "未注册");
+        }
+        catch (Exception ex)
+        {
+            Check("读取开机自启状态", false, ex.Message);
+        }
+
+        // ---- 日报 / 周报 ----
+        Section("日报与周报");
+        try
+        {
+            var today = DateTime.Today;
+            var daily = ReportService.BuildDaily(App.Store.Book, today);
+            Check("日报可生成", daily.Length > 0, $"{daily.Length} 字符");
+            sb.AppendLine();
+            sb.AppendLine("  ── 今日日报前几行 ──");
+            foreach (var line in daily.Split('\n').Take(6))
+                sb.AppendLine("  " + line.TrimEnd());
+
+            var weekly = ReportService.BuildWeekly(App.Store.Book, today);
+            Check("周报可生成", weekly.Length > 0,
+                $"{weekly.Length} 字符，本周从 {ReportService.WeekStart(today):yyyy-MM-dd}（{ReportService.WeekdayText(ReportService.WeekStart(today))}）起");
+
+            var wrote = ReportService.TryWriteDaily(App.Store.Book, today, out var file, out _);
+            Check("日报可落盘", wrote, file);
+        }
+        catch (Exception ex)
+        {
+            Check("生成报告", false, ex.Message);
+        }
+
+        // ---- 窗口创建 ----
+        // WPF 最容易踩的坑都在这里：资源键写错、把画刷当样式用、事件在解析阶段
+        // 就被触发…… 这些问题编译期一个都不报。所以自检把每个窗口真的创建并显示一次。
+        Section("窗口创建");
+        CheckFn windowProbe = (n, ok, d) => Check(n, ok, d);
+        ProbeWindow(sb, windowProbe, "主面板", () => new MainWindow());
+        ProbeWindow(sb, windowProbe, "桌面小鲸鱼", () => new FloatingWindow(), parkFloating: true);
+        ProbeWindow(sb, windowProbe, "快速记录", () => new QuickCaptureWindow());
+        ProbeWindow(sb, windowProbe, "日报 / 周报", () =>
+        {
+            var w = new ReportWindow();
+            w.Load("自检样张", "（不会真的显示）",
+                "# 样例\n\n这是自检生成的样张，用来确认报告窗能正常渲染。", null, "自检");
+            return w;
+        });
+        ProbeWindow(sb, windowProbe, "托盘菜单", () =>
+        {
+            var w = new TrayMenuWindow();
+            w.AddItem("自检项", () => { });
+            return w;
+        });
+
+        // ---- 页签互斥 ----
+        // 三个页面是叠在同一个 Grid 单元格里的，只要有第二页被设成 Visible 就会完全重叠。
+        // 这里按 ToggleButton 的真实行为（先翻转 IsChecked 再抛 Click）模拟点击，
+        // 逐个页签验证"永远只有一页可见"。
+        Section("页签互斥");
+        ProbeNavExclusivity(Check);
+
+        // ---- 文件筛选 ----
+        // 和页签同一类 bug：筛选状态读的是「另一个」胶囊的 IsChecked，于是点
+        // 「只看当天」时状态不翻转、界面毫无反应。这里逐个路径模拟点击。
+        Section("文件筛选");
+        ProbeFileFilter(Check);
+
+        // ---- 日期分组 ----
+        // 分组顺序取决于记录在集合里的出现顺序：排序写错的话栏头次序会乱，
+        // 但每一栏自己看上去都是"正常"的。所以断言数量、次序和条数总和。
+        Section("文件日期分组");
+        ProbeFileDateGrouping(Check);
+
+        // ---- 今日记录页的归档文件 ----
+        // 需求就是两条：样式和文件归档页一致、多条堆叠时不重叠。
+        // 两条都能断言：模板对象是不是同一个、卡片矩形有没有交叠。
+        Section("今日记录里的归档文件");
+        ProbeDayFileList(Check);
+
+        // ---- 滑杆 ----
+        // "滑块拖不动"这类问题编译期完全没有痕迹，而且界面上看不出是模板的哪一部分断了。
+        // 这里直接把 Thumb 的拖拽事件抛出去，看 Slider 的值会不会跟着变。
+        Section("滑杆");
+        ProbeSliders(Check);
+
+        // ---- 悬浮窗缩放 ----
+        // 拖动滑杆最终要落到"小鲸鱼跟着变大变小且不被裁"。窗口尺寸变了但内容没跟着缩放时，
+        // 界面上只是"有点挤"，量一下内容底边和窗口底边才知道是真被裁了。
+        Section("悬浮窗缩放");
+        ProbeFloatingScale(Check);
+
+        // ---- 月历面板 ----
+        // 网格偏移、42 格、跨月边界这类算错的话，日历"看着正常"但日期整体错位，
+        // 肉眼很难发现。这里把几何和事件都断言一遍。
+        Section("月历面板");
+        ProbeMonthCalendar(Check);
+        ProbeJumpParser(Check);
+
+        // ---- 数据统计 ----
+        Section("数据统计");
+        try
+        {
+            var book = App.Store.Book;
+            sb.AppendLine($"  有记录的天数：{book.Days.Count}");
+            sb.AppendLine($"  记录条目总数：{book.Days.Sum(d => d.Entries.Count)}");
+            sb.AppendLine($"  归档文件总数：{book.Files.Count}");
+            var missing = book.Files.Count(f => f.IsMissing);
+            if (missing > 0) sb.AppendLine($"  其中已不在原位置：{missing}");
+        }
+        catch (Exception ex)
+        {
+            Check("统计数据", false, ex.Message);
+        }
+
+        sb.AppendLine();
+        sb.AppendLine(new string('-', 60));
+        sb.AppendLine(failures == 0 ? "结论：全部通过" : $"结论：{failures} 项未通过");
+
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// 模拟点击三个页签，验证任意时刻都只有一页可见。
+    ///
+    /// 曾经真实出过的 bug：页面可见性各读各的 ToggleButton.IsChecked，
+    /// 而 ToggleButton 之间不互斥 —— 点「文件归档」后「今日记录」仍是勾选状态，
+    /// 两页同时 Visible，而三个页面叠在同一个 Grid 单元格里，表现就是内容完全重叠。
+    /// </summary>
+    private static void ProbeNavExclusivity(CheckFn check)
+    {
+        MainWindow? window = null;
+        try
+        {
+            window = new MainWindow
+            {
+                WindowStartupLocation = WindowStartupLocation.Manual,
+                ShowInTaskbar = false,
+                Left = -32000,
+                Top = -32000,
+            };
+            window.Show();
+            window.UpdateLayout();
+
+            var notes = window.FindName("NavNotes") as ToggleButton;
+            var files = window.FindName("NavFiles") as ToggleButton;
+            var settings = window.FindName("NavSettings") as ToggleButton;
+
+            if (notes == null || files == null || settings == null)
+            {
+                check("找到三个页签按钮", false, "FindName 返回空");
+                return;
+            }
+
+            // 还原 ToggleButton 的真实点击行为：先翻转 IsChecked，再抛出 Click
+            void ClickNav(ToggleButton button)
+            {
+                button.IsChecked = !(button.IsChecked ?? false);
+                button.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            }
+
+            ClickNav(files);
+            check("切到「文件归档」后只有一页可见", window.VisiblePageCount == 1, window.NavStateReport);
+            check("当前页确实是「文件归档」", window.ActivePage == NavPage.Files, window.ActivePage.ToString());
+
+            ClickNav(settings);
+            check("切到「设置」后只有一页可见", window.VisiblePageCount == 1, window.NavStateReport);
+            check("当前页确实是「设置」", window.ActivePage == NavPage.Settings, window.ActivePage.ToString());
+
+            ClickNav(notes);
+            check("切回「今日记录」后只有一页可见", window.VisiblePageCount == 1, window.NavStateReport);
+
+            // 再点一次当前页签：IsChecked 被反选掉，此时必须维持当前页，不能三页全隐藏
+            ClickNav(notes);
+            check("重复点当前页签不会出现空白面板",
+                window.VisiblePageCount == 1 && window.ActivePage == NavPage.Notes,
+                window.NavStateReport);
+        }
+        catch (Exception ex)
+        {
+            check("页签互斥", false, ex.Message);
+        }
+        finally
+        {
+            try { window?.Close(); }
+            catch { /* 关不掉不影响结论 */ }
+        }
+    }
+
+    /// <summary>
+    /// 文件归档页「只看当天 / 全部」的交互断言。
+    ///
+    /// 曾经真实出过的 bug：OnFileFilterClick 里写的是
+    /// <c>_showAllFiles = FileFilterAll.IsChecked == true;</c>
+    /// —— 读的是「另一个」胶囊的状态。点「只看当天」时 FileFilterAll 还留着
+    /// 上次的勾选，于是筛选条件根本没变，界面看上去就是"点了没反应"。
+    /// </summary>
+    private static void ProbeFileFilter(CheckFn check)
+    {
+        MainWindow? window = null;
+        try
+        {
+            window = new MainWindow
+            {
+                WindowStartupLocation = WindowStartupLocation.Manual,
+                ShowInTaskbar = false,
+                Left = -32000,
+                Top = -32000,
+            };
+            window.Show();
+            window.UpdateLayout();
+
+            var today = window.FindName("FileFilterToday") as ToggleButton;
+            var all = window.FindName("FileFilterAll") as ToggleButton;
+
+            if (today == null || all == null)
+            {
+                check("找到两个筛选胶囊", false, "FindName 返回空");
+                return;
+            }
+
+            // 还原 ToggleButton 的真实点击行为：先翻转 IsChecked，再抛出 Click
+            void ClickFilter(ToggleButton button)
+            {
+                button.IsChecked = !(button.IsChecked ?? false);
+                button.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            }
+
+            bool ExactlyOneChecked() => (today.IsChecked == true) ^ (all.IsChecked == true);
+
+            check("初始为「只看当天」",
+                !window.ShowAllFiles && today.IsChecked == true && all.IsChecked == false,
+                window.FileFilterStateReport);
+
+            // 该显示多少条，直接拿存储层算出来对照，顺带验证列表真的刷新了
+            var day = DateTime.Today.ToString("yyyy-MM-dd");
+            int expectToday = App.Store.QueryFiles(day).Count();
+            int expectAll = App.Store.QueryFiles(null).Count();
+            check("默认显示当天文件数",
+                window.VisibleFileCount == expectToday,
+                $"显示 {window.VisibleFileCount}，当天 {expectToday}，全部 {expectAll}");
+
+            ClickFilter(all);
+            check("点「全部」切到全部范围",
+                window.ShowAllFiles && all.IsChecked == true && today.IsChecked == false,
+                window.FileFilterStateReport);
+            check("切到全部后文件数跟着变",
+                window.VisibleFileCount == expectAll, $"显示 {window.VisibleFileCount}，全部 {expectAll}");
+
+            // ★ 报障路径：从「全部」点回「只看当天」
+            ClickFilter(today);
+            check("点「只看当天」能切回当天范围",
+                !window.ShowAllFiles && today.IsChecked == true && all.IsChecked == false,
+                window.FileFilterStateReport);
+            check("切回当天后文件数跟着变",
+                window.VisibleFileCount == expectToday, $"显示 {window.VisibleFileCount}，当天 {expectToday}");
+
+            // 再点一次当前胶囊：IsChecked 被反选掉，此时必须维持当前范围，不能两个都不选
+            ClickFilter(today);
+            check("重复点当前胶囊维持范围且恰好选中一个",
+                !window.ShowAllFiles && ExactlyOneChecked(), window.FileFilterStateReport);
+
+            // 来回多切几次，确认状态不会漂
+            for (int i = 0; i < 3; i++)
+            {
+                ClickFilter(all);
+                ClickFilter(today);
+            }
+            check("反复切换后仍是当天范围且只有一个被选中",
+                !window.ShowAllFiles && ExactlyOneChecked() && window.VisibleFileCount == expectToday,
+                window.FileFilterStateReport);
+
+            // 胶囊文案应当说明"当天"而不是"今天"——它跟着当前查看的日期走
+            check("胶囊文案为「只看当天」",
+                today.Content as string == "只看当天",
+                today.Content as string ?? "（空）");
+
+            // ---- 目标日期必须写在拖拽横幅上 ----
+            // 拖入的文件归属"当前查看的那一天"。这个规则猜不到：在看 9/7 时拖文件会被记到 9/7，
+            // 回到今天找不到，看上去就像"只看当天坏了"。所以横幅必须显式写出目标日期。
+            var past = DateTime.Today.AddDays(-3);
+            var bannerTitle = window.FindName("DropBannerTitle") as TextBlock;
+            var bannerHint = window.FindName("DropBannerHint") as TextBlock;
+
+            if (bannerTitle == null || bannerHint == null)
+            {
+                check("找到拖拽横幅", false, "FindName 返回空");
+                return;
+            }
+
+            check("今天视图的横幅说的是今天",
+                bannerTitle.Text.Contains("今天", StringComparison.Ordinal),
+                bannerTitle.Text);
+
+            window.GoToDate(past);
+            window.UpdateLayout();
+            check("查看历史日期时横幅写明目标日期",
+                bannerTitle.Text.Contains($"{past:M月d日}", StringComparison.Ordinal) &&
+                bannerHint.Text.Contains("不是今天", StringComparison.Ordinal),
+                $"{bannerTitle.Text} / {bannerHint.Text}");
+
+            check("切到历史日期后「只看当天」跟着变成那一天的",
+                !window.ShowAllFiles &&
+                window.VisibleFileCount == App.Store.QueryFiles(past.ToString("yyyy-MM-dd")).Count(),
+                $"范围报告：{window.FileFilterStateReport}，显示 {window.VisibleFileCount}");
+
+            window.GoToDate(DateTime.Today);
+            check("回到今天后横幅恢复为今天",
+                bannerTitle.Text.Contains("今天", StringComparison.Ordinal) &&
+                !bannerTitle.Text.Contains("记入", StringComparison.Ordinal),
+                bannerTitle.Text);
+        }
+        catch (Exception ex)
+        {
+            check("文件筛选", false, ex.Message);
+        }
+        finally
+        {
+            try { window?.Close(); }
+            catch { /* 关不掉不影响结论 */ }
+        }
+    }
+
+    /// <summary>
+    /// 把主面板的某一页渲染成 PNG。
+    ///
+    /// 自检能断言"有几个栏头""卡片有没有叠住"，但断言不了"看起来对不对"—— 文字被裁掉、
+    /// 颜色在某个主题下糊掉、对齐歪了，这些都只能靠眼睛。渲染用离屏窗口，不会弹到用户面前。
+    /// </summary>
+    public static string WritePageShot(string path, NavPage page)
+    {
+        MainWindow? window = null;
+        try
+        {
+            window = new MainWindow
+            {
+                WindowStartupLocation = WindowStartupLocation.Manual,
+                ShowInTaskbar = false,
+                Left = -32000,
+                Top = -32000,
+            };
+
+            window.Show();
+            window.SwitchTo(page);
+            if (page == NavPage.Files) window.SetFileFilter(true);   // 归档页用「全部」，能看到跨天分组
+            window.UpdateLayout();
+
+            int w = Math.Max(1, (int)Math.Ceiling(window.ActualWidth));
+            int h = Math.Max(1, (int)Math.Ceiling(window.ActualHeight));
+
+            var bitmap = new System.Windows.Media.Imaging.RenderTargetBitmap(
+                w, h, 96, 96, System.Windows.Media.PixelFormats.Pbgra32);
+            bitmap.Render(window);
+
+            var encoder = new System.Windows.Media.Imaging.PngBitmapEncoder();
+            encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(bitmap));
+
+            var dir = Path.GetDirectoryName(path);
+            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+
+            using var fs = File.Create(path);
+            encoder.Save(fs);
+            return path;
+        }
+        finally
+        {
+            try { window?.Close(); }
+            catch { /* 关不掉不影响截图 */ }
+        }
+    }
+
+    /// <summary>
+    /// 设置页两个滑杆能不能真的拖。
+    ///
+    /// Slider 的拖动链路是 Thumb.DragDelta → Slider 按鼠标在 Track 上的位置换算 Value。
+    /// 只要其中一环断了（Track 宽度为 0、Thumb 被别的元素盖住、模板里没有 PART_Track），
+    /// 表现都是"拖动没反应"，而从界面上完全看不出是哪一环。所以这里逐环断言。
+    /// </summary>
+    private static void ProbeSliders(CheckFn check)
+    {
+        MainWindow? window = null;
+        try
+        {
+            window = new MainWindow
+            {
+                WindowStartupLocation = WindowStartupLocation.Manual,
+                ShowInTaskbar = false,
+                Left = -32000,
+                Top = -32000,
+            };
+            window.Show();
+            window.SwitchTo(NavPage.Settings);   // Collapsed 时不会走布局，量不到尺寸
+            window.UpdateLayout();
+
+            foreach (var name in new[] { "ScaleSlider", "OpacitySlider" })
+            {
+                if (window.FindName(name) is not Slider slider)
+                {
+                    check($"找到 {name}", false, "FindName 返回空");
+                    continue;
+                }
+
+                bool isScale = ReferenceEquals(slider, window.FindName("ScaleSlider"));
+
+                check($"{name} 可交互",
+                    slider.IsEnabled && slider.IsHitTestVisible && slider.ActualWidth > 0,
+                    $"IsEnabled={slider.IsEnabled} 可见={slider.IsHitTestVisible} 宽={slider.ActualWidth:0}");
+
+                // 滑杆范围和设置校验必须是一组常量：两边各写一份的话，
+                // 手改过 settings.json 就会出现"滑杆显示一个数、实际用另一个数"
+                double expectMin = isScale ? AppSettings.MinFloatingScale : AppSettings.MinFloatingOpacity;
+                double expectMax = isScale ? AppSettings.MaxFloatingScale : AppSettings.MaxFloatingOpacity;
+                check($"{name} 的取值范围和设置校验一致",
+                    Math.Abs(slider.Minimum - expectMin) < 1e-9 &&
+                    Math.Abs(slider.Maximum - expectMax) < 1e-9,
+                    $"滑杆 {slider.Minimum:0.##}–{slider.Maximum:0.##}，设置 {expectMin:0.##}–{expectMax:0.##}");
+
+                var track = Descendants(slider).OfType<Track>().FirstOrDefault();
+                check($"{name} 模板里有可用的 PART_Track",
+                    track != null && track.ActualWidth > 0 && track.ActualHeight > 0,
+                    track == null
+                        ? "可视树里找不到 Track"
+                        : $"Track {track.ActualWidth:0}×{track.ActualHeight:0}");
+
+                var thumb = Descendants(slider).OfType<Thumb>().FirstOrDefault();
+                check($"{name} 的拖动手柄有实际大小",
+                    thumb != null && thumb.ActualWidth > 0 && thumb.ActualHeight > 0,
+                    thumb == null
+                        ? "可视树里找不到 Thumb"
+                        : $"Thumb {thumb.ActualWidth:0}×{thumb.ActualHeight:0}");
+
+                if (thumb == null) continue;
+
+                // 命中测试：手柄中心最上层的应该就是手柄本身，被别的元素盖住就拖不动
+                var center = thumb.TranslatePoint(
+                    new Point(thumb.ActualWidth / 2, thumb.ActualHeight / 2), window);
+                var hit = window.InputHitTest(center) as DependencyObject;
+                bool hitIsThumb = hit != null &&
+                    (ReferenceEquals(hit, thumb) || IsDescendantOf(hit, thumb));
+                check($"{name} 的手柄没有被别的元素挡住",
+                    hitIsThumb,
+                    $"命中到 {hit?.GetType().Name ?? "（空）"}{(hit is FrameworkElement fe && !string.IsNullOrEmpty(fe.Name) ? $"({fe.Name})" : "")}");
+
+                // 真的抛一次 DragDelta，看值会不会跟着走 —— 这是拖动链路的实测
+                double before = slider.Value;
+                var label = window.FindName(isScale ? "ScaleText" : "OpacityText") as TextBlock;
+                string labelBefore = label?.Text ?? "";
+
+                double target = before < slider.Maximum - 0.01 ? slider.Maximum : slider.Minimum;
+                double direction = target > before ? 1 : -1;
+
+                thumb.RaiseEvent(new DragDeltaEventArgs(direction * 30, 0)
+                {
+                    RoutedEvent = Thumb.DragDeltaEvent,
+                });
+
+                check($"{name} 拖动后值会变",
+                    Math.Abs(slider.Value - before) > 1e-9,
+                    $"{before:0.###} → {slider.Value:0.###}");
+
+                // 值变了还不够：界面上那个数字必须跟着变，否则就是"拖得动但看着没反应"
+                check($"{name} 拖动后读数跟着更新",
+                    label != null && label.Text.Length > 0 && label.Text != labelBefore,
+                    $"「{labelBefore}」→「{label?.Text}」");
+
+                check($"{name} 拖动后 _syncing 守卫已释放",
+                    !window.IsSyncingGuardSet,
+                    window.IsSyncingGuardSet ? "守卫按着不放，后续所有设置改动都会被静默吞掉" : "已释放");
+
+                // 还原，别把拖动留下的值带给后面的自检
+                slider.Value = before;
+                check($"{name} 还原后读数回到原值",
+                    label == null || label.Text == labelBefore,
+                    $"值 {slider.Value:0.###}，读数「{label?.Text}」");
+            }
+        }
+        catch (Exception ex)
+        {
+            check("滑杆", false, ex.Message);
+        }
+        finally
+        {
+            // 模拟拖动会触发 700ms 的保存节流：如果它拖到自检结束之后才走到，
+            // 就会把探针的值写进用户配置。收尾先掐掉。
+            window?.CancelPendingSaves();
+
+            try { window?.Close(); }
+            catch { /* 关不掉不影响结论 */ }
+        }
+    }
+
+    /// <summary>child 是否在 ancestor 的子树里。</summary>
+    private static bool IsDescendantOf(DependencyObject child, DependencyObject ancestor)
+    {
+        var node = child;
+        while (node != null)
+        {
+            if (ReferenceEquals(node, ancestor)) return true;
+            node = System.Windows.Media.VisualTreeHelper.GetParent(node);
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// 悬浮窗的"大小"设置到底有没有落到画面上。
+    ///
+    /// 真实出过的问题：改的是窗口宽高，内容（鲸鱼 168px、状态条）却是固定尺寸 ——
+    /// 放大时窗口大了内容没大（一片空），缩小时内容撑不下就被裁。
+    /// 所以这里逐档断言：内容底边不能越过窗口底边，鲸鱼也要跟着缩放。
+    /// </summary>
+    private static void ProbeFloatingScale(CheckFn check)
+    {
+        FloatingWindow? window = null;
+        var settings = App.Settings.Settings;
+        // 探针内部先各自还原一份，方便同一次自检里的后续探针读到原值；
+        // 万一这里漏了哪个字段，RunReport 外面那层整体快照还会兜住（不会写进用户配置）。
+        double scaleBackup = settings.FloatingScale;
+        double opacityBackup = settings.FloatingOpacity;
+
+        try
+        {
+            // 必须先把"不用时收起"关掉：开着的话窗口一加载就把自己收成小胶囊，
+            // 后面量到的宽高全是收起态的（48px），和展开态的期望值对不上 ——
+            // 用默认设置（autoCollapse 默认 true）跑就会一片红。
+            settings.FloatingAutoCollapse = false;
+
+            // 探针窗口不能出现在用户桌面上：RestorePosition 是按设置里的位置摆放的，
+            // 构造函数里传的 -32000 会被它覆盖掉 —— 那样每次跑自检，用户的桌面上就
+            // 会闪一下悬浮窗。先把设置里的位置临时挪到屏幕外，跑完由外层快照还原。
+            settings.FloatingLeft = Offscreen;
+            settings.FloatingTop = Offscreen;
+
+            window = new FloatingWindow
+            {
+                WindowStartupLocation = WindowStartupLocation.Manual,
+                ShowInTaskbar = false,
+                ShowActivated = false,          // 不要抢用户当前的焦点窗口
+                BackgroundProbeMode = true,     // 别把窗口拉回屏幕内
+                Left = Offscreen,
+                Top = Offscreen,
+            };
+            window.Show();
+            window.UpdateLayout();
+
+            check("探针窗口落在屏幕外（不会闪到用户的桌面）",
+                window.Left <= Offscreen + 1 && window.Top <= Offscreen + 1,
+                $"窗口位置 ({window.Left:0.#}, {window.Top:0.#})");
+
+            var whaleImage = Descendants(window).OfType<Image>()
+                .FirstOrDefault(i => i.Name == "WhaleImage");
+
+            if (whaleImage == null)
+            {
+                check("找到鲸鱼图", false, "可视树里没有 WhaleImage");
+                return;
+            }
+
+            double? heightAt1 = null;
+
+            foreach (double scale in new[] { 0.7, 1.0, 1.6 })
+            {
+                window.ApplyScaleAndOpacity(scale, 1.0);
+                window.UpdateLayout();
+
+                var (whaleTop, contentBottom, windowHeight) = window.MeasureLayout();
+
+                check($"缩放 {scale:0.0} 时窗口尺寸跟着变",
+                    Math.Abs(window.Width - Math.Round(ExpandedW * scale)) < 1.5,
+                    $"窗口宽 {window.Width:0}，期望 {Math.Round(ExpandedW * scale):0}");
+
+                check($"缩放 {scale:0.0} 时内容不被裁切",
+                    contentBottom <= windowHeight + 0.5 && whaleTop >= -0.5,
+                    $"内容底边 {contentBottom:0.#} / 窗口高 {windowHeight:0.#}" +
+                    (contentBottom > windowHeight ? $"（超出 {contentBottom - windowHeight:0.#}px）" : ""));
+
+                if (Math.Abs(scale - 1.0) < 1e-9)
+                {
+                    heightAt1 = RenderedHeight(whaleImage, window);
+                }
+                else if (heightAt1.HasValue)
+                {
+                    double rendered = RenderedHeight(whaleImage, window);
+                    double expected = heightAt1.Value * scale;
+                    check($"缩放 {scale:0.0} 时鲸鱼等比跟着变",
+                        Math.Abs(rendered - expected) < 1.5,
+                        $"鲸鱼渲染高 {rendered:0.#}，期望 {expected:0.#}");
+                }
+            }
+
+            // 透明度要落到窗口上
+            window.ApplyScaleAndOpacity(1.0, 0.55);
+            window.UpdateLayout();
+            check("透明度设置生效", Math.Abs(window.Opacity - 0.55) < 1e-6, $"实际 {window.Opacity:0.##}");
+
+            window.ApplyScaleAndOpacity(1.0, 1.0);
+            check("透明度可以调回 1.0", Math.Abs(window.Opacity - 1.0) < 1e-6, $"实际 {window.Opacity:0.##}");
+
+            // 拖动滑杆时的实时预览：要立刻看到变化，但不能顺手把设置写掉
+            window.ApplyScaleAndOpacity(1.0, 1.0);
+            window.UpdateLayout();
+            window.PreviewScaleAndOpacity(1.4, 0.8);
+            window.UpdateLayout();
+
+            check("拖动预览立刻改变窗口尺寸",
+                Math.Abs(window.Width - Math.Round(ExpandedW * 1.4)) < 1.5,
+                $"窗口宽 {window.Width:0}，期望 {Math.Round(ExpandedW * 1.4):0}");
+
+            check("拖动预览同时改透明度",
+                Math.Abs(window.Opacity - 0.8) < 1e-6, $"实际 {window.Opacity:0.##}");
+
+            check("拖动预览不写入设置（落盘仍由节流负责）",
+                Math.Abs(settings.FloatingScale - 1.0) < 1e-9 && Math.Abs(settings.FloatingOpacity - 1.0) < 1e-9,
+                $"设置里仍是 {settings.FloatingScale:0.##} / {settings.FloatingOpacity:0.##}");
+        }
+        catch (Exception ex)
+        {
+            check("悬浮窗缩放", false, ex.Message);
+        }
+        finally
+        {
+            settings.FloatingScale = scaleBackup;
+            settings.FloatingOpacity = opacityBackup;
+            try
+            {
+                window?.ApplyScaleAndOpacity(scaleBackup, opacityBackup);
+                window?.Close();
+            }
+            catch { /* 关不掉不影响结论 */ }
+        }
+    }
+
+    /// <summary>
+    /// 把悬浮窗在最小 / 默认 / 最大三档下渲染成一张 PNG，横向排开。
+    ///
+    /// 用离屏窗口渲染而不是抓屏：抓屏会受多显示器（可能有负坐标）和 DPI 影响，
+    /// 量出来的尺寸对不上窗口真实尺寸，反而误导。离屏渲染是确定性的。
+    /// </summary>
+    public static string WriteFloatingShot(string path)
+    {
+        // 同一个道理：截图要临时改缩放/不透明度和"自动收起"，跑完必须整体还原，
+        // 否则退出时 Save() 会把临时的 1.0 不透明度写进用户配置。
+        var snapshot = App.Settings.Snapshot();
+        try
+        {
+            return WriteFloatingShotCore(path);
+        }
+        finally
+        {
+            App.Settings.Restore(snapshot);
+        }
+    }
+
+    private static string WriteFloatingShotCore(string path)
+    {
+        var settings = App.Settings.Settings;
+        double autoCollapseBackup = settings.FloatingAutoCollapse ? 1 : 0;
+
+        var shots = new List<(System.Windows.Media.Imaging.BitmapSource Bmp, int W, int H)>();
+
+        try
+        {
+            // 截图要的是展开态，别让"不用时收起"把窗口缩成小胶囊
+            settings.FloatingAutoCollapse = false;
+
+            // 窗口一律摆到屏幕外：RestorePosition 会按设置里的位置摆放，不挪开的话
+            // 每次出图都会在用户桌面上闪三个悬浮窗。
+            settings.FloatingLeft = Offscreen;
+            settings.FloatingTop = Offscreen;
+
+            foreach (double scale in new[] { AppSettings.MinFloatingScale, 1.0, AppSettings.MaxFloatingScale })
+            {
+                var window = new FloatingWindow
+                {
+                    WindowStartupLocation = WindowStartupLocation.Manual,
+                    ShowInTaskbar = false,
+                    ShowActivated = false,          // 不要抢用户当前的焦点窗口
+                    BackgroundProbeMode = true,     // 别把窗口拉回屏幕内
+                    Left = Offscreen,
+                    Top = Offscreen,
+                };
+
+                try
+                {
+                    window.Show();
+                    window.ApplyScaleAndOpacity(scale, 1.0);
+                    window.UpdateLayout();
+
+                    int w = Math.Max(1, (int)Math.Ceiling(window.ActualWidth));
+                    int h = Math.Max(1, (int)Math.Ceiling(window.ActualHeight));
+
+                    var bmp = new System.Windows.Media.Imaging.RenderTargetBitmap(
+                        w, h, 96, 96, System.Windows.Media.PixelFormats.Pbgra32);
+                    bmp.Render(window);
+                    bmp.Freeze();
+
+                    shots.Add((bmp, w, h));
+                }
+                finally
+                {
+                    try { window.Close(); }
+                    catch { /* 关不掉不影响截图 */ }
+                }
+            }
+
+            const int gap = 18;
+            int totalW = shots.Sum(s => s.W) + gap * (shots.Count - 1);
+            int totalH = shots.Count == 0 ? 1 : shots.Max(s => s.H);
+
+            var visual = new System.Windows.Media.DrawingVisual();
+            using (var dc = visual.RenderOpen())
+            {
+                // 悬浮窗背景是透明的，垫一层窗口底色，否则看图的人分不清边界
+                var bg = Application.Current?.TryFindResource("WindowBackgroundBrush")
+                             as System.Windows.Media.Brush
+                         ?? System.Windows.Media.Brushes.Black;
+                dc.DrawRectangle(bg, null, new Rect(0, 0, totalW, totalH));
+
+                double x = 0;
+                foreach (var (bmp, w, h) in shots)
+                {
+                    dc.DrawImage(bmp, new Rect(x, 0, w, h));
+                    x += w + gap;
+                }
+            }
+
+            var composed = new System.Windows.Media.Imaging.RenderTargetBitmap(
+                totalW, totalH, 96, 96, System.Windows.Media.PixelFormats.Pbgra32);
+            composed.Render(visual);
+
+            var encoder = new System.Windows.Media.Imaging.PngBitmapEncoder();
+            encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(composed));
+
+            var dir = Path.GetDirectoryName(path);
+            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+
+            using var fs = File.Create(path);
+            encoder.Save(fs);
+            return path;
+        }
+        finally
+        {
+            // 只有"自动收起"要在这儿还原 —— 它影响的是这三张图拍得对不对；
+            // 缩放和不透明度（以及一切别的东西）由外面那层整体快照兜底。
+            settings.FloatingAutoCollapse = autoCollapseBackup == 1;
+        }
+    }
+
+    /// <summary>
+    /// 元素在窗口坐标里的实际渲染高度。
+    ///
+    /// 不能读 ActualHeight —— LayoutTransform 作用在元素外面，ActualHeight 仍然是变换前的
+    /// 布局尺寸（鲸鱼永远报 168），量不出"有没有跟着放大"。
+    /// </summary>
+    private static double RenderedHeight(FrameworkElement element, UIElement root)
+        => element.TranslatePoint(new Point(0, element.ActualHeight), root).Y
+         - element.TranslatePoint(new Point(0, 0), root).Y;
+
+    /// <summary>悬浮窗展开态的设计宽高，和 FloatingWindow 里的常量保持一致。</summary>
+    private const double ExpandedW = 236;
+    private const double ExpandedH = 296;
+
+    /// <summary>可视树里的所有后代。用来确认界面真的渲染出了分组栏头。</summary>
+    private static IEnumerable<DependencyObject> Descendants(DependencyObject? root)
+    {
+        if (root == null) yield break;
+
+        int count = System.Windows.Media.VisualTreeHelper.GetChildrenCount(root);
+        for (int i = 0; i < count; i++)
+        {
+            var child = System.Windows.Media.VisualTreeHelper.GetChild(root, i);
+            yield return child;
+            foreach (var grand in Descendants(child)) yield return grand;
+        }
+    }
+
+    /// <summary>
+    /// 一个 GroupItem 栏头里的文字。
+    ///
+    /// GroupItem 的默认模板是「上标题下条目」的两段式，所以第一个孩子是栏头、
+    /// 第二个孩子才是文件条目 —— 只取栏头那一支，免得把卡片里的文字也算进来。
+    /// </summary>
+    private static IReadOnlyList<TextBlock> HeaderTexts(GroupItem group)
+    {
+        if (System.Windows.Media.VisualTreeHelper.GetChildrenCount(group) == 0)
+            return Array.Empty<TextBlock>();
+
+        var templateRoot = System.Windows.Media.VisualTreeHelper.GetChild(group, 0);
+        if (System.Windows.Media.VisualTreeHelper.GetChildrenCount(templateRoot) == 0)
+            return Array.Empty<TextBlock>();
+
+        var header = System.Windows.Media.VisualTreeHelper.GetChild(templateRoot, 0);
+        return Descendants(header).OfType<TextBlock>().ToList();
+    }
+
+    /// <summary>屏幕外的坐标，用来摆只在后台量数字的探针窗口。</summary>
+    private const double Offscreen = -32000;
+
+    /// <summary>
+    /// 今日记录页里那段「归档的文件」。
+    ///
+    /// 需求本身就很适合断言，两句话对应两个硬性检查：
+    ///   "样式和文件归档内保持一致" → 两处列表必须是同一个模板对象
+    ///   "多条时堆叠不要重叠"       → 相邻卡片的矩形不能相交，还得留下间距
+    /// </summary>
+    private static void ProbeDayFileList(CheckFn check)
+    {
+        MainWindow? window = null;
+        try
+        {
+            window = new MainWindow
+            {
+                WindowStartupLocation = WindowStartupLocation.Manual,
+                ShowInTaskbar = false,
+                Left = -32000,
+                Top = -32000,
+            };
+            window.Show();
+            window.UpdateLayout();          // 今日记录是默认页，不必 SwitchTo
+
+            check("今日记录页和文件归档页共用同一个卡片模板",
+                window.ArchiveFileTemplate != null &&
+                ReferenceEquals(window.ArchiveFileTemplate, window.NotesFileTemplate),
+                $"归档页 {window.ArchiveFileTemplate?.GetType().Name ?? "(空)"} / " +
+                $"记录页 {window.NotesFileTemplate?.GetType().Name ?? "(空)"}");
+
+            int expected = App.Store.FilesOnDate(DateTime.Today).Count();
+
+            check("卡片条数和当天的归档条数一致",
+                window.DayFileCardCount == expected,
+                $"界面 {window.DayFileCardCount} 条，存储 {expected} 条");
+
+            check("当天没有文件时整段收起来",
+                (expected > 0) == window.DayFilesSectionVisible,
+                $"当天 {expected} 个文件，段落{(window.DayFilesSectionVisible ? "显示" : "隐藏")}");
+
+            var bounds = window.DayFileCardBounds;
+
+            if (expected == 0)
+            {
+                check("没有文件时不产生隐藏的卡片", bounds.Count == 0, $"{bounds.Count} 张");
+                return;
+            }
+
+            check("每张卡片都完成了布局",
+                bounds.Count == expected && bounds.All(b => b.Width > 50 && b.Height > 20),
+                $"{bounds.Count} 张：" + string.Join("、", bounds.Select(b => $"{b.Width:0}×{b.Height:0}")));
+
+            // 只有一张卡片时没有"相邻"可言。下面的 minGap 会停在初始的
+            // double.MaxValue，不显式跳过就会报出一个天文数字的假失败 ——
+            // 而用户真实数据里经常只有一两条文件。
+            if (bounds.Count < 2)
+            {
+                check("卡片不足两张，无需检查堆叠与间距", true, $"当天 {bounds.Count} 张卡片");
+                return;
+            }
+
+            // 堆叠：后一张必须整张落在前一张下面，既不能压住也不能贴着
+            string? problem = null;
+            double minGap = double.MaxValue;
+
+            for (int i = 1; i < bounds.Count; i++)
+            {
+                double gap = bounds[i].Top - bounds[i - 1].Bottom;
+                minGap = Math.Min(minGap, gap);
+
+                if (gap < -0.5)
+                {
+                    problem = $"第 {i} 张和第 {i + 1} 张重叠了 {-gap:0.#}px";
+                    break;
+                }
+            }
+
+            check("多条文件依次向下堆叠、互不重叠",
+                problem == null,
+                problem ?? $"{bounds.Count} 张卡片，相邻最小间隙 {minGap:0.#}px");
+
+            check("卡片之间留了下外边距（不会挤在一起）",
+                bounds.Count > 1 && minGap >= 0 && bounds.All(b => b.Height > 30),
+                $"最小间隙 {minGap:0.#}px，卡片高 {bounds.FirstOrDefault().Height:0.#}px");
+
+            // 这一段的标题必须跟着当前查看的日期走
+            var title = window.FindName("DayFilesTitle") as TextBlock;
+            check("标题写明是哪一天归档的",
+                title != null && title.Text.Contains("归档的文件", StringComparison.Ordinal),
+                title?.Text ?? "（找不到标题）");
+        }
+        catch (Exception ex)
+        {
+            check("今日记录里的归档文件", false, ex.Message);
+        }
+        finally
+        {
+            try { window?.Close(); }
+            catch { /* 关不掉不影响结论 */ }
+        }
+    }
+
+    /// <summary>
+    /// 「全部」视图按归档日期分组。
+    ///
+    /// 期望值刻意在断言里独立算一遍（而不是调用被测的 DateGrouping），
+    /// 这样"排序函数本身写错"也能被抓住，不会自证。
+    /// </summary>
+    private static void ProbeFileDateGrouping(CheckFn check)
+    {
+        MainWindow? window = null;
+        try
+        {
+            window = new MainWindow
+            {
+                WindowStartupLocation = WindowStartupLocation.Manual,
+                ShowInTaskbar = false,
+                Left = -32000,
+                Top = -32000,
+            };
+            window.Show();
+            window.SwitchTo(NavPage.Files);   // 页面 Collapsed 时不会生成条目容器
+            window.UpdateLayout();
+
+            // 只看当天：所有记录本来就是同一天，再加栏头是噪音
+            check("只看当天不加日期栏头", window.FileGroupCount == 0, window.FileGroupReport);
+
+            window.SetFileFilter(true);
+            window.UpdateLayout();
+
+            var all = App.Store.QueryFiles(null).ToList();
+
+            // 独立算一遍期望：日期键去重后倒序，没有日期的排最后
+            static string GroupKey(FileRecord f)
+                => string.IsNullOrEmpty(f.AddedDate) ? "" : f.AddedDate;
+
+            var expectOrder = all
+                .Select(GroupKey)
+                .Distinct(StringComparer.Ordinal)
+                .OrderByDescending(k => k, StringComparer.Ordinal)
+                .ToList();
+
+            var groups = window.FileGroups;
+
+            if (all.Count == 0)
+            {
+                check("没有文件时不产生空栏头", groups.Count == 0, window.FileGroupReport);
+            }
+            else
+            {
+                check("全部视图按归档日期分组",
+                    groups.Select(g => g.Key).SequenceEqual(expectOrder, StringComparer.Ordinal),
+                    $"{window.FileGroupReport}（预期 {string.Join(" → ", expectOrder.Select(k => k.Length == 0 ? "无日期" : k))}）");
+
+                check("各组条数之和等于文件总数",
+                    groups.Sum(g => g.Count) == all.Count,
+                    $"分组合计 {groups.Sum(g => g.Count)}，实际文件 {all.Count}");
+
+                check("每组的条数与该日期的文件数一致",
+                    groups.All(g => g.Count == all.Count(f => GroupKey(f) == g.Key)),
+                    window.FileGroupReport);
+
+                check("每个栏头都有可读文案",
+                    groups.All(g => DateGrouping.Label(g.Key).Contains('·') ||
+                                    DateGrouping.Label(g.Key) == "未标注日期"),
+                    string.Join(" | ", groups.Select(g => DateGrouping.Label(g.Key))));
+
+                // 光有分组对象不代表界面生成了栏头 —— GroupStyle 没生效就还是平铺。
+                // 数一数可视树里真实的 GroupItem。
+                var groupItems = Descendants(window.FindName("FileList") as DependencyObject)
+                    .OfType<GroupItem>().ToList();
+                check("界面上真的渲染出了栏头",
+                    groupItems.Count == groups.Count,
+                    $"可视树里 {groupItems.Count} 个栏头，分组对象 {groups.Count} 个");
+
+                // 有 GroupItem 也不代表文字看得见：模板写错、宽度塌掉、被裁切都会
+                // 让栏头变成一个空条。所以要求每个栏头的标题文字都有真实宽高。
+                var headers = groupItems.Select(HeaderTexts).ToList();
+                check("每个栏头都渲染出了有宽高的标题文字",
+                    headers.Count > 0 && headers.All(hs =>
+                        hs.Any(tb => tb.ActualWidth > 20 && tb.ActualHeight > 8)),
+                    string.Join(" | ", headers.Select(hs =>
+                        string.Join("+", hs.Select(tb => $"{tb.Text}[{tb.ActualWidth:0}×{tb.ActualHeight:0}]")))));
+
+                check("每个栏头都标注了文件数",
+                    headers.All(hs => hs.Any(tb => tb.Text.Contains("个文件", StringComparison.Ordinal))),
+                    string.Join(" | ", headers.Select(hs => string.Join("+", hs.Select(tb => tb.Text)))));
+            }
+
+            // 切回只看当天，栏头应当消失
+            window.SetFileFilter(false);
+            window.UpdateLayout();
+            check("切回只看当天后栏头消失", window.FileGroupCount == 0, window.FileGroupReport);
+        }
+        catch (Exception ex)
+        {
+            check("日期分组", false, ex.Message);
+        }
+        finally
+        {
+            try { window?.Close(); }
+            catch { /* 关不掉不影响结论 */ }
+        }
+    }
+
+    /// <summary>
+    /// 月历面板的几何与交互断言。
+    ///
+    /// 重点是网格起点：以周一为第一列时，2026-09-01 是周二，网格左上角必须是
+    /// 2026-08-31（周一）。这类偏移算错一位，整月日期就全部错位，而且界面看上去是"正常"的。
+    /// </summary>
+    private static void ProbeMonthCalendar(CheckFn check)
+    {
+        try
+        {
+            var today = DateTime.Today;
+            var month = new DateTime(2026, 9, 1);          // 2026-09-01 是周二
+            var marked = new[] { "2026-09-03", "2026-09-11" };
+
+            var panel = new MonthCalendarPanel();
+            panel.Show(month, new DateTime(2026, 9, 11), marked);
+
+            var dates = panel.VisibleDates;
+            check("固定 6 行 × 7 列 = 42 格", dates.Count == 42, $"{dates.Count} 格");
+            check("显示月份正确", panel.DisplayMonth == month, panel.DisplayMonth.ToString("yyyy-MM-dd"));
+
+            check("网格左上角是所在周的周一",
+                dates[0] == new DateTime(2026, 8, 31) && dates[0].DayOfWeek == DayOfWeek.Monday,
+                dates[0].ToString("yyyy-MM-dd dddd"));
+
+            check("42 天连续无重复",
+                dates.Select((d, i) => d == dates[0].AddDays(i)).All(x => x),
+                $"{dates[0]:MM-dd} → {dates[^1]:MM-dd}");
+
+            check("当月每一天各出现一次",
+                Enumerable.Range(1, 30).All(day => dates.Count(d => d.Month == 9 && d.Day == day) == 1),
+                "9 月 30 天");
+
+            check("有记录的日期被标记", panel.MarkedCount == 2, $"{panel.MarkedCount} 天");
+
+            // 翻月
+            panel.GoMonth(-1);
+            check("往前翻一个月", panel.DisplayMonth == new DateTime(2026, 8, 1),
+                panel.DisplayMonth.ToString("yyyy-MM-dd"));
+            check("翻月后网格仍从周一开始", panel.VisibleDates[0].DayOfWeek == DayOfWeek.Monday,
+                panel.VisibleDates[0].ToString("yyyy-MM-dd dddd"));
+
+            panel.GoMonth(1);
+            check("翻回原月份", panel.DisplayMonth == month, panel.DisplayMonth.ToString("yyyy-MM-dd"));
+
+            // 未来月份不允许翻：这里以面板所在月份为准，翻到"当前月"应禁用下月按钮
+            panel.Show(new DateTime(today.Year, today.Month, 1), today, null);
+            check("当前月不允许往后翻", !panel.CanGoNextMonth);
+            panel.GoMonth(-1);
+            check("历史月份允许往后翻", panel.CanGoNextMonth);
+
+            // 选中
+            DateTime? picked = null;
+            panel.DateChosen += d => picked = d;
+
+            panel.Show(month, new DateTime(2026, 9, 11), marked);
+            var ok = panel.Pick(new DateTime(2026, 9, 5));
+            check("选中历史日期成功", ok && picked == new DateTime(2026, 9, 5),
+                picked?.ToString("yyyy-MM-dd") ?? "未触发");
+            check("选中后面板选中态同步", panel.SelectedDate == new DateTime(2026, 9, 5),
+                panel.SelectedDate.ToString("yyyy-MM-dd"));
+
+            picked = null;
+            var futureOk = panel.Pick(today.AddDays(1));
+            check("未来日期不可选", !futureOk && picked == null);
+
+            // 空数据不应抛异常
+            panel.Show(month, month, null);
+            check("没有记录时也能正常渲染", panel.MarkedCount == 0 && panel.VisibleDates.Count == 42);
+        }
+        catch (Exception ex)
+        {
+            check("月历面板", false, ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// 「跳到」输入框的日期解析。
+    ///
+    /// 这里全是纯函数逻辑，断言起来最划算：跨年回退、闰年、无效日期、未来日期拒绝
+    /// 这些分支在界面上极难逐一试到。
+    /// </summary>
+    private static void ProbeJumpParser(CheckFn check)
+    {
+        try
+        {
+            var today = DateTime.Today;
+            var thisMonth = new DateTime(today.Year, today.Month, 1);
+
+            DateTime Ok(string input, DateTime display)
+            {
+                var ok = MonthCalendarPanel.TryParseJump(input, display, out var date, out var err);
+                check($"「{input}」解析成功", ok, ok ? date.ToString("yyyy-MM-dd") : err);
+                return date;
+            }
+
+            void Bad(string input, string expectedHint, DateTime? display = null)
+            {
+                var ok = MonthCalendarPanel.TryParseJump(input, display ?? thisMonth, out _, out var err);
+                check($"「{input}」被拒绝并给出提示", !ok && err.Contains(expectedHint), err.Length == 0 ? "（没给提示）" : err);
+            }
+
+            // 各种分隔符和写法都要认得
+            var target = today.AddDays(-5);
+            var sep = $"{target.Month}/{target.Day}";
+            check("斜杠写法", Ok(sep, thisMonth) == target.Date, sep);
+            check("横杠写法", Ok($"{target.Month}-{target.Day}", thisMonth) == target.Date);
+            check("点号写法", Ok($"{target.Month}.{target.Day}", thisMonth) == target.Date);
+            check("中文写法「9月5日」",
+                Ok($"{target.Month}月{target.Day}日", thisMonth) == target.Date);
+            check("中文写法带年份",
+                Ok($"{target.Year}年{target.Month}月{target.Day}日", thisMonth) == target.Date);
+            check("紧凑 4 位 MMdd",
+                Ok($"{target.Month:00}{target.Day:00}", thisMonth) == target.Date);
+            check("完整日期",
+                Ok($"{target.Year}-{target.Month:00}-{target.Day:00}", thisMonth) == target.Date);
+            check("紧凑 8 位 yyyyMMdd",
+                Ok($"{target.Year}{target.Month:00}{target.Day:00}", thisMonth) == target.Date);
+
+            // 关键词
+            check("「昨天」", Ok("昨天", thisMonth) == today.AddDays(-1));
+            check("「今天」", Ok("今天", thisMonth) == today);
+            check("「前天」", Ok("前天", thisMonth) == today.AddDays(-2));
+
+            // 只填日号 = 当前显示的那个月
+            var bare = today.Day > 1 ? today.Day - 1 : 1;
+            check("只填日号落在当前显示的月份",
+                Ok(bare.ToString(), thisMonth) == new DateTime(today.Year, today.Month, bare));
+            var lastMonth = thisMonth.AddMonths(-1);
+            check("换个显示月份，日号跟着走",
+                Ok("3", lastMonth) == new DateTime(lastMonth.Year, lastMonth.Month, 3));
+
+            // 跨年回退：这是最容易被用户误解的一条，必须有断言守着
+            var tomorrow = today.AddDays(1);
+            if (tomorrow.Year == today.Year)
+            {
+                var input = $"{tomorrow.Month}/{tomorrow.Day}";
+                var expected = new DateTime(today.Year - 1, tomorrow.Month, tomorrow.Day);
+                check($"「{input}」今年还没到 → 按去年同一天理解",
+                    Ok(input, thisMonth) == expected, expected.ToString("yyyy-MM-dd"));
+            }
+
+            var past = today.AddDays(-10);
+            if (past.Year == today.Year)
+            {
+                check($"「{past.Month}/{past.Day}」今年已过 → 就是今年",
+                    Ok($"{past.Month}/{past.Day}", thisMonth) == past.Date, past.ToString("yyyy-MM-dd"));
+            }
+
+            // 该拒绝的要拒绝
+            Bad("13/5", "13 月");
+            Bad("2/30", "这一天");
+            Bad("abc", "看不懂");
+            Bad("0/5", "0 月");
+
+            // 下个月 1 号一定是未来 → 只填日号时应当报"还没到"
+            var nextMonth = thisMonth.AddMonths(1);
+            Bad("1", "还没到", nextMonth);
+
+            // 空输入：返回 false 且不给报错（界面据此保持安静）
+            var emptyOk = MonthCalendarPanel.TryParseJump("   ", thisMonth, out _, out var emptyErr);
+            check("空输入不报错", !emptyOk && emptyErr.Length == 0);
+        }
+        catch (Exception ex)
+        {
+            check("日期跳转解析", false, ex.Message);
+        }
+    }
+
+    private static uint ParseMods(string combo)
+        => HotKeyService.TryParse(combo, out var mods, out _) ? mods : 0;
+
+    private static uint ParseKey(string combo)
+        => HotKeyService.TryParse(combo, out _, out var vk) ? vk : 0;
+
+    /// <summary>
+    /// 真的创建并显示一次窗口，然后关掉。
+    ///
+    /// 显示到屏幕外，避免自检时窗口在用户面前乱闪；悬浮窗比较特殊 ——
+    /// 它 Loaded 时会按设置恢复自己的位置，所以先把位置临时挪到屏幕外再还原。
+    /// </summary>
+    private static void ProbeWindow(
+        StringBuilder sb,
+        CheckFn check,
+        string name,
+        Func<Window> factory,
+        bool parkFloating = false)
+    {
+        double savedLeft = 0, savedTop = 0;
+        bool movedFloating = false;
+
+        try
+        {
+            if (parkFloating)
+            {
+                savedLeft = App.Settings.Settings.FloatingLeft;
+                savedTop = App.Settings.Settings.FloatingTop;
+                App.Settings.Settings.FloatingLeft = -32000;
+                App.Settings.Settings.FloatingTop = -32000;
+                movedFloating = true;
+            }
+
+            var window = factory();
+            window.WindowStartupLocation = WindowStartupLocation.Manual;
+            window.ShowInTaskbar = false;
+            window.Left = -32000;
+            window.Top = -32000;
+
+            window.Show();
+            window.UpdateLayout();
+            window.Dispatcher.Invoke(() => { }, System.Windows.Threading.DispatcherPriority.Loaded);
+            window.Close();
+
+            check($"{name}可正常创建", true);
+        }
+        catch (Exception ex)
+        {
+            check($"{name}可正常创建", false, ex.Message);
+            sb.AppendLine($"      {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            if (movedFloating)
+            {
+                App.Settings.Settings.FloatingLeft = savedLeft;
+                App.Settings.Settings.FloatingTop = savedTop;
+            }
+        }
+    }
+
+    /// <summary>跑自检并把结果写到 logs\selfcheck.log，返回日志路径，content 里是全文。</summary>
+    public static string WriteReport(out string content)
+    {
+        var path = Path.Combine(AppPaths.LogDir, "selfcheck.log");
+        content = RunReport();
+        try
+        {
+            AppPaths.EnsureCreated();
+            File.WriteAllText(path, content, new UTF8Encoding(true));
+        }
+        catch (Exception ex)
+        {
+            content = "自检本身失败：" + ex;
+            try
+            {
+                File.WriteAllText(path, content, new UTF8Encoding(true));
+            }
+            catch
+            {
+                // 连日志都写不了就只能返回路径给调用方提示
+            }
+        }
+        return path;
+    }
+}

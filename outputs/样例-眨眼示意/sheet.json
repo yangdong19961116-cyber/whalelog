@@ -1,0 +1,20 @@
+{
+  "name": "blink",
+  "version": 1,
+  "type": "sheet",
+  "sheet": "sheet.png",
+  "frameWidth": 720,
+  "frameHeight": 720,
+  "cols": 4,
+  "rows": 1,
+  "count": 4,
+  "fps": 12,
+  "loop": false,
+  "anchor": {
+    "x": 360,
+    "y": 660
+  },
+  "characterHeight": 600,
+  "returnTo": "base",
+  "sound": ""
+}

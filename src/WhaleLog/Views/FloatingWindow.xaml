@@ -1,0 +1,143 @@
+<Window x:Class="WhaleLog.Views.FloatingWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:v="clr-namespace:WhaleLog.Views"
+        Title="鲸记小鲸鱼"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        ShowInTaskbar="False"
+        Topmost="True"
+        ResizeMode="NoResize"
+        WindowStartupLocation="Manual"
+        SnapsToDevicePixels="True"
+        FontFamily="Microsoft YaHei UI, Segoe UI, sans-serif"
+        Width="236" Height="296">
+
+    <Grid x:Name="RootGrid" Background="Transparent">
+
+        <!-- ===================== 展开态 ===================== -->
+        <Grid x:Name="ExpandedRoot">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <!-- 气泡：提醒时淡入，几秒后自动淡出 -->
+            <Border x:Name="Bubble"
+                    Grid.Row="0"
+                    VerticalAlignment="Bottom"
+                    HorizontalAlignment="Center"
+                    MaxWidth="228"
+                    Margin="4,0,4,8"
+                    Padding="11,9"
+                    CornerRadius="11"
+                    Background="{DynamicResource FloatingBackgroundBrush}"
+                    BorderBrush="{DynamicResource FloatingBorderBrush}"
+                    BorderThickness="1"
+                    Opacity="0"
+                    IsHitTestVisible="False">
+                <StackPanel>
+                    <TextBlock x:Name="BubbleTitle"
+                               FontSize="12.5"
+                               FontWeight="Medium"
+                               Foreground="{DynamicResource FloatingTextBrush}"
+                               TextWrapping="Wrap" />
+                    <TextBlock x:Name="BubbleBody"
+                               FontSize="12"
+                               Margin="0,3,0,0"
+                               LineHeight="17"
+                               Foreground="{DynamicResource FloatingSubTextBrush}"
+                               TextWrapping="Wrap" />
+                </StackPanel>
+            </Border>
+
+            <!-- 鲸鱼娘本体 -->
+            <Grid Grid.Row="1" x:Name="WhaleHitArea" Background="Transparent">
+                <Image x:Name="WhaleImage"
+                       Source="{v:AssetImage whale}"
+                       Stretch="Uniform"
+                       Height="168"
+                       HorizontalAlignment="Center"
+                       RenderOptions.BitmapScalingMode="HighQuality" />
+
+                <!-- 未收尾条目数角标 -->
+                <Border x:Name="CountBadge"
+                        HorizontalAlignment="Right"
+                        VerticalAlignment="Top"
+                        Margin="0,10,26,0"
+                        MinWidth="24"
+                        Height="24"
+                        CornerRadius="12"
+                        Padding="6,0"
+                        Background="{DynamicResource AccentBrush}">
+                    <TextBlock x:Name="CountBadgeText"
+                               VerticalAlignment="Center"
+                               HorizontalAlignment="Center"
+                               FontSize="12"
+                               FontWeight="Medium"
+                               Foreground="{DynamicResource AccentForegroundBrush}" />
+                </Border>
+            </Grid>
+
+            <!-- 状态条 -->
+            <Border x:Name="StatusBar"
+                    Grid.Row="2"
+                    Margin="6,4,6,6"
+                    Padding="10,7"
+                    CornerRadius="10"
+                    Background="{DynamicResource FloatingBackgroundBrush}"
+                    BorderBrush="{DynamicResource FloatingBorderBrush}"
+                    BorderThickness="1">
+                <StackPanel>
+                    <TextBlock x:Name="TodayText"
+                               FontSize="12"
+                               FontWeight="Medium"
+                               Foreground="{DynamicResource FloatingTextBrush}"
+                               TextTrimming="CharacterEllipsis" />
+                    <TextBlock x:Name="CountdownText"
+                               FontSize="11.5"
+                               Margin="0,2,0,0"
+                               Foreground="{DynamicResource FloatingSubTextBrush}"
+                               TextTrimming="CharacterEllipsis" />
+                </StackPanel>
+            </Border>
+        </Grid>
+
+        <!-- ===================== 收起态（贴边小胶囊） ===================== -->
+        <Border x:Name="CollapsedRoot"
+                Width="60" Height="60"
+                CornerRadius="30"
+                Visibility="Collapsed"
+                Background="{DynamicResource FloatingBackgroundBrush}"
+                BorderBrush="{DynamicResource FloatingBorderBrush}"
+                BorderThickness="1">
+            <Grid>
+                <Image x:Name="HeadImage"
+                       Source="{v:AssetImage whale-head}"
+                       Width="46" Height="46"
+                       Stretch="Uniform"
+                       HorizontalAlignment="Center"
+                       VerticalAlignment="Center"
+                       RenderOptions.BitmapScalingMode="HighQuality" />
+                <Border x:Name="CollapsedBadge"
+                        HorizontalAlignment="Right"
+                        VerticalAlignment="Top"
+                        Margin="0,2,2,0"
+                        MinWidth="19"
+                        Height="19"
+                        CornerRadius="9.5"
+                        Padding="5,0"
+                        Background="{DynamicResource AccentBrush}">
+                    <TextBlock x:Name="CollapsedBadgeText"
+                               VerticalAlignment="Center"
+                               HorizontalAlignment="Center"
+                               FontSize="10.5"
+                               FontWeight="Medium"
+                               Foreground="{DynamicResource AccentForegroundBrush}" />
+                </Border>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>

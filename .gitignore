@@ -1,0 +1,18 @@
+bin/
+obj/
+*.user
+*.suo
+.vs/
+.idea/
+.vscode/
+TestResults/
+*.log
+*.tmp
+Publish/
+publish/
+build/portable/
+
+# 探针/自检留下的临时目录（数据和素材都要隔离，绝不碰用户的）
+.tmp-*/
+tmp/
+

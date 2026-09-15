@@ -1,0 +1,108 @@
+<UserControl x:Class="WhaleLog.Views.MonthCalendarPanel"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Width="288"
+             FontFamily="Microsoft YaHei UI, Segoe UI, sans-serif">
+
+    <UserControl.Resources>
+        <!-- 日期格：无边框、圆角，靠 Background / BorderBrush 表达选中与今天 -->
+        <Style x:Key="DayCell" TargetType="Button">
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="9">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource HoverBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.22" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="MonthNavButton" TargetType="Button" BasedOn="{StaticResource GhostButton}">
+            <Setter Property="Width" Value="26" />
+            <Setter Property="Height" Value="26" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="FontSize" Value="14" />
+        </Style>
+    </UserControl.Resources>
+
+    <Border Background="{DynamicResource SurfaceBrush}"
+            BorderBrush="{DynamicResource BorderStrongBrush}"
+            BorderThickness="1"
+            CornerRadius="12"
+            Padding="12,11"
+            Margin="10">
+        <Border.Effect>
+            <DropShadowEffect BlurRadius="18" ShadowDepth="2" Opacity="0.32" Color="#000000" />
+        </Border.Effect>
+
+        <StackPanel>
+            <!-- 月份头 -->
+            <Grid>
+                <StackPanel Orientation="Horizontal">
+                    <Button x:Name="PrevMonthButton" Content="‹" Style="{StaticResource MonthNavButton}"
+                            Click="OnPrevMonthClick" />
+                    <TextBlock x:Name="MonthText" FontSize="13" FontWeight="Medium"
+                               MinWidth="96" TextAlignment="Center"
+                               VerticalAlignment="Center" Margin="4,0" />
+                    <Button x:Name="NextMonthButton" Content="›" Style="{StaticResource MonthNavButton}"
+                            Click="OnNextMonthClick" />
+                </StackPanel>
+
+                <Button Content="今天" Style="{StaticResource TinyGhostButton}"
+                        HorizontalAlignment="Right" VerticalAlignment="Center"
+                        Click="OnTodayClick" />
+            </Grid>
+
+            <!-- 星期表头 -->
+            <UniformGrid x:Name="WeekHeader" Columns="7" Margin="0,10,0,2" />
+
+            <!-- 日期格：固定 6 行，高度稳定，翻月时不会跳 -->
+            <UniformGrid x:Name="DayGrid" Columns="7" />
+
+            <!-- 快速跳转：知道是哪天就直接敲 -->
+            <Grid Margin="2,10,2,0">
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock Text="跳到" FontSize="11.5" VerticalAlignment="Center"
+                               Foreground="{DynamicResource TextMutedBrush}" />
+                    <TextBox x:Name="JumpInput" Width="104" Margin="6,0,0,0"
+                             Style="{StaticResource FlatTextBox}"
+                             Padding="7,3" FontSize="12"
+                             TextChanged="OnJumpTextChanged"
+                             PreviewKeyDown="OnJumpKeyDown"
+                             ToolTip="支持：9/23　0923　2026-09-23　9月23日　昨天　或只填日号（当月）" />
+                </StackPanel>
+                <TextBlock x:Name="JumpHint" HorizontalAlignment="Right" VerticalAlignment="Center"
+                           FontSize="11" MaxWidth="126" TextTrimming="CharacterEllipsis"
+                           Foreground="{DynamicResource TextMutedBrush}" />
+            </Grid>
+
+            <!-- 图例与统计 -->
+            <Grid Margin="2,8,2,0">
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <Border Width="5" Height="5" CornerRadius="2.5" VerticalAlignment="Center"
+                            Background="{DynamicResource AccentBrush}" />
+                    <TextBlock Text="有记录的日期" FontSize="11" Margin="6,0,0,0"
+                               Foreground="{DynamicResource TextMutedBrush}" />
+                </StackPanel>
+                <TextBlock x:Name="StatsText" HorizontalAlignment="Right" VerticalAlignment="Center"
+                           FontSize="11" Foreground="{DynamicResource TextMutedBrush}" />
+            </Grid>
+        </StackPanel>
+    </Border>
+</UserControl>

@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>WhaleLog.SelfTest</RootNamespace>
+    <AssemblyName>WhaleLog.SelfTest</AssemblyName>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <NoWarn>$(NoWarn);CS8618</NoWarn>
+  </PropertyGroup>
+
+  <!--
+    直接编译主程序里与界面无关的那部分源码，不复制一份。
+    这样测的就是真正发货的代码，而不是"看起来一样"的副本。
+    刻意不引 WPF 相关文件，让这个测试项目保持纯 net8.0 控制台。
+  -->
+  <ItemGroup>
+    <Compile Include="Program.cs" />
+    <Compile Include="..\..\src\WhaleLog\Models\*.cs" />
+    <Compile Include="..\..\src\WhaleLog\Services\AppPaths.cs" />
+    <Compile Include="..\..\src\WhaleLog\Services\CrashLog.cs" />
+    <Compile Include="..\..\src\WhaleLog\Services\SettingsService.cs" />
+    <Compile Include="..\..\src\WhaleLog\Services\LogBookStore.cs" />
+    <Compile Include="..\..\src\WhaleLog\Services\ClassifyService.cs" />
+    <Compile Include="..\..\src\WhaleLog\Services\VersionService.cs" />
+    <Compile Include="..\..\src\WhaleLog\Services\FileIntakeService.cs" />
+    <Compile Include="..\..\src\WhaleLog\Services\ReportService.cs" />
+    <Compile Include="..\..\src\WhaleLog\Services\DateGrouping.cs" />
+    <Compile Include="..\..\src\WhaleLog\Services\AssetCatalog.cs" />
+    <Compile Include="..\..\src\WhaleLog\Services\CommandLine.cs" />
+  </ItemGroup>
+
+</Project>

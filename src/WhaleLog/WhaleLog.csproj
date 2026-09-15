@@ -1,0 +1,55 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <!-- 不带 OS 版本号的 TFM：本项目只用 WPF / WinForms / 注册表 / System.Drawing，
+         不碰任何 WinRT 投影 API，所以不需要引 Microsoft.Windows.SDK.NET.Ref。
+         少一个还原依赖，离线环境也更容易构建。 -->
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <RootNamespace>WhaleLog</RootNamespace>
+    <AssemblyName>WhaleLog</AssemblyName>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Resources\Assets\whalelog.ico</ApplicationIcon>
+
+    <AssemblyTitle>WhaleLog 鲸记</AssemblyTitle>
+    <Product>WhaleLog</Product>
+    <Description>每日工作记录与文件归档台</Description>
+    <Version>1.1.0</Version>
+    <Authors>WhaleLog</Authors>
+    <Copyright>MIT</Copyright>
+    <NeutralLanguage>zh-CN</NeutralLanguage>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+
+    <!-- WFAC010：WinForms 分析器建议用 ApplicationHighDpiMode 代替清单里的 DPI 声明。
+         但本项目主体是 WPF，per-monitor v2 的声明必须留在 app.manifest 里
+         （托盘图标和悬浮窗都依赖它），所以这里显式抑制。 -->
+    <NoWarn>$(NoWarn);WFAC010</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- UseWindowsForms 会隐式 using 整个 System.Windows.Forms / System.Drawing，
+         导致 Application、Point、MouseEventArgs、DragEventArgs、IDataObject 这些名字
+         和 WPF 的同名类型全面冲突。这里把它们去掉，需要的地方各自显式 using。 -->
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Resource Include="Resources\Assets\DSniang1.png" />
+    <Resource Include="Resources\Assets\whale-head.png" />
+    <Resource Include="Resources\Assets\whalelog.ico" />
+    <Resource Include="Resources\Assets\whalelog-256.png" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="app.manifest">
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+</Project>

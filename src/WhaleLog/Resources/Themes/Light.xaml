@@ -1,0 +1,39 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- 强调色取自鲸鱼娘本体的蓝色（#546AAC 附近），保证图标和界面是一套配色 -->
+    <SolidColorBrush x:Key="WindowBackgroundBrush" Color="#FFFFFF" />
+    <SolidColorBrush x:Key="SurfaceBrush" Color="#F7F8FA" />
+    <SolidColorBrush x:Key="SurfaceAltBrush" Color="#EEF0F4" />
+    <SolidColorBrush x:Key="ChipBrush" Color="#EFF1F5" />
+    <SolidColorBrush x:Key="HoverBrush" Color="#EDF0F6" />
+    <SolidColorBrush x:Key="SelectionBrush" Color="#E3E8F6" />
+
+    <SolidColorBrush x:Key="BorderSubtleBrush" Color="#E2E5EA" />
+    <SolidColorBrush x:Key="BorderStrongBrush" Color="#C4CAD4" />
+
+    <SolidColorBrush x:Key="TextPrimaryBrush" Color="#1B1D22" />
+    <SolidColorBrush x:Key="TextSecondaryBrush" Color="#5A616E" />
+    <SolidColorBrush x:Key="TextMutedBrush" Color="#8A919E" />
+
+    <SolidColorBrush x:Key="AccentBrush" Color="#546AAC" />
+    <SolidColorBrush x:Key="AccentForegroundBrush" Color="#FFFFFF" />
+    <SolidColorBrush x:Key="AccentSoftBrush" Color="#E8ECF7" />
+
+    <SolidColorBrush x:Key="SuccessBrush" Color="#3F8F5F" />
+    <SolidColorBrush x:Key="SuccessSoftBrush" Color="#E7F2EA" />
+    <SolidColorBrush x:Key="WarningBrush" Color="#C07C22" />
+    <SolidColorBrush x:Key="WarningSoftBrush" Color="#FAF0DF" />
+    <SolidColorBrush x:Key="DangerBrush" Color="#C6474A" />
+    <SolidColorBrush x:Key="DangerSoftBrush" Color="#FAEAEA" />
+
+    <SolidColorBrush x:Key="InputBackgroundBrush" Color="#FFFFFF" />
+    <SolidColorBrush x:Key="ScrollThumbBrush" Color="#CFD4DD" />
+
+    <SolidColorBrush x:Key="FloatingBackgroundBrush" Color="#F4FFFFFF" />
+    <SolidColorBrush x:Key="FloatingBorderBrush" Color="#E2E5EA" />
+    <SolidColorBrush x:Key="FloatingTextBrush" Color="#1B1D22" />
+    <SolidColorBrush x:Key="FloatingSubTextBrush" Color="#6B7280" />
+    <SolidColorBrush x:Key="ShadowBrush" Color="#22000000" />
+
+</ResourceDictionary>

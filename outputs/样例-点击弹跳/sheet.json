@@ -1,0 +1,20 @@
+{
+  "name": "clickBounce",
+  "version": 1,
+  "type": "sheet",
+  "sheet": "sheet.png",
+  "frameWidth": 720,
+  "frameHeight": 720,
+  "cols": 4,
+  "rows": 2,
+  "count": 8,
+  "fps": 24,
+  "loop": false,
+  "anchor": {
+    "x": 360,
+    "y": 660
+  },
+  "characterHeight": 600,
+  "returnTo": "base",
+  "sound": ""
+}
