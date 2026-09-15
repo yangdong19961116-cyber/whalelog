@@ -140,10 +140,15 @@
 - **本机没法 `git push` 到 GitHub**：`api.github.com` 通（HTTP 200），但 `github.com`
   被代理拦（`CONNECT tunnel failed, response 502`）。所以「建仓库 + 推代码」这类任务，
   建仓库只能用户手动，首次 push 得在能正常访问 `github.com` 的机器上做。
-- **平台 GitHub 连接器只有"写文件"权限，没有"建仓库"权限**：
-  `create_repository` → `403 Resource not accessible by integration`。
-  而往一个**不存在**的仓库写文件返回的是 `404` 而不是 `403` ——
-  用这个差异可以区分「没权限」和「仓库还不存在」。
+- **平台 GitHub 连接器只有读权限**：写文件（`create_or_update_file` / `push_files`）与
+  建仓库（`create_repository`）一律 `403 Resource not accessible by integration`。
+  ⚠️ 曾用「往不存在的仓库写文件返回 404 而非 403」推断它有写权限 —— **这条是错的**：
+  GitHub 对当前凭据*看不到*的仓库同样返回 404，404 只能说明仓库不存在。
+  判权限必须看**仓库存在之后**的返回码（详见第七节）。
+- **bash 命令可能被「沙箱重跑」一次**：输出末尾会出现 `⚠️ Sandbox bypassed (escalation-approved)`。
+  后果很阴：第一次（看不到的）那次其实**已经执行成功**，第二次再跑就得到
+  `nothing to commit`、退出码 1，长 `&&` 链当场中断，**后面的步骤一步都没跑**。
+  → 收尾类命令别用长 `&&` 链，改用 `;` 并在最后**显式回查结果**（文件时间戳、`diff`、`git status`）。
 
 ## 六、发布例行（发 1.2 时定下来的）
 - 版本唯一来源是 `src/WhaleLog/WhaleLog.csproj` 的 `<Version>`，界面读 `Assembly.GetName().Version` 自动跟，改一处即可。
