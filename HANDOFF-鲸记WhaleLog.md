@@ -319,3 +319,12 @@ python tools\drag_probe.py
 6. 桌面上累积了三个包：`鲸记 WhaleLog 1.1.zip`（无动画）、`1.2.zip`（有动画、无悬浮差分）、
    `1.3.zip`（当前）。**删除桌面文件需用户明确同意**，别自作主张清桌面 ——
    已经问过一次，用户还没表态。
+7. **Git 远端还没接上。** 交接包（`桌面\鲸记 WhaleLog 项目交接包 2026-09-15.zip`，带完整历史）
+   和操作手册（`新设备继续指令.md`）都做好了，但仓库本身还没有远端。
+   卡在两处环境限制，2026-09-15 实测：
+   - **本机网络**：`api.github.com` 通（HTTP 200），但 **`github.com` 被代理拦**
+     （`CONNECT tunnel failed, response 502`）→ **本机无法 `git push`**，换机器才行。
+   - **平台 GitHub 连接器**：**有文件写权限**（往不存在的仓库写返回的是 404，不是 403），
+     但**没有建仓库权限**（`create_repository` → `403 Resource not accessible by integration`）。
+   → 所以**建仓库那一步只能用户手动**（网页 30 秒），首次 push 在能访问 `github.com`
+   的机器上做。完整流程 + 约定地址写在 `新设备继续指令.md` 第 6 节。
