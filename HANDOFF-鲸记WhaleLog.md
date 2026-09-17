@@ -45,12 +45,12 @@
 
 | 项 | 值 |
 |---|---|
-| 版本 | `1.3.1`（`src/WhaleLog/WhaleLog.csproj` 的 `<Version>`，界面读 `Assembly.GetName().Version` 自动跟） |
+| 版本 | `1.3.2`（`src/WhaleLog/WhaleLog.csproj` 的 `<Version>`，界面读 `Assembly.GetName().Version` 自动跟） |
 | TFM | `net8.0-windows`（**不要加 OS 版本号**） |
 | 平台 | AnyCPU（**不能设 x64**，见第 5 节） |
 | 主程序 | `src/WhaleLog/`：App + MainWindow + `Views/`(6 个窗口 + `SpritePlayer`/`Converters`/`AssetImageExtension`) + `Services/`(21 个，含 `AnimSheet`/`AnimLibrary`) + `Models/`(4 个) |
 | 可运行产物 | `src/WhaleLog/bin/Release/net8.0-windows/WhaleLog.exe`；解压态副本 `build/portable/鲸记 WhaleLog/` |
-| 桌面安装包 | `C:\Users\Administrator\Desktop\鲸记 WhaleLog 1.3.1.zip`（自包含，解压即用） |
+| 桌面安装包 | `C:\Users\Administrator\Desktop\鲸记 WhaleLog 1.3.2.zip`（自包含，解压即用） |
 | 自测 | `tools/selftest/` 232 项断言，直接编译主程序非界面部分，测的是发货代码 |
 | 诊断自检 | `WhaleLog.exe --selfcheck` → `logs\selfcheck.log`（164 项，19 个段落） |
 | 版本控制 | ✅ 有 git 仓库（`workwork\.git`），基线 `f05c39b`，当前 HEAD 见 `git log` |
@@ -348,6 +348,34 @@ python tools\drag_probe.py
 另注：`make_portable_zip.py` 开头会 `rmtree` 旧的 `build/portable`（约 250 个文件），
 在带批量删除保护的沙箱会话里会被拦下来、且**拦下后脚本静默中断**。
 绕法是先把旧目录 `mv` 成交叉名（`build/.tmp-portable-old`），脚本见目录不存在就跳过删除。
+
+### 2026-09-17 晚 · 悬浮素材换成无损原图版 → 版本 1.3.2
+
+用户发来闭眼图要求替换悬浮态形象。核对过程中发现一件值得记的事：
+
+- 用户给的**剪贴板 JPG** 处理出来后，与仓库里已有的 `closeeye.png` **字节完全相同**
+  （md5 一致、逐像素差 0.00%）—— 也就是说**换的这张图就是当前生效的那张**，
+  只是剪贴板把它从 PNG 转成了 JPG。
+- 用户随后指出原图在 `C:\Users\Administrator\Pictures\closeeye.png`：
+  **1254×1254 原生带 alpha 的 PNG**（34.6% 透明），确实不用抠背景。
+
+于是改用它重做一版，**这是真实的质量提升**（不是白折腾）：
+
+| | 旧素材（从 JPG 抠白底） | 新素材（原生透明 PNG，`--no-bg`） |
+|---|---|---|
+| 与基准 IoU | 0.9894 | **0.9981** |
+| 边缘半透明像素 | 4314 | 3868（少一圈软化边） |
+| md5 | `8c470b490ace` | `8ed1a3bbe8ef` |
+
+主体像素一致，差别全在轮廓抗锯齿轮廓那一圈。做法：
+`python tools\prepare_expression.py C:\Users\Administrator\Pictures\closeeye.png <输出> --no-bg`
+（`--no-bg` = 输入已带透明通道，跳过抠背景那一步）。
+
+版本升到 **1.3.2**；自检 164 项全过；包 `鲸记 WhaleLog 1.3.2.zip`（58.0 MB /
+250 条目）已出，包内 `Assets\whale-hover.png` 与仓库 `closeeye.png` md5 一致。
+
+**教训：用户说"换这张图"时，先比对一下它跟现有素材是不是同一张。**
+最省事的判据就是 md5 —— 本次若直接照做，产出会与现状毫无区别。
 
 ---
 

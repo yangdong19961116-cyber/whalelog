@@ -12,7 +12,9 @@ Publish/
 publish/
 build/portable/
 
-# 探针/自检留下的临时目录（数据和素材都要隔离，绝不碰用户的）
-.tmp-*/
+# 探针 / 自检 / 图像处理留下的临时文件与目录（数据和素材都要隔离，绝不碰用户的）
+# 用 .tmp-* 而不是 .tmp-*/：后者只匹配目录，prepare_expression.py 吐出来的
+# .tmp-xxx.png 这类文件会漏网被 git add 进去。
+.tmp-*
 tmp/
 
