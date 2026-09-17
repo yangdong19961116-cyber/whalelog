@@ -10,12 +10,14 @@
 为什么要校验：打包脚本最容易静默漏文件，所以跑完拿 `git ls-files` 对一遍
 （注意中文文件名要加 `-c core.quotepath=false` 才比得上）。
 
-用法（在仓库根目录）：
-    python tools\\make_transfer_zip.py . "C:\\Users\\<你>\\Desktop\\鲸记 WhaleLog 项目交接包 2026-09-15.zip"
+用法（在仓库根目录；下面的反斜杠是给 cmd 看的，bash 里写 / 就行）：
+    python tools/make_transfer_zip.py                       # 输出到 E:\\jingji\\鲸记 WhaleLog 项目交接包 <今天>.zip
+    python tools/make_transfer_zip.py . <输出目录或 .zip>     # 想放别处再自己指定
 """
 import os
 import sys
 import zipfile
+from datetime import date
 from pathlib import Path
 
 # 目录名精确匹配：整个目录都跳过
@@ -27,6 +29,25 @@ SKIP_PREFIXES = (".tmp-",)
 # 文件名后缀：跳过
 SKIP_SUFFIXES = (".log", ".tmp", ".user", ".suo", ".pdb")
 
+# 产物统一放这儿（2026-09-17 定的规矩）：E:\jingji，与 make_portable_zip.py 同一个目录。
+ARTIFACT_DIR = Path(r"E:\jingji")
+
+
+def artifact_dir() -> Path:
+    """产物目录，建不出来就退回桌面并说明原因。
+
+    换台没有 E 盘的机器时，这条退路才是能继续干活的那条 ——
+    别为了守一个目录约定把打包整个卡死。
+    """
+    try:
+        ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
+        return ARTIFACT_DIR
+    except OSError as e:
+        fallback = Path.home() / "Desktop"
+        fallback = fallback if fallback.exists() else Path.home()
+        print(f"提示：建不出 {ARTIFACT_DIR}（{e}），这次改放 {fallback}", file=sys.stderr)
+        return fallback
+
 
 def should_skip_dir(rel: Path, name: str) -> bool:
     if name in SKIP_DIRS:
@@ -37,12 +58,16 @@ def should_skip_dir(rel: Path, name: str) -> bool:
 
 
 def main() -> int:
-    if len(sys.argv) < 3:
-        print(__doc__)
-        return 2
+    args = sys.argv[1:]
 
-    src = Path(sys.argv[1]).resolve()
-    dst = Path(sys.argv[2]).resolve()
+    # 源目录默认就是仓库根；输出默认落到 E:\jingji，文件名带当天日期，
+    # 这样"最新那份"永远是文件名里日期最大的那个，不用翻时间戳。
+    src = Path(args[0]).resolve() if args else Path(__file__).resolve().parents[1]
+    if len(args) >= 2:
+        dst = Path(args[1]).resolve()
+    else:
+        dst = artifact_dir() / f"鲸记 WhaleLog 项目交接包 {date.today():%Y-%m-%d}.zip"
+
     if not src.is_dir():
         print(f"源目录不存在：{src}")
         return 1

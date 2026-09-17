@@ -13,8 +13,8 @@ Microsoft.WindowsDesktop.App.Runtime.*）。这台开发机只装了 SDK + 运�
 启动时会报 "Could not resolve CoreCLR path"。托管 / 原生 DLL 的区分看 PE 头的
 第 14 个数据目录（CLR Runtime Header）是否非 0。
 
-用法：
-    python tools/make_portable_zip.py                 # 输出到桌面
+用法（反斜杠是给 cmd 看的，bash 里写 / 就行）：
+    python tools/make_portable_zip.py                 # → E:\\jingji\\鲸记 WhaleLog <版本>.zip（目录没有就自动建）
     python tools/make_portable_zip.py <输出目录或 .zip 路径>
 """
 
@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import re
 import shutil
 import struct
 import subprocess
@@ -32,6 +33,11 @@ import zipfile
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 APP_NAME = "鲸记 WhaleLog"
 ENTRY = "WhaleLog.exe"
+
+# 产物统一放这儿（2026-09-17 定的规矩）：E:\jingji。
+# 以前包直接丢桌面，几个版本堆在一起，想知道"当前发的是哪版"得看时间戳。
+# 目录不存在就建 —— 换成没有这个目录的新机器也一样能跑。
+ARTIFACT_DIR = pathlib.Path(r"E:\jingji")
 
 # 两个框架里同名的程序集，WindowsDesktop 的版本优先（和 FrameworkList 的优先级一致）。
 # 不处理的话 WindowsBase.dll 会被 NETCore.App 里那个空壳覆盖，WPF 直接起不来。
@@ -249,13 +255,42 @@ portable.txt，数据就会改存到它旁边的 data\\ 目录里。
 # 主流程
 # ----------------------------------------------------------------------
 
+def app_version() -> str:
+    """从 csproj 读 <Version>，让包名自带版本号。
+
+    本仓惯例是包名显式带版本（`鲸记 WhaleLog 1.3.2.zip`）：不带的话每次打包都覆盖
+    上一份，"上一版发的是什么"就查不出来了，只能靠文件时间戳猜。
+    """
+    csproj = ROOT / "src" / "WhaleLog" / "WhaleLog.csproj"
+    try:
+        m = re.search(r"<Version>([^<]+)</Version>", csproj.read_text(encoding="utf-8"))
+    except OSError:
+        return "0.0.0"
+    return m.group(1).strip() if m else "0.0.0"
+
+
+def artifact_dir() -> pathlib.Path:
+    """产物目录，见 ARTIFACT_DIR。建不出来就退回桌面并说明原因。
+
+    宁可放到次优位置，也不能因为一个约定把打包整个卡死 ——
+    换台没有 E 盘的机器时，这条退路才是能继续干活的那条。
+    """
+    try:
+        ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
+        return ARTIFACT_DIR
+    except OSError as e:
+        fallback = pathlib.Path.home() / "Desktop"
+        fallback = fallback if fallback.exists() else pathlib.Path.home()
+        print(f"提示：建不出 {ARTIFACT_DIR}（{e}），这次改放 {fallback}", file=sys.stderr)
+        return fallback
+
+
 def main() -> int:
     target = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else None
     if target is None:
-        desktop = pathlib.Path.home() / "Desktop"
-        target = (desktop if desktop.exists() else pathlib.Path.home()) / f"{APP_NAME}.zip"
+        target = artifact_dir() / f"{APP_NAME} {app_version()}.zip"
     elif target.is_dir():
-        target = target / f"{APP_NAME}.zip"
+        target = target / f"{APP_NAME} {app_version()}.zip"
     target = target.resolve()
 
     app_dir = ROOT / "src" / "WhaleLog" / "bin" / "Release" / "net8.0-windows"

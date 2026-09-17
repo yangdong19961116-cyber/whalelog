@@ -50,7 +50,7 @@
 | 平台 | AnyCPU（**不能设 x64**，见第 5 节） |
 | 主程序 | `src/WhaleLog/`：App + MainWindow + `Views/`(6 个窗口 + `SpritePlayer`/`Converters`/`AssetImageExtension`) + `Services/`(21 个，含 `AnimSheet`/`AnimLibrary`) + `Models/`(4 个) |
 | 可运行产物 | `src/WhaleLog/bin/Release/net8.0-windows/WhaleLog.exe`；解压态副本 `build/portable/鲸记 WhaleLog/` |
-| 桌面安装包 | `C:\Users\Administrator\Desktop\鲸记 WhaleLog 1.3.2.zip`（自包含，解压即用） |
+| 分发产物 | **统一放 `E:\jingji`**（2026-09-17 起的项目约定，别再丢桌面）：便携包 `鲸记 WhaleLog <版本>.zip`（自包含、解压即用，版本号从 csproj 读）、交接包 `鲸记 WhaleLog 项目交接包 <日期>.zip`。两个打包脚本**不带参数**就输出到这儿，目录不存在会自动建 |
 | 自测 | `tools/selftest/` 232 项断言，直接编译主程序非界面部分，测的是发货代码 |
 | 诊断自检 | `WhaleLog.exe --selfcheck` → `logs\selfcheck.log`（164 项，19 个段落） |
 | 版本控制 | ✅ 有 git 仓库（`workwork\.git`），基线 `f05c39b`，当前 HEAD 见 `git log` |
