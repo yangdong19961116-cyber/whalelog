@@ -51,7 +51,7 @@
 | 主程序 | `src/WhaleLog/`：App + MainWindow + `Views/`(6 个窗口 + `SpritePlayer`/`Converters`/`AssetImageExtension`) + `Services/`(21 个，含 `AnimSheet`/`AnimLibrary`) + `Models/`(4 个) |
 | 可运行产物 | `src/WhaleLog/bin/Release/net8.0-windows/WhaleLog.exe`；解压态副本 `build/portable/鲸记 WhaleLog/` |
 | 桌面安装包 | `C:\Users\Administrator\Desktop\鲸记 WhaleLog 1.3.zip`（自包含，解压即用） |
-| 自测 | `tools/selftest/` 216 项断言，直接编译主程序非界面部分，测的是发货代码 |
+| 自测 | `tools/selftest/` 232 项断言，直接编译主程序非界面部分，测的是发货代码 |
 | 诊断自检 | `WhaleLog.exe --selfcheck` → `logs\selfcheck.log`（164 项，19 个段落） |
 | 版本控制 | ✅ 有 git 仓库（`workwork\.git`），基线 `f05c39b`，当前 HEAD 见 `git log` |
 
@@ -225,7 +225,7 @@ build-whalelog.cmd
 :: 只编译不发布
 dotnet build WhaleLog.sln -c Release
 
-:: 自测（216 项断言，直接编译主程序非界面部分）
+:: 自测（232 项断言，直接编译主程序非界面部分）
 dotnet build tools\selftest\selftest.csproj -c Release
 dotnet tools\selftest\bin\Release\net8.0\WhaleLog.SelfTest.dll
 ::  加 --keep 保留临时目录，方便翻看产出的 Markdown 和 index.json
@@ -240,10 +240,10 @@ WhaleLog.exe --shot-floating D:\tmp\floating-scales.png
 WhaleLog.exe --export-assets D:\tmp\Assets
 
 :: 打包自包含 zip（不带参数会输出到桌面：鲸记 WhaleLog.zip；
-:: 按本仓惯例要显式带版本号，例如 鲸记 WhaleLog 1.3.zip）
+:: 按本仓惯例要显式带版本号，例如 鲸记 WhaleLog 1.3.1.zip）
 python tools\make_portable_zip.py
 python tools\make_portable_zip.py D:\某目录
-python tools\make_portable_zip.py "C:\Users\Administrator\Desktop\鲸记 WhaleLog 1.3.zip"
+python tools\make_portable_zip.py "C:\Users\Administrator\Desktop\鲸记 WhaleLog 1.3.1.zip"
 
 :: 素材
 python tools\make_icon.py                                   :: 610×610 PNG → 7 尺寸 ICO
@@ -251,6 +251,11 @@ python tools\check_anim_assets.py outputs\样例-点击弹跳       :: 动态素
 python tools\prepare_expression.py 新图.png out\whale-hover.png
                                                             :: 表情差分：抠白底 + 对齐基准画布 + 报 IoU
                                                             :: 需要 pip install pillow numpy
+
+:: 归档记录修复（只对 1.3.1 之前写下的老数据有意义；默认只预览，确认后加 --apply）
+python tools\repair_archive_dates.py
+python tools\repair_archive_dates.py --apply
+::  程序正在运行时只预览、不写入 —— 它内存里的旧数据会把修复覆盖掉
 
 :: 交互行为探针（会真的移动鼠标光标、会先结束正在运行的鲸记 → 手动跑）
 python tools\drag_probe.py
@@ -297,6 +302,28 @@ python tools\drag_probe.py
 
 之后用户提出「鼠标悬浮时换成闭眼形象」，做成后版本升到 **1.3.0**，
 再重建 Release、打出 `桌面\鲸记 WhaleLog 1.3.zip`。详见第 4 节 B。
+
+### 2026-09-17 · 修「跨天再归档」的归属日期错位 → 版本 1.3.1
+
+**用户报的现象**：9 月 16 日归档的文件，9 月 17 日再归档时，
+只在 9 月 16 日那页看到 `v2`，9 月 17 日那页什么都没有。
+
+**根因**：`FileIntakeService.IntakeOne()` 里「同一路径、内容变了」这一支只改了版本号、指纹、
+修改时间，**没动 `AddedDate`**。而全程序判断「某天有哪些归档文件」只看 `AddedDate` ——
+当日页面、只看当天、全部视图分栏、月历圆点、日报周报、`notes\*.md` 全是它。
+于是新版本永远粘在首次归档那天。用户真实数据里复现了两条（`92_2.blend` 也中过同样的招）。
+
+**修法**（用户选定「两天各留一条，分开记 v1 / v2」）：
+归档记录的粒度改成 **一个路径 × 一天 = 一条记录**。
+
+- `LogBookStore` 新增 `FindFileByPathOn(path, date)`；`FindFileByPath` 改成返回该路径**最新**那条。
+- `IntakeOne` 改成问「**今天**归档过这个路径没有」：
+  今天归档过 + 指纹相同 → 重复；今天归档过 + 指纹不同 → 就地升版本（同一天不刷重复行）；
+  今天没归档过 → 新记一条，版本号接着版本链往下走（前一天那条留在前一天）。
+- `ApplyVersion` 现在一并写 `AddedDate` / `AddedAt`；快照跟着「这一版归档的那天」放。
+- 自测新增回归用例「跨天再归档」16 项断言（**216 → 232 项**）。
+- 新增 `tools\repair_archive_dates.py`：把 1.3.1 之前写歪的老记录按版本历史拆回各天。
+  默认只预览，检测到程序在运行就拒绝写入（内存里的旧数据会把修复覆盖掉）。
 
 ---
 
