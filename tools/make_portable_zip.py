@@ -319,7 +319,8 @@ def main() -> int:
         subprocess.run(
             [str(app_exe), "--export-assets", str(assets_dir), "--quiet"],
             env=dict(os.environ, WHALELOG_DATA_DIR=str(probe_data)),
-            capture_output=True, text=True, timeout=180)
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=180)
     finally:
         shutil.rmtree(probe_data, ignore_errors=True)
 

@@ -55,13 +55,18 @@ from pathlib import Path
 def find_running_app() -> str | None:
     """正在运行的鲸记进程。返回可读描述，没在跑就返回 None。"""
     try:
-        out = subprocess.run(
+        raw = subprocess.run(
             ["tasklist", "/FI", "IMAGENAME eq WhaleLog.exe", "/NH"],
-            capture_output=True, text=True, timeout=15,
-        ).stdout
+            capture_output=True, timeout=15,
+        ).stdout or b""
     except Exception:
         return None                      # 查不了就当作没在跑，别把功能卡死
-    for line in out.splitlines():
+    # tasklist 在中文 Windows 上吐的是 GBK（ANSI 代码页），按 UTF-8 硬解会抛
+    # UnicodeDecodeError —— 而且是在读 stdout 的子线程里抛的，异常传不回主线程，
+    # 只会让 .stdout 变成 None，最后以 splitlines 的 AttributeError 面目出现。
+    # 所以这里不用 text=True，自己按本地代码页解，解错了也不影响判断（进程名是 ASCII）。
+    text = raw.decode("mbcs" if os.name == "nt" else "utf-8", errors="replace")
+    for line in text.splitlines():
         if "whalelog.exe" in line.lower():
             return " ".join(line.split())
     return None
