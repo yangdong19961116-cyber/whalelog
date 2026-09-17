@@ -47,6 +47,7 @@ internal static class Program
             TestAnimAssets(workspace);
             await TestEndToEndIntakeAsync(workDir);
             await TestDateScopedIntakeAsync(workspace);
+            await TestVersionAcrossDaysAsync(workspace);
             TestLargeFileSampling(dataDir);
             await TestSnapshotModeAsync(workspace);
         }
@@ -274,6 +275,102 @@ internal static class Program
         await intake.IntakeAsync(new[] { todayFile });
         Check(store.FindFileByPath(todayFile)?.AddedDate == DateTime.Today.ToString("yyyy-MM-dd"),
             "不指定日期时应默认归属今天");
+    }
+
+    /// <summary>
+    /// 跨天再归档：同一个文件前一天归档过，今天改了内容再归档一次。
+    ///
+    /// 这是用户实际报上来的问题：9 月 16 日归档的文件，9 月 17 日再归档时
+    /// 只在 9 月 16 日那页看到 v2，9 月 17 日那页什么都没有。
+    /// 根因是升版本时只改了版本号、没动归属日期，而全程序判断
+    /// "某天有哪些归档文件"只看归属日期。
+    ///
+    /// 期望：两个动作各留一条 —— 前一天那页是 v1，今天那页是 v2。
+    /// </summary>
+    private static async Task TestVersionAcrossDaysAsync(string workspace)
+    {
+        Section("跨天再归档");
+
+        var dir = Path.Combine(workspace, "across-days");
+        Directory.CreateDirectory(dir);
+        var file = Path.Combine(dir, "模型.blend");
+
+        var settings = new SettingsService();
+        settings.Load();
+        settings.Update(s => s.SnapshotMode = false);
+
+        var store = new LogBookStore();
+        store.Load();
+        var classify = new ClassifyService();
+        classify.Load();
+        var intake = new FileIntakeService(store, classify, new VersionService(settings), settings);
+
+        var day0 = DateTime.Today.AddDays(-2);
+        var day1 = DateTime.Today.AddDays(-1);
+        var day2 = DateTime.Today;
+        var key0 = day0.ToString("yyyy-MM-dd");
+        var key1 = day1.ToString("yyyy-MM-dd");
+        var key2 = day2.ToString("yyyy-MM-dd");
+
+        // --- 前一天：首次归档 ---
+        File.WriteAllText(file, "第一版正文");
+        await intake.IntakeAsync(new[] { file }, day1);
+
+        var first = store.FindFileByPathOn(file, key1);
+        Check(first != null && first.Version == 1,
+            $"前一天归档应记成 v1，实际 {(first == null ? "没有属于那天的记录" : "v" + first.Version)}");
+
+        // --- 今天：改了内容再归档 ---
+        File.WriteAllText(file, "第二版正文：补了细节");
+        var second = await intake.IntakeAsync(new[] { file }, day2);
+        Check(second.Count == 1 && second[0].Status == IntakeStatus.NewVersion,
+            $"内容变了应判为新版本，实际 {(second.Count == 1 ? second[0].Status.ToString() : second.Count + " 条结果")}");
+
+        var today = store.FindFileByPathOn(file, key2);
+        Check(today != null,
+            "今天应该多出一条属于今天的记录 —— 以前缺的就是这条，于是今天的页面空着");
+        Check(today?.Version == 2, $"今天这条应是 v2，实际 v{today?.Version}");
+        Check(store.FindFileByPathOn(file, key1)?.Version == 1,
+            $"昨天那条应该仍停在 v1，不该被今天这次顶上去，实际 v{store.FindFileByPathOn(file, key1)?.Version}");
+
+        // 下面两条就是用户看到的现象本身：翻到哪天，就该看到哪天归档的东西
+        Check(store.FilesOnDate(day2).Any(f => f.FullPath == file),
+            "「只看当天」看今天应看得到它");
+        Check(store.FilesOnDate(day1).Any(f => f.FullPath == file),
+            "看昨天应仍然看得到昨天那一条");
+        Check(store.FilesOnDate(day2).Count(f => f.FullPath == file) == 1,
+            "今天只该有一条");
+
+        // --- 同一天里再改一次：只升当天那条的版本号，不另起一行 ---
+        File.WriteAllText(file, "第三版正文：又改了一次");
+        await intake.IntakeAsync(new[] { file }, day2);
+        Check(store.FilesOnDate(day2).Count(f => f.FullPath == file) == 1,
+            $"同一天里反复改，当天仍只该有一行，实际 {store.FilesOnDate(day2).Count(f => f.FullPath == file)} 行");
+        Check(store.FindFileByPathOn(file, key2)?.Version == 3,
+            $"当天那条的版本号应顶到 v3，实际 v{store.FindFileByPathOn(file, key2)?.Version}");
+
+        // --- 版本链：两条记录，各管各的版本号 ---
+        var chain = store.VersionChain(today!.VersionGroupKey);
+        Check(chain.Count == 2, $"版本链上应是两条记录（各一天的归档动作），实际 {chain.Count}");
+        Check(chain.Select(c => c.Version).SequenceEqual(new[] { 1, 3 }),
+            $"版本号应是 v1 → v2 → v3 递增、两条记录分别落在 v1 和 v3，实际 {string.Join(",", chain.Select(c => "v" + c.Version))}");
+
+        // --- 更早的一天再拖一次，但内容没变：不该凭空多出一条 ---
+        var third = await intake.IntakeAsync(new[] { file }, day0);
+        Check(third.Count == 1 && third[0].Status == IntakeStatus.Unchanged,
+            $"内容没变时应判为未产生新版本，实际 {(third.Count == 1 ? third[0].Status.ToString() : third.Count + " 条结果")}");
+        Check(store.FindFileByPathOn(file, key0) == null,
+            "内容没变时不该凭空多出一条当天的记录");
+
+        // --- 快照跟着**这一版归档的那天**放 ---
+        settings.Update(s => s.SnapshotMode = true);
+        File.WriteAllText(file, "第四版正文：开了快照再改一次");
+        await intake.IntakeAsync(new[] { file }, day2);
+
+        var snapped = store.FindFileByPathOn(file, key2);
+        Check(snapped?.Version == 4, $"应继续升到 v4，实际 v{snapped?.Version}");
+        Check(snapped?.SnapshotPath != null && snapped.SnapshotPath.Contains(key2),
+            $"快照应放在当天那个目录下，实际 {snapped?.SnapshotPath ?? "（没有快照）"}");
     }
 
     /// <summary>

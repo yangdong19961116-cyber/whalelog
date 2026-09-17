@@ -155,11 +155,34 @@ public sealed class LogBookStore
 
     public FileRecord? FindFileById(string id) => Book.Files.FirstOrDefault(f => f.Id == id);
 
-    public FileRecord? FindFileByPath(string path)
+    /// <summary>
+    /// 同一个路径在**某一天**的那条归档记录。
+    ///
+    /// 同一个文件可以在不同日期各留一条记录 —— 9 月 16 日归档一次、9 月 17 日改了再归档一次，
+    /// 那是两个独立的动作，分别记在当天，翻哪一天都看得到。
+    /// 所以"这一天归档过它没有"必须连日期一起问，只按路径问会拿到别的日子那条。
+    /// </summary>
+    public FileRecord? FindFileByPathOn(string path, string date)
     {
         var full = SafeFullPath(path);
         return Book.Files.FirstOrDefault(
-            f => string.Equals(f.FullPath, full, StringComparison.OrdinalIgnoreCase));
+            f => string.Equals(f.FullPath, full, StringComparison.OrdinalIgnoreCase) && f.AddedDate == date);
+    }
+
+    /// <summary>
+    /// 这个路径最近的一条记录。
+    ///
+    /// 一个路径可能有多条（见上），这里给的是最新的那条：
+    /// 判断"内容有没有变"要跟最近一次归档比，跟最早那次比没有意义。
+    /// </summary>
+    public FileRecord? FindFileByPath(string path)
+    {
+        var full = SafeFullPath(path);
+        return Book.Files
+            .Where(f => string.Equals(f.FullPath, full, StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(f => f.AddedAt)
+            .ThenByDescending(f => f.Version)
+            .FirstOrDefault();
     }
 
     /// <summary>同一个版本链上的所有记录，按版本号升序。</summary>

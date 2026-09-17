@@ -10,6 +10,13 @@ namespace WhaleLog.Services;
 ///   1. 绝不移动、重命名、删除用户的原文件 —— 只读取元数据和算指纹。
 ///   2. 除了可选的归档快照副本，不做任何写操作。
 ///   3. 读不动的文件（占用中 / 无权限）不抛异常中断整批，单条标记失败继续处理下一个。
+///
+/// 归档记录的粒度：**一个路径 × 一天 = 一条记录**。
+/// 同一个文件 9 月 16 日归档一次、9 月 17 日改了内容再归档一次，是两个独立动作，
+/// 各记一条、各自属于那天 —— 翻 9 月 16 日看到 v1，翻 9 月 17 日看到 v2。
+/// 同一天里反复改则只升当天那一条的版本号（不然改五次就刷出五行）。
+/// 归属日期（AddedDate）是"某天有哪些归档文件"的唯一依据：当日页面、只看当天、
+/// 全部视图分栏、月历圆点、日报周报、notes\*.md 看的全是它。
 /// </summary>
 public sealed class FileIntakeService
 {
@@ -134,10 +141,13 @@ public sealed class FileIntakeService
         var hash = _version.ComputeHash(full);
         var groupKey = VersionService.BuildVersionGroupKey(fileName);
 
-        var existing = _store.FindFileByPath(full);
+        // 同一个文件在不同日期归档，是几个**独立的动作**，各记一条。
+        // 所以这里问的是"这一天归档过这个路径没有"，而不是"这个路径归档过没有" ——
+        // 后者会让新版本永远粘在首次归档那天，产生它的那天反而查不到。
+        var existing = _store.FindFileByPathOn(full, dateKey);
         var chain = _store.VersionChain(groupKey);
 
-        // 情况一：同一个路径已经归档过
+        // 情况一：今天归档过同一个路径，内容也没变 —— 重复拖入
         if (existing != null && string.Equals(existing.Sha256, hash.Hash, StringComparison.Ordinal))
         {
             existing.LastWriteTime = info.LastWriteTime;
@@ -154,11 +164,12 @@ public sealed class FileIntakeService
             };
         }
 
+        // 情况二：今天归档过同一个路径、内容变了 —— 同一天里的"改了再存"，就地升版本。
+        // 不另起一条：一天里存五次就刷出五行来，那不成记录成噪音了。
         if (existing != null)
         {
-            // 同一位置、内容变了 —— 这是最典型的"改了再存"场景，直接升版本
             int next = chain.Count == 0 ? existing.Version + 1 : chain.Max(x => x.Version) + 1;
-            ApplyVersion(existing, next, hash, info);
+            ApplyVersion(existing, next, hash, info, dateKey);
             if (entry != null) LinkEntry(existing, entry);
 
             return new IntakeResult
@@ -170,7 +181,7 @@ public sealed class FileIntakeService
             };
         }
 
-        // 情况二：新路径。先看整条版本链上有没有内容完全一致的版本
+        // 情况三：今天还没归档过这个路径。整条版本链上已有内容完全一致的版本 —— 不产生新版本
         var identical = chain.FirstOrDefault(x => string.Equals(x.Sha256, hash.Hash, StringComparison.Ordinal));
         if (identical != null)
         {
@@ -183,7 +194,7 @@ public sealed class FileIntakeService
             };
         }
 
-        // 情况三：真正的新文件 / 新版本
+        // 情况四：真正的新文件 / 新版本 —— 今天单独记一条
         int version = chain.Count == 0 ? 1 : chain.Max(x => x.Version) + 1;
         var hit = _classify.Classify(fileName, full);
 
@@ -204,7 +215,7 @@ public sealed class FileIntakeService
             IsMissing = false,
         };
 
-        ApplyVersion(record, version, hash, info, isInitial: true);
+        ApplyVersion(record, version, hash, info, dateKey, isInitial: true);
         if (entry != null) LinkEntry(record, entry);
 
         _store.Book.Files.Add(record);
@@ -225,6 +236,7 @@ public sealed class FileIntakeService
         int version,
         VersionService.HashResult hash,
         FileInfo info,
+        string dateKey,
         bool isInitial = false)
     {
         record.Sha256 = hash.Hash;
@@ -232,6 +244,13 @@ public sealed class FileIntakeService
         record.LastWriteTime = info.LastWriteTime;
         record.Version = version;
         record.IsMissing = false;
+
+        // 归属日期跟着**这次**归档动作走，升版本也一样。
+        // 只改版本号不动日期的话，新版本会一直挂在首次归档那天，
+        // 而当天页面、"只看当天"、月历圆点、日报周报全是以归属日期为准的 ——
+        // 结果就是"今天明明归档了，今天的页面却是空的"。
+        record.AddedDate = dateKey;
+        record.AddedAt = DateTime.Now;
 
         var history = record.History ??= new List<FileVersion>();
         if (isInitial && history.Count == 0)
