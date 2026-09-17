@@ -142,12 +142,13 @@ public sealed class FileIntakeService
         var groupKey = VersionService.BuildVersionGroupKey(fileName);
 
         // 同一个文件在不同日期归档，是几个**独立的动作**，各记一条。
-        // 所以这里问的是"这一天归档过这个路径没有"，而不是"这个路径归档过没有" ——
+        // 所以这里问的是"**这一天**归档过这个路径没有"，而不是"这个路径归档过没有" ——
         // 后者会让新版本永远粘在首次归档那天，产生它的那天反而查不到。
+        // （dateKey 是这次归档的归属日期，跟着用户正在看的那一天走，不一定是字面的今天。）
         var existing = _store.FindFileByPathOn(full, dateKey);
         var chain = _store.VersionChain(groupKey);
 
-        // 情况一：今天归档过同一个路径，内容也没变 —— 重复拖入
+        // 情况一：这一天归档过同一个路径，内容也没变 —— 重复拖入
         if (existing != null && string.Equals(existing.Sha256, hash.Hash, StringComparison.Ordinal))
         {
             existing.LastWriteTime = info.LastWriteTime;
@@ -164,7 +165,7 @@ public sealed class FileIntakeService
             };
         }
 
-        // 情况二：今天归档过同一个路径、内容变了 —— 同一天里的"改了再存"，就地升版本。
+        // 情况二：这一天归档过同一个路径、内容变了 —— 同一天里的"改了再存"，就地升版本。
         // 不另起一条：一天里存五次就刷出五行来，那不成记录成噪音了。
         if (existing != null)
         {
@@ -181,7 +182,7 @@ public sealed class FileIntakeService
             };
         }
 
-        // 情况三：今天还没归档过这个路径。整条版本链上已有内容完全一致的版本 —— 不产生新版本
+        // 情况三：这一天还没归档过这个路径。整条版本链上已有内容完全一致的版本 —— 不产生新版本
         var identical = chain.FirstOrDefault(x => string.Equals(x.Sha256, hash.Hash, StringComparison.Ordinal));
         if (identical != null)
         {
@@ -194,7 +195,7 @@ public sealed class FileIntakeService
             };
         }
 
-        // 情况四：真正的新文件 / 新版本 —— 今天单独记一条
+        // 情况四：真正的新文件 / 新版本 —— 这一天单独记一条
         int version = chain.Count == 0 ? 1 : chain.Max(x => x.Version) + 1;
         var hit = _classify.Classify(fileName, full);
 
