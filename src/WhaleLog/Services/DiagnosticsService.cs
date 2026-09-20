@@ -1861,7 +1861,59 @@ public static class DiagnosticsService
                 main?.ViewingDate.Date == DateTime.Today,
                 $"拖入前看的是 {yesterday:yyyy-MM-dd}，现在是 {main?.ViewingDate:yyyy-MM-dd}");
 
-            check("结果被报成了人话", summary.Contains("新增"), $"「{summary}」");
+            check("结果被报成了人话（含日期口径 + 数量）",
+                summary.Contains("已记入今天") && summary.Contains("新增"), $"「{summary}」");
+
+            // ---- 另一半：关掉「自动打开主面板」之后，应该安静地收下 ----
+            //
+            // 这个开关以前只掐掉半个动作（面板照样弹出来、只是没切页），和它的名字对不上。
+            // 现在它是"要不要把主面板叫出来"的总闸，所以必须两边都验：
+            // 开了 → 面板出现；关了 → 面板**根本不创建**，但文件照样进归档。
+            // 只验"开了"那一半的话，"关掉"变成"什么都不做"也照样全绿。
+            app.CloseMainWindowForProbe();
+            sb.AppendLine($"  关掉开关前先收起主面板：MainWindowForProbe={(app.MainWindowForProbe == null ? "null" : "还在")}");
+
+            App.Settings.Update(s => s.AutoOpenMainWindowOnDrop = false);
+
+            var quietFiles = new List<string>();
+            for (int i = 3; i <= 4; i++)
+            {
+                var f = Path.Combine(probeRoot, $"季报 {i}.txt");
+                File.WriteAllText(f, $"自检造的第 {i} 个文件\n");
+                quietFiles.Add(f);
+                made.Add(f);
+            }
+
+            int beforeQuiet = App.Store.Book.Files.Count;
+            var quietTask = floating.AcceptDropAsync(quietFiles.ToArray());
+            bool quietDone = PumpUntilComplete(quietTask, 20000);
+
+            check("关掉开关后拖入也跑完了（没卡在半路）", quietDone, quietDone ? "已返回" : "超时未返回");
+
+            var quietSummary = quietDone ? quietTask.Result : "";
+            sb.AppendLine($"  关掉开关后的气泡：{quietSummary}");
+
+            var quietMine = App.Store.Book.Files
+                .Where(f => quietFiles.Contains(f.FullPath, StringComparer.OrdinalIgnoreCase))
+                .ToList();
+
+            check("关掉开关后文件仍然进了归档（只是不打扰用户）",
+                quietMine.Count == 2,
+                $"归档前 {beforeQuiet} 条 → 现在 {App.Store.Book.Files.Count} 条，其中本次 {quietMine.Count} 条");
+
+            check("关掉开关后归属日期还是今天",
+                quietMine.Count == 2 && quietMine.All(f => f.AddedDate == today),
+                quietMine.Count == 0 ? "一条都没找到" : string.Join("、", quietMine.Select(f => f.AddedDate)));
+
+            check("关掉开关后主面板**没有**被创建出来（这才是这个开关的承诺）",
+                app.MainWindowForProbe == null,
+                app.MainWindowForProbe == null ? "没创建" : "被创建了 —— 开关只掐掉了切页那半步");
+
+            check("关掉开关后的气泡和开着时是同一种说法（两条路只差要不要弹面板）",
+                quietSummary.Contains("已记入今天") && quietSummary.Contains("新增"),
+                $"「{quietSummary}」");
+
+            App.Settings.Update(s => s.AutoOpenMainWindowOnDrop = previousAutoOpen);
         }
         catch (Exception ex)
         {

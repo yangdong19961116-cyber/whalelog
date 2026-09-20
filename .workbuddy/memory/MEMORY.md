@@ -42,9 +42,9 @@
 **受限会话里 restore 报 `path1` 为 null 时先跑 `python tools/mkenv.py` 再 `source .tmp-env.sh`**
 （真因是 bash 拿不到 Windows 会话的环境变量，不是"离线做不到"）；
 打包 `python tools/make_portable_zip.py [out.zip]` → 自包含 zip（默认落 `E:\jingji`）；
-自测 `tools/selftest/`（**312 项**断言，直接编译主程序非界面部分；
+自测 `tools/selftest/`（**316 项**断言，直接编译主程序非界面部分；
 含真起 ffmpeg 解视频的用例 → 先把 ffmpeg 拷到 `tools\selftest\bin\Release\net8.0\`）；
-诊断 `WhaleLog.exe --selfcheck` → `logs\selfcheck.log`（**217 项 / 22 段**，隔离空数据更少几项、
+诊断 `WhaleLog.exe --selfcheck` → `logs\selfcheck.log`（**222 项 / 22 段**，隔离空数据更少几项、
 有另一个实例在跑时再少 1；同样要 ffmpeg 在旁边；
 **脚本里跑必须带 `--quiet`**，否则弹一个"自检完成"对话框等人点，表现为卡死到超时）；
 截图 `--shot`/`--shot-notes`/`--shot-settings`/`--shot-floating`，均支持 `--x 值` 和 `--x=值`；
@@ -152,7 +152,7 @@
   什么都不发生、**且一个错都不报**（鲸鱼本体上却是好的 → 看着像"时灵时不灵"）。
   解法是让整块矩形可命中：根 `Grid` 背景从 `Transparent`(alpha=0) 改成 `#01000000`(alpha=1 的近透明黑)；
   提示层反过来设 `IsHitTestVisible="False"`。**给悬浮窗加交互先问一句"这块像素是不是全透明"。**
-- **自检项数会随数据浮动**（真实数据 217 / 隔离空数据更少几项），**段落数固定 22**。
+- **自检项数会随数据浮动**（真实数据 222 / 隔离空数据更少几项），**段落数固定 22**。
   **看结尾「结论：全部通过」，别死抠数字**。
 
 ## 三、素材机制

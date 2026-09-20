@@ -53,6 +53,9 @@ FLOAT_TITLE = "鲸记小鲸鱼"
 
 user32 = ctypes.WinDLL("user32")
 user32.GetWindowTextLengthW.restype = ctypes.c_int
+user32.WindowFromPoint.restype = wintypes.HWND
+user32.WindowFromPoint.argtypes = [wintypes.POINT]
+user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
 ENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
 
 
@@ -76,6 +79,54 @@ def whale_windows() -> list[tuple[str, int, tuple[int, int, int, int]]]:
 
     user32.EnumWindows(ENUMPROC(cb), 0)
     return found
+
+
+def window_pid_at(x: int, y: int) -> tuple[int, str, str]:
+    """屏幕上 (x, y) 那个点底下那个窗口的 (进程号, 类名, 标题)。"""
+    hwnd = user32.WindowFromPoint(wintypes.POINT(x, y))
+    if not hwnd:
+        return (0, "", "")
+
+    pid = wintypes.DWORD()
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+
+    cls = ctypes.create_unicode_buffer(256)
+    user32.GetClassNameW(hwnd, cls, 256)
+
+    n = user32.GetWindowTextLengthW(hwnd)
+    buf = ctypes.create_unicode_buffer(n + 1)
+    user32.GetWindowTextW(hwnd, buf, n + 1)
+
+    return (pid.value, cls.value, buf.value)
+
+
+# 桌面的类名。落点底下是这些，说明鲸记这块像素**没接住**（透明像素穿透）——
+# 那是真要报出来的错，所以要放行、让它跑完去报，别被下面这层守卫当成"被挡住"。
+DESKTOP_CLASSES = {"Progman", "WorkerW", "SysListView32", "SHELLDLL_DefView", "Button"}
+
+
+def guard_target(x: int, y: int, pid: int) -> None:
+    """
+    落点上不能压着**别人的**窗口。
+
+    这不是被测程序的问题，而是探针的前提被破坏了：合成出来的左键会送给压在上面
+    那个窗口，拖放源根本开始不了，最后三个场景**一起**报"挂住" —— 长得和功能坏了
+    一模一样。实测踩过一次：桌面被一个 Blender 窗口占满，于是整轮探针全红。
+
+    所以分三种情况：
+      落点底下是鲸记        → 正常，继续。
+      落点底下是桌面        → 说明鲸记这块像素没接住（正是场景 1 要验的东西），
+                              放它跑，让它如实报错。
+      落点底下是别的程序    → 这次不测，明确说清是"桌面被挡住"，别误判。
+    """
+    got_pid, cls, title = window_pid_at(x, y)
+    if got_pid == pid or cls in DESKTOP_CLASSES:
+        return
+
+    print(f"\n落点 ({x}, {y}) 底下不是鲸记窗口，而是 pid={got_pid} [{cls}] 「{title}」")
+    print(f"（鲸记 pid={pid}）桌面被别的程序挡住了，合成的鼠标事件会落到它身上 ——")
+    print("这次**不测**：别把「被挡住」误判成「功能坏了」。关掉那个程序再跑一次。")
+    raise SystemExit(6)
 
 
 def child_env() -> dict:
@@ -193,8 +244,16 @@ def drag_to(x: int, y: int, files: list[str], hold: int = 800) -> str:
         print(f"     ! {l}")
 
     if out.returncode != 0:
-        print(f"     ↳ 拖放源退出码 {out.returncode}"
-              + ("（3 = 看门狗超时，DoDragDrop 挂住了）" if out.returncode == 3 else ""))
+        why = {3: "（3 = 看门狗超时，DoDragDrop 挂住了）",
+               4: "（4 = 按下点没落在源窗口上，主动放弃）",
+               5: "（5 = 按下点上压着别的窗口，主动放弃 —— 桌面被别人占住了）"}.get(out.returncode, "")
+        print(f"     ↳ 拖放源退出码 {out.returncode}{why}")
+
+    if out.returncode in (4, 5):
+        # 这两种是"探针的前提被破坏了"（光标/桌面被别人占住），不是被测程序的错。
+        # 硬报成失败会把下一轮排查引到完全错误的方向去。
+        raise SystemExit(f"拖放源没能开始这次拖放（退出码 {out.returncode}）："
+                         "桌面被别的程序占住了，不是被测程序的问题。关掉它再跑。")
 
     time.sleep(2.5)          # 留给归档落盘和主面板创建
     return effect
@@ -235,6 +294,14 @@ def archived_files() -> list[dict]:
 
 def main_window_open() -> bool:
     return any(MAIN_TITLE in t for t, _, _ in whale_windows())
+
+
+def whale_pid() -> int:
+    """悬浮窗那个进程的 pid（用来判断落点底下到底是不是鲸记）。"""
+    for title, pid, _ in whale_windows():
+        if FLOAT_TITLE in title:
+            return pid
+    return 0
 
 
 def finish(checks: list[tuple[str, bool, str]], keep: bool) -> int:
@@ -279,6 +346,7 @@ def main() -> int:
 
         tx, ty = left + 18, top + 18     # 左上角内缩 18px：这一带是纯透明像素
         print(f"\n[场景 1] 拖到鲸鱼旁边的透明处 ({tx}, {ty})")
+        guard_target(tx, ty, whale_pid())
         effect = drag_to(tx, ty, files)
 
         recs = archived_files()
@@ -309,6 +377,7 @@ def main() -> int:
 
         tx, ty = (left + right) // 2, (top + bottom) // 2
         print(f"\n[场景 2] 拖到鲸鱼身上 ({tx}, {ty})")
+        guard_target(tx, ty, whale_pid())
         effect = drag_to(tx, ty, files)
 
         recs = archived_files()

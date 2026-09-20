@@ -26,6 +26,9 @@ internal static class Program
     [DllImport("user32.dll")]
     private static extern bool GetCursorPos(out Point p);
 
+    [DllImport("user32.dll")]
+    private static extern nint WindowFromPoint(Point p);
+
     private const uint MouseEventLeftDown = 0x0002;
     private const uint MouseEventLeftUp = 0x0004;
 
@@ -98,6 +101,11 @@ internal static class Program
             Location = new Point(sourceX, sourceY),
             Size = new Size(200, 120),
             ShowInTaskbar = false,
+            // 置顶：桌面被别的程序（编辑器、播放器、全屏应用）挡住时，
+            // 合成出来的左键会落到**那个**程序上，源窗口永远收不到 MouseDown，
+            // DoDragDrop 也就永远没开始 —— 表现是三个场景一起"挂住"，
+            // 看着像功能坏了，其实只是桌面被占了。置顶能挡掉这一整类假故障。
+            TopMost = true,
         };
 
         // 看门狗：真卡住也要退出来，别让调用方等到天荒地老
@@ -156,6 +164,19 @@ internal static class Program
                 Console.WriteLine("按下点不在源窗口上 → 放弃这次拖放（不然 DoDragDrop 会卡住）");
                 Console.Out.Flush();
                 Environment.Exit(4);
+            }
+
+            // 光标在窗口上还不够：可能有别的窗口压在上面（源窗口虽置顶，仍防一手）。
+            // 真被压住的话，合成出来的按下会送给**那个**窗口，本窗口收不到 MouseDown，
+            // DoDragDrop 根本没机会开始，最后只会等到看门狗超时 ——
+            // 那种失败长得和"功能坏了"一模一样，所以要在源头把它拦下来。
+            var over = WindowFromPoint(center);
+            if (over != source.Handle)
+            {
+                Console.WriteLine($"按下点上压着别的窗口（hwnd={over}，本窗口={source.Handle}）"
+                                  + " → 放弃这次拖放；桌面被其它程序占住了，不是被测程序的问题");
+                Console.Out.Flush();
+                Environment.Exit(5);
             }
 
             Console.Out.Flush();

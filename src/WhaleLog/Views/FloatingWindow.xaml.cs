@@ -891,11 +891,15 @@ public partial class FloatingWindow : Window
     }
 
     /// <summary>
-    /// 收到文件之后的全部动作：打开主面板 → 记入今天 → 弹气泡报结果。
+    /// 收到文件之后的全部动作：归档 → （按设置）打开主面板 → 弹气泡报结果。
     ///
     /// 单独抽出来是为了让自检能绕过 OLE 事件层直接调它 —— <see cref="DragEventArgs"/>
     /// 的构造函数是 internal，测试里造不出来，能覆盖的边界只能划在这里。
     /// "系统到底有没有把拖放交到这个窗口上"由 tools/drag_probe.py 做真实拖放来验。
+    ///
+    /// 两条路的**归档行为必须一模一样**（都走 FileIntakeService、都记入今天），
+    /// 差别只有"要不要把主面板叫出来" —— 设置项的名字说的正是这件事，
+    /// 别让它只掐掉半个动作（那会变成"面板照样弹出来、只是没切页"，与开关的承诺不符）。
     /// </summary>
     public async Task<string> AcceptDropAsync(string[] paths)
     {
@@ -905,6 +909,15 @@ public partial class FloatingWindow : Window
         PlayRandomOfRole(_clickActions);
 
         var app = (App)Application.Current;
+
+        if (!App.Settings.Settings.AutoOpenMainWindowOnDrop)
+        {
+            // 用户关了「自动打开主面板」：安静地收下，只用气泡回报。
+            var quiet = await app.ArchiveFromFloatingQuietlyAsync(paths);
+            ShowBubble("已归档", quiet);
+            return quiet;
+        }
+
         var main = await app.ShowMainWindowForDropAsync();
 
         if (main == null)

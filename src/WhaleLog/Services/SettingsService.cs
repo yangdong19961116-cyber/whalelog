@@ -46,7 +46,32 @@ public sealed class SettingsService
             Settings = new AppSettings();
         }
 
+        Migrate();
         Sanitize();
+    }
+
+    /// <summary>
+    /// 设置文件的一次性迁移。**只在 <see cref="AppSettings.SettingsRevision"/> 落后时才动手**，
+    /// 用户自己选过的值不动。
+    ///
+    /// 第 2 代（1.4.4）：`autoOpenMainWindowOnDrop` 在第 1 代是个**死字段** ——
+    /// 没有任何代码读它，只写不读。所以磁盘上那个 `false` 不代表用户的任何选择，
+    /// 只代表当年写进文件时的默认值。1.4.4 起它真的管事了（拖文件到小鲸鱼上要不要弹主面板），
+    /// 而这个新功能必须默认能用 —— 否则用户拖完"什么都没发生"、还找不到原因
+    /// （表现就是"新功能没生效"，而配置文件里那一行看着毫无异常）。
+    ///
+    /// 所以碰见第 1 代的文件就把这一项强制打开一次；此后用户怎么选都尊重。
+    /// 这是**唯一**一处按代次覆盖用户文件的地方，加新迁移前先想清楚有没有别的办法。
+    /// </summary>
+    private void Migrate()
+    {
+        const int CurrentRevision = 2;
+
+        var s = Settings;
+        if (s.SettingsRevision >= CurrentRevision) return;
+
+        s.AutoOpenMainWindowOnDrop = true;
+        s.SettingsRevision = CurrentRevision;
     }
 
     /// <summary>把明显越界的值拉回合理区间，避免外部手改配置把程序搞崩。</summary>

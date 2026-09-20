@@ -42,6 +42,7 @@ internal static class Program
             TestReports();
             TestFileDateGrouping();
             TestSettingsClamp();
+            TestSettingsMigration();
             TestIntakeSummary();
             TestAssetCatalog(workspace);
             TestCommandLine();
@@ -607,6 +608,45 @@ internal static class Program
             "NaN 位置往返之后应该还是 NaN，而不是变成 0");
         Check(reloaded.Settings.FloatingTop is double v && double.IsNaN(v),
             "上下两个坐标都要能往返");
+    }
+
+    /// <summary>
+    /// 设置文件的一次性迁移。
+    ///
+    /// 要钉住的规则：`autoOpenMainWindowOnDrop` 在 1.4.3 及以前是个**死字段**
+    /// （只写不读），磁盘上那个 `false` 不代表用户在"拖文件到小鲸鱼上要不要弹主面板"
+    /// 这件事上做过任何选择。1.4.4 起它真的管事了，这时必须替老配置打开一次，
+    /// 否则老用户升级上来会看到"拖上去什么都没发生"、而配置文件里那一行看着毫无异常。
+    ///
+    /// 反过来也要钉住：**用户自己选过的值不许被覆盖** —— 迁移只认代次，不认内容。
+    /// </summary>
+    private static void TestSettingsMigration()
+    {
+        Section("设置：一次性迁移");
+
+        // 第 1 代的文件：没有 settingsRevision，且死字段是 false
+        File.WriteAllText(AppPaths.SettingsFile,
+            """{"autoOpenMainWindowOnDrop": false, "floatingScale": 1.2}""");
+
+        var old = new SettingsService();
+        old.Load();
+        Check(old.Settings.AutoOpenMainWindowOnDrop,
+            "老配置（1.4.3 及以前）升级上来时必须把「拖到小鲸鱼上自动打开主面板」打开一次");
+        Check(old.Settings.SettingsRevision >= 2,
+            $"迁移后应记下代次，实际 {old.Settings.SettingsRevision}");
+        Check(Math.Abs(old.Settings.FloatingScale - 1.2) < 1e-9,
+            "迁移不该顺手改别的字段");
+
+        // 第 2 代的文件：用户自己关掉的，必须原样尊重
+        File.WriteAllText(AppPaths.SettingsFile,
+            """{"autoOpenMainWindowOnDrop": false, "settingsRevision": 2}""");
+
+        var newer = new SettingsService();
+        newer.Load();
+        Check(!newer.Settings.AutoOpenMainWindowOnDrop,
+            "已经是新一代配置、用户自己关掉的开关，绝不能又被迁移打开");
+
+        try { File.Delete(AppPaths.SettingsFile); } catch { /* 删不掉就算了 */ }
     }
 
     /// <summary>

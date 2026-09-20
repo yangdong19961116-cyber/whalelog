@@ -417,6 +417,38 @@ public partial class App : Application
         return main;
     }
 
+    /// <summary>
+    /// 悬浮窗拖入文件、但用户关掉了「自动打开主面板」时的**静默归档**。
+    ///
+    /// 归档本身是 <see cref="Intake"/> 干的活，主面板只是它的显示层 ——
+    /// 所以不进主面板也能把文件收下。已经开着的那个主面板（用户自己开的）只让它
+    /// 把列表和统计跟上，**不会被叫到前面来**：关掉这个开关的意图就是"别打扰我"。
+    ///
+    /// 返回给悬浮窗做气泡提示的一句话。
+    /// </summary>
+    public async Task<string> ArchiveFromFloatingQuietlyAsync(string[] paths)
+    {
+        IReadOnlyList<IntakeResult> results;
+
+        try
+        {
+            // 一律记入今天，和「会自动打开主面板」那条路完全一致 ——
+            // 两个开关只差"要不要弹面板"，归档行为必须一模一样。
+            results = await Intake.IntakeAsync(paths, DateTime.Today);
+        }
+        catch (Exception ex)
+        {
+            LogCrash(ex);
+            return "归档出错，详情看日志";
+        }
+
+        _mainWindow?.RefreshAfterExternalIntake();
+
+        // 措辞和"会自动打开主面板"那条路保持一致（同样一句 "已记入今天：…"）——
+        // 两条路只差"要不要弹面板"，用户看到的话不该有两种说法。
+        return "已记入今天：" + FileIntakeService.Summarize(results);
+    }
+
     // ------------------------------------------------------------------
     // 诊断自检用的入口
     // ------------------------------------------------------------------

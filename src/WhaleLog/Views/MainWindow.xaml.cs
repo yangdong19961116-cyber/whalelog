@@ -1410,12 +1410,27 @@ public partial class MainWindow : Window
         // 顺序反了就会记到用户上次翻到的那一天去。
         if (_currentDate.Date != DateTime.Today) LoadDay(DateTime.Today);
 
-        if (App.Settings.Settings.AutoOpenMainWindowOnDrop) SwitchTo(NavPage.Files);
+        // 要不要弹主面板由调用方决定（见 App.ArchiveFromFloatingQuietlyAsync）——
+        // 走到这里就说明用户没关那个开关，那就切到归档页给他看。
+        SwitchTo(NavPage.Files);
 
         var results = await IntakeAsync(paths);
         if (results == null) return "归档出错，详情看主面板左下角";
 
         return "已记入今天：" + FileIntakeService.Summarize(results);
+    }
+
+    /// <summary>
+    /// 静默归档（悬浮窗那条、且用户关掉了「自动打开主面板」）之后，
+    /// 让**已经存在**的这个窗口把清单和统计跟上。
+    ///
+    /// 只刷新，不激活 —— 用户关掉那个开关就是要"别打扰我"。
+    /// 窗口还没创建过的话什么都不用做：下次打开时本来就会重新装一遍。
+    /// </summary>
+    public void RefreshAfterExternalIntake()
+    {
+        RefreshFileList();
+        RefreshStats();
     }
 
     /// <summary>

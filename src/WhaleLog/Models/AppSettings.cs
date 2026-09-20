@@ -97,10 +97,19 @@ public sealed class AppSettings
     /// 默认开。这个开关管的是**悬浮窗**那条路：主面板自己拖入时它本来就在最前面，
     /// 无所谓"打开"。
     ///
-    /// 关掉之后归档照做，只是不抢当前视图 —— 结果由悬浮窗的气泡回报。
+    /// 关掉之后归档照做，只是不打开主面板、也不抢当前视图 —— 结果由悬浮窗的气泡回报。
     /// 但默认必须是开：不然拖上去"什么都没发生"，这个功能在用户看来等于不存在。
     /// </summary>
     public bool AutoOpenMainWindowOnDrop { get; set; } = true;
+
+    /// <summary>
+    /// 设置文件的"代次"，只在需要一次性迁移时动它（见 <c>SettingsService.Migrate</c>）。
+    ///
+    /// 0 或缺失 = 1.4.3 及以前写下的文件。
+    /// 用它区分"用户没选过、只是继承了当年那个默认值"和"用户自己选过"——
+    /// 少了它就只能猜，而猜错的方向恰好是"新功能看起来没生效"。
+    /// </summary>
+    public int SettingsRevision { get; set; }
 
     // ---- 系统集成 ----
     public bool StartWithWindows { get; set; }
