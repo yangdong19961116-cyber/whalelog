@@ -1218,6 +1218,7 @@ internal static class Program
         else
         {
             TestVideoDecode(ffmpeg, workspace);
+            TestVideoAlpha(ffmpeg, workspace);
         }
     }
 
@@ -1331,6 +1332,105 @@ internal static class Program
         catch (Exception ex)
         {
             Check(false, "格子边长过小时抛的不是预期异常：" + ex.GetType().Name);
+        }
+    }
+
+    /// <summary>
+    /// 透明素材的 alpha 必须真的解出来。
+    ///
+    /// 这一段是补的账：形象动画一直顶着黑底显示，因为 ffmpeg 默认挑的 native vp9
+    /// 解码器会把 VP9 的 alpha（存在「附加数据」里）整条丢掉 —— 解出来照样是
+    /// 一帧帧 RGBA、帧数也对、一个错都不报，只有 alpha 位全成了 255。
+    /// 当时的测试只数了帧数和字节数，所以一路绿灯发了出去。
+    ///
+    /// 现在改成直接数像素里的透明值。
+    /// </summary>
+    private static void TestVideoAlpha(string ffmpeg, string workspace)
+    {
+        Section("透明视频：alpha 通道");
+
+        var dir = Path.Combine(workspace, "video-alpha");
+        Directory.CreateDirectory(dir);
+
+        const int side = 64;
+        var clip = Path.Combine(dir, "alpha.webm");
+
+        // 左半边不透明的红、右半边全透明
+        var made = RunFfmpeg(ffmpeg, new[]
+        {
+            "-v", "error",
+            "-f", "lavfi",
+            "-i", $"nullsrc=s={side}x{side}:r=24,format=rgba," +
+                  $"geq=r='255':g='0':b='0':a='if(lt(X,{side / 2}),255,0)'",
+            "-frames:v", "24",
+            "-c:v", "libvpx-vp9",
+            "-pix_fmt", "yuva420p",
+            "-y", clip,
+        });
+
+        if (!File.Exists(clip))
+        {
+            Check(false, "造不出带 alpha 的测试素材，跳过：" + made);
+            return;
+        }
+
+        Check(VideoFrameStream.IsVp9Webm(clip),
+            "能认出这是 VP9 素材（webm 的 CodecID 是明文，不用起进程）");
+        Check(!VideoFrameStream.IsVp9Webm(Path.Combine(dir, "根本没有这个文件.webm")),
+            "文件不存在时当成「不是 VP9」，而不是崩掉");
+        Check(VideoFrameStream.FfmpegSupportsVp9Alpha(ffmpeg),
+            "这台 ffmpeg 认 libvpx-vp9 解码器");
+
+        try
+        {
+            using var stream = new VideoFrameStream(ffmpeg, clip, filter: "", cellSide: side, loop: false);
+
+            Check(stream.UsingLibvpx, "透明素材点名了 libvpx 解码器");
+            Check(stream.HasAlpha, "素材被判定为带透明");
+
+            if (!stream.TryTake(out var frame, 10000) || frame == null)
+            {
+                Check(false, "取不到帧：" + stream.Error);
+                return;
+            }
+
+            int clear = 0, opaque = 0;
+            for (int i = 3; i < frame.Length; i += 4)
+            {
+                if (frame[i] == 0) clear++;
+                else if (frame[i] == 255) opaque++;
+            }
+
+            int total = frame.Length / 4;
+
+            // 关键的两条：native vp9 解出来的帧在这两条上都会挂（透明像素是 0 个）
+            Check(clear > 0, $"解出来的帧有透明像素：{clear}/{total}");
+            Check(opaque > 0, $"解出来的帧有实心像素：{opaque}/{total}");
+
+            // 左半不透明、右半透明。alpha 在 VP9 里是 4:2:0 子采样的，
+            // 两个半区交界会有一两个像素的过渡，所以各自往里让 2 像素再看。
+            int leftOpaque = 0, leftTotal = 0, rightClear = 0, rightTotal = 0;
+            for (int y = 0; y < side; y++)
+            {
+                for (int x = 0; x < side / 2 - 2; x++)
+                {
+                    leftTotal++;
+                    if (frame[(y * side + x) * 4 + 3] > 200) leftOpaque++;
+                }
+
+                for (int x = side / 2 + 2; x < side; x++)
+                {
+                    rightTotal++;
+                    if (frame[(y * side + x) * 4 + 3] < 60) rightClear++;
+                }
+            }
+
+            Check(leftOpaque == leftTotal, $"左半边确实是不透明的：{leftOpaque}/{leftTotal}");
+            Check(rightClear == rightTotal, $"右半边确实是透明的：{rightClear}/{rightTotal}");
+        }
+        catch (Exception ex)
+        {
+            Check(false, "透明素材解码抛异常：" + ex.Message);
         }
     }
 

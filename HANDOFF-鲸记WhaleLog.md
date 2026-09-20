@@ -49,14 +49,14 @@
 
 | 项 | 值 |
 |---|---|
-| 版本 | `1.4.1`（`src/WhaleLog/WhaleLog.csproj` 的 `<Version>`，界面读 `Assembly.GetName().Version` 自动跟） |
+| 版本 | `1.4.2`（`src/WhaleLog/WhaleLog.csproj` 的 `<Version>`，界面读 `Assembly.GetName().Version` 自动跟） |
 | TFM | `net8.0-windows`（**不要加 OS 版本号**） |
 | 平台 | AnyCPU（**不能设 x64**，见第 5 节） |
 | 主程序 | `src/WhaleLog/`：App + MainWindow + `Views/`(6 个窗口 + `SpritePlayer`/`Converters`/`AssetImageExtension`) + `Services/`(24 个，含 `AnimSheet`/`AnimLibrary`/`CharacterPacks`/`VideoDecoder`/`FfmpegLocator`) + `Models/`(4 个) |
 | 可运行产物 | `src/WhaleLog/bin/Release/net8.0-windows/WhaleLog.exe`；解压态副本 `build/portable/鲸记 WhaleLog/` |
 | 分发产物 | **统一放 `E:\jingji`**（2026-09-17 起的项目约定，别再丢桌面）：便携包 `鲸记 WhaleLog <版本>.zip`（自包含、解压即用，版本号从 csproj 读）、交接包 `鲸记 WhaleLog 项目交接包 <日期>.zip`。两个打包脚本**不带参数**就输出到这儿，目录不存在会自动建 |
-| 自测 | `tools/selftest/` **294 项**断言，直接编译主程序非界面部分，测的是发货代码 |
-| 诊断自检 | `WhaleLog.exe --selfcheck` → `logs\selfcheck.log`（**195 项，21 个段落**；另有一个鲸记在跑时是 194 ——「全局快捷键」那条会跳过；含「形象包」「透明视频」两节，视频那节**真的起一次 ffmpeg 解一遍**，形象那节会先列出**真实素材目录里有哪些形象包**） |
+| 自测 | `tools/selftest/` **303 项**断言，直接编译主程序非界面部分，测的是发货代码 |
+| 诊断自检 | `WhaleLog.exe --selfcheck` → `logs\selfcheck.log`（**21 个段落**；本机真实数据下 **207 项**，隔离空数据时 201、另有鲸记在跑时再少 1 ——「全局快捷键」那条会跳过。**看结尾「结论：全部通过」就行，别死抠数字**；含「形象包」「透明视频」两节，视频那节**真的起一次 ffmpeg 解一遍**，形象那节会先列出**真实素材目录里有哪些形象包**，另有「透明通道」检查**造一段带真 alpha 的 VP9 素材、解一帧逐像素数透明值**） |
 | 形象素材 | `Assets\characters\dsh\`：106 个动作 / 25423 帧 / **51.9 MB**（透明 webm，原样搬运）。播放要 `ffmpeg.exe` 在程序目录（便携包已带） |
 | 版本控制 | ✅ 有 git 仓库（`workwork\.git`），基线 `f05c39b`，当前 HEAD 见 `git log` |
 
@@ -290,14 +290,14 @@ build-whalelog.cmd
 :: 只编译不发布
 dotnet build WhaleLog.sln -c Release
 
-:: 自测（294 项断言，直接编译主程序非界面部分）
+:: 自测（303 项断言，直接编译主程序非界面部分）
 dotnet build tools\selftest\selftest.csproj -c Release
 dotnet tools\selftest\bin\Release\net8.0\WhaleLog.SelfTest.dll
 ::  加 --keep 保留临时目录，方便翻看产出的 Markdown 和 index.json
 ::  ⚠ 自测里含「真的起一次 ffmpeg 解一遍视频」的用例，先把这个 exe 拷到
 ::    tools\selftest\bin\Release\net8.0\ffmpeg.exe，否则那几项会跳过/失败
 
-:: 诊断自检 → %AppData%\WhaleLog\logs\selfcheck.log（195 项，21 段；有另一个实例在跑时 194）
+:: 诊断自检 → %AppData%\WhaleLog\logs\selfcheck.log（21 段；真实数据 207 项，隔离空数据 201）
 WhaleLog.exe --selfcheck          :: --quiet 只写日志不弹窗
 ::  ⚠ 脚本里跑一定要带 --quiet：不带会弹一个「自检完成」的对话框等人点，
 ::    批处理/agent 里就表现为"卡住不动"，直到超时被杀（日志其实早写完了）
@@ -314,7 +314,7 @@ WhaleLog.exe --export-assets D:\tmp\Assets
 :: 打包自包含 zip（不带参数就输出到 E:\jingji\鲸记 WhaleLog <版本>.zip，版本号从 csproj 读）
 python tools\make_portable_zip.py
 python tools\make_portable_zip.py D:\某目录
-python tools\make_portable_zip.py "E:\jingji\鲸记 WhaleLog 1.4.1.zip"
+python tools\make_portable_zip.py "E:\jingji\鲸记 WhaleLog 1.4.2.zip"
 ::  脚本会把 assets\characters（形象包）和 ffmpeg.exe 一并拷进去
 ::  找不到 ffmpeg 时按 WHALELOG_FFMPEG → assets\tools → PATH → imageio_ffmpeg 的顺序找
 
@@ -563,6 +563,54 @@ python tools\drag_probe.py
   等人点，在批处理 / agent 里表现为"卡住不动直到超时"，而日志其实早就写完了 ——
   极易误判成"自检跑不完"。
 
+### 补丁 1.4.2（2026-09-20 当天下午，用户报「运行时颜色不对、锯齿严重、还有黑底」）
+
+**现象**：用户贴了一张悬浮窗截图 —— 角色**顶着一个黑色方块**，边缘生硬。
+看着像"配色错了"，其实是**整个 alpha 通道没了**。
+
+**根因**：`VideoDecoder.cs` 起 ffmpeg 时没点名解码器，ffmpeg 默认挑 **native vp9**，
+而它**不认 VP9 的 alpha 附加数据**（matroska `BlockAdditional`，`ffmpeg -i` 里写着 `ALPHA_MODE: 1`）。
+它照样一帧帧吐 RGBA，只是 **alpha 位全填 255** —— 透明区成了不透明黑，羽化边缘成了硬边。
+
+实测对照（`idle-待机呼吸休闲`，241 帧）：
+
+| 解码器 | 像素格式 | alpha 分布 | 全解耗时 |
+|---|---|---|---|
+| native vp9（默认） | `yuv420p` | **255 占 100%** | 0.155 s |
+| `libvpx-vp9`（点名） | `yuva420p` | 0 / 255 各占一半 | 0.183 s |
+
+颜色本身**一个字节都没错**（不透明像素逐像素比对，最大差值 0）——
+所以不是色彩空间问题，纯粹是 alpha 丢了。
+
+**修了什么**：
+
+1. `VideoDecoder.cs`：`IsVp9Webm`（读文件头 64 KB 搜明文 `V_VP9`，不起进程）+
+   `FfmpegSupportsVp9Alpha`（问一次 `-decoders` 后缓存）；两条都满足才在 `-i` 前加
+   `-c:v libvpx-vp9`。新增 `IsVp9Source` / `UsingLibvpx` / `HasAlpha` 三个诊断属性，
+   `Describe()` 里会写明「透明正常 / ⚠ 透明丢了」。
+2. `DiagnosticsService.cs`：新增 `ProbeVideoAlpha` —— 现场用 ffmpeg 造一段
+   **左半不透明、右半全透明**的 VP9 素材（`geq` 直接算 alpha），解一帧**逐像素数透明值**。
+   6 条断言。（该节挂在「透明视频动画」下，段落数仍是 21。）
+3. `tools/selftest/`：新增 `TestVideoAlpha`，同样的合成素材，9 条断言；自测 **294 → 303**。
+
+**验证**（这次做了反向验证，值得记）：把 `UsingLibvpx` 强行置 false 重编，自检立刻报
+`✗ 解出来的帧真有透明像素：全透明 0/4096 个像素 —— alpha 整条丢了`，3 项未通过；
+改回来后 **207 项全过**。**能失败的测试才算测试。**
+
+界面层面也出了「修复前 / 修复后」对照图（各跑一次 `--shot-floating`，同一位置同一个角色）：
+修复前是黑方块，修复后透明正常。产物在 `outputs\对比_形象黑底修复前后.png`。
+
+**这一轮抓到的坑（值得记）**：
+
+- **"能播、帧数对、不报错"完全不能说明画面对。** 旧自检只断言帧数和每帧字节数，
+  而 alpha 全丢时这两条**全都通过** —— 所以黑底一路混进了 1.4.0 / 1.4.1 两个出厂包。
+  凡是有"像素值正确性"要求的地方，都要数**内容**，不能只数**结构**。
+- **同为 VP9，两个解码器对 alpha 的处理不一样。** native 丢、libvpx 留。
+  这和 `docs/dsh-pet-集成方案与调研.md` 里记的「PyAV 会静默丢 alpha」是**同一类**问题：
+  VP9 的透明不在像素里，在附加数据里，解码器可以选择性无视它。
+- **别急着怀疑色彩空间。** 一开始看到"颜色不对"很容易往 `bt709` / 色彩矩阵上想，
+  实测逐像素比对后最大差值是 0 —— 是那个方向本身就错了。先测，再猜。
+
 ---
 
 ## 9. 建议的下一步
@@ -615,10 +663,13 @@ python tools\drag_probe.py
    换成别的源形象则照着 `tools\convert_dsh_webm.py` 改（它是给 dsh 写死的）。
 5. **README 自列的四项待办**（第 4 节 C）：周报对比视图、拖入自动打标、历史导出、语音输入。
 6. **产物已全部搬到 `E:\jingji`**（桌面已清空，只剩快捷方式）：1.1 / 1.2 / 1.3 / 1.3.1 / 1.3.2 /
-   1.4.0 / **1.4.1**（七个便携包）+ 三个交接包 + `新设备继续指令.md`。以后打包**不带参数**就落到那儿
+   1.4.0 / 1.4.1（七个便携包）+ 三个交接包 + `新设备继续指令.md`。以后打包**不带参数**就落到那儿
    （脚本会自动建目录），别再丢桌面。
    - **1.4.1 是修「设置页新形象按钮点了没反应」的补丁包**，功能与 1.4.0 相同，只是
-     编译产物里自带了 `Assets\characters\`；**以后装 1.4.1，别再用 1.4.0**。
+     编译产物里自带了 `Assets\characters\`。
+   - **1.4.2 是修「形象顶着黑底、边缘生硬」的补丁包** —— 根因是解码透明 webm 时
+     没点名 `libvpx-vp9`，alpha 被 native 解码器整条丢掉（详见第 4 节补丁 1.4.2）。
+     **装 1.4.2，1.4.0 / 1.4.1 里所有形象动画都是黑底。**
    ⚠️ **1.4.x 的包是 139.6 MB**（以前都是 58 MB）—— 多出来的是 52 MB 形象素材
    和 84 MB 的 `ffmpeg.exe`（两者都是已压缩内容，zip 压不动，别以为是脚本写错了）。
    想要小包就自己删掉包里的 `ffmpeg.exe`：**静态形象和精灵图动画照常**，

@@ -417,6 +417,10 @@ public static class DiagnosticsService
         Section("透明视频动画");
         ProbeVideoPlayback(Check, sb);
 
+        // 上面那节测的是"动画能不能播"，这节测的是"播出来的画面透不透明"。
+        // 两回事：帧数全对、一个错都不报，但 alpha 全丢了，角色会顶着黑底显示。
+        ProbeVideoAlpha(Check, sb);
+
         // ---- 月历面板 ----
         // 网格偏移、42 格、跨月边界这类算错的话，日历"看着正常"但日期整体错位，
         // 肉眼很难发现。这里把几何和事件都断言一遍。
@@ -1863,6 +1867,140 @@ public static class DiagnosticsService
         if (window.ShowingHoverImage) return "悬浮差分图";
         if (window.ShowingStillImage) return "静态本体";
         return "（认不出来）";
+    }
+
+    /// <summary>
+    /// 透明 webm 的 alpha 通道到底解出来没有。
+    ///
+    /// 这一节是补的账：1.4.1 之前形象动画一直顶着黑底显示 —— ffmpeg 默认挑的
+    /// native vp9 解码器会把 alpha（VP9 把它存在「附加数据」里）整条丢掉，
+    /// 解出来照样是一帧帧 RGBA，只是 alpha 位全填 255。
+    /// 当时的自检只断言了"帧数对不对""每帧字节数对不对"，这两条它**全过** ——
+    /// 于是黑底顺利混进了出厂包，直到有人肉眼看见。
+    ///
+    /// 所以这里不看帧数，**直接数像素里的透明值**：现造一段左半边不透明、
+    /// 右半边全透明的 VP9 素材，解一帧出来数 alpha。全 255 就说明透明丢了。
+    /// </summary>
+    private static void ProbeVideoAlpha(CheckFn check, StringBuilder sb)
+    {
+        var ffmpeg = FfmpegLocator.Path;
+        if (ffmpeg == null)
+        {
+            sb.AppendLine(Indent("（本机没找到 ffmpeg，跳过透明通道检查）"));
+            return;
+        }
+
+        const int side = 64;
+        var probeRoot = Path.Combine(AppPaths.LogDir, "video-alpha-probe");
+        var clip = Path.Combine(probeRoot, "alpha.webm");
+
+        try
+        {
+            Directory.CreateDirectory(probeRoot);
+
+            if (!TryMakeProbeAlphaClip(ffmpeg, clip, side, out var makeError))
+            {
+                check("造一段带透明通道的测试素材", false, makeError);
+                return;
+            }
+
+            check("测试素材确实是 VP9（透明得靠 libvpx 才解得出来）",
+                VideoFrameStream.IsVp9Webm(clip), Path.GetFileName(clip));
+
+            check("这台 ffmpeg 带 libvpx-vp9 解码器",
+                VideoFrameStream.FfmpegSupportsVp9Alpha(ffmpeg),
+                "缺这个解码器时透明会丢，角色会带黑底");
+
+            using var stream = new VideoFrameStream(ffmpeg, clip, filter: "", cellSide: side, loop: false);
+
+            check("透明素材点名了 libvpx 解码器", stream.UsingLibvpx,
+                stream.UsingLibvpx ? "已点名" : "退回了 native —— 透明会丢");
+
+            check("素材被判定为「带透明」", stream.HasAlpha);
+
+            if (!stream.TryTake(out var frame, 10000) || frame == null)
+            {
+                check("解出一帧来数像素", false, "等了 10 秒没取到帧：" + stream.Error);
+                return;
+            }
+
+            int clear = 0, opaque = 0;
+            for (int i = 3; i < frame.Length; i += 4)
+            {
+                if (frame[i] == 0) clear++;
+                else if (frame[i] == 255) opaque++;
+            }
+
+            int total = frame.Length / 4;
+
+            // 这是整节的重点：native vp9 解出来的帧在这一条上会是 0 个透明像素
+            check("解出来的帧真有透明像素（alpha 没被丢掉）",
+                clear > 0,
+                $"全透明 {clear}/{total} 个像素" +
+                (clear == 0 ? " —— alpha 整条丢了，角色会带着黑底显示" : ""));
+
+            check("解出来的帧也有实心像素（没把角色一起弄透明）",
+                opaque > 0, $"全不透明 {opaque}/{total} 个像素");
+        }
+        catch (Exception ex)
+        {
+            check("透明通道", false, ex.Message);
+        }
+        finally
+        {
+            try { Directory.Delete(probeRoot, true); } catch { /* 删不掉不影响结论 */ }
+        }
+    }
+
+    /// <summary>
+    /// 造一段**带真 alpha** 的 VP9 素材：左半边不透明的红、右半边全透明。
+    ///
+    /// 用 geq 直接算 alpha（X 是像素横坐标），于是透明是"结构性"的 ——
+    /// 左半必须是 255、右半必须是 0，解码对不对一眼能判，不用赌编码器的取舍。
+    /// </summary>
+    private static bool TryMakeProbeAlphaClip(string ffmpeg, string path, int side, out string error)
+    {
+        error = "";
+
+        try
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo(ffmpeg)
+            {
+                RedirectStandardError = true,
+                RedirectStandardOutput = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+
+            void Arg(string a) => psi.ArgumentList.Add(a);
+
+            // a='...' 上的单引号是 ffmpeg 滤镜语法里的转义，不是 shell 的：
+            // if(lt(X,32),255,0) 里的逗号不引起来会被当成「下一个滤镜」
+            Arg("-v"); Arg("error");
+            Arg("-f"); Arg("lavfi");
+            Arg("-i"); Arg($"nullsrc=s={side}x{side}:r=24,format=rgba," +
+                           $"geq=r='255':g='0':b='0':a='if(lt(X,{side / 2}),255,0)'");
+            Arg("-frames:v"); Arg("24");
+            Arg("-c:v"); Arg("libvpx-vp9");
+            Arg("-pix_fmt"); Arg("yuva420p");
+            Arg("-y"); Arg(path);
+
+            using var process = System.Diagnostics.Process.Start(psi);
+            if (process == null) { error = "进程没起来"; return false; }
+
+            var stderr = process.StandardError.ReadToEnd();
+            process.WaitForExit(20000);
+
+            if (File.Exists(path) && new FileInfo(path).Length > 0) return true;
+
+            error = stderr.Length > 300 ? stderr[^300..] : stderr;
+            return false;
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            return false;
+        }
     }
 
     /// <summary>造一个视频动作目录（帧表里用滤镜把源素材放成格子大小）。</summary>
