@@ -56,7 +56,7 @@
 | 可运行产物 | `src/WhaleLog/bin/Release/net8.0-windows/WhaleLog.exe`；解压态副本 `build/portable/鲸记 WhaleLog/` |
 | 分发产物 | **统一放 `E:\jingji`**（2026-09-17 起的项目约定，别再丢桌面）：便携包 `鲸记 WhaleLog <版本>.zip`（自包含、解压即用，版本号从 csproj 读）、交接包 `鲸记 WhaleLog 项目交接包 <日期>.zip`。两个打包脚本**不带参数**就输出到这儿，目录不存在会自动建 |
 | 自测 | `tools/selftest/` **294 项**断言，直接编译主程序非界面部分，测的是发货代码 |
-| 诊断自检 | `WhaleLog.exe --selfcheck` → `logs\selfcheck.log`（**194 项，21 个段落**；含「形象包」「透明视频」两节，视频那节**真的起一次 ffmpeg 解一遍**；形象那节会先列出**真实素材目录里有哪些形象包**） |
+| 诊断自检 | `WhaleLog.exe --selfcheck` → `logs\selfcheck.log`（**195 项，21 个段落**；另有一个鲸记在跑时是 194 ——「全局快捷键」那条会跳过；含「形象包」「透明视频」两节，视频那节**真的起一次 ffmpeg 解一遍**，形象那节会先列出**真实素材目录里有哪些形象包**） |
 | 形象素材 | `Assets\characters\dsh\`：106 个动作 / 25423 帧 / **51.9 MB**（透明 webm，原样搬运）。播放要 `ffmpeg.exe` 在程序目录（便携包已带） |
 | 版本控制 | ✅ 有 git 仓库（`workwork\.git`），基线 `f05c39b`，当前 HEAD 见 `git log` |
 
@@ -297,7 +297,7 @@ dotnet tools\selftest\bin\Release\net8.0\WhaleLog.SelfTest.dll
 ::  ⚠ 自测里含「真的起一次 ffmpeg 解一遍视频」的用例，先把这个 exe 拷到
 ::    tools\selftest\bin\Release\net8.0\ffmpeg.exe，否则那几项会跳过/失败
 
-:: 诊断自检 → %AppData%\WhaleLog\logs\selfcheck.log（194 项，21 段）
+:: 诊断自检 → %AppData%\WhaleLog\logs\selfcheck.log（195 项，21 段；有另一个实例在跑时 194）
 WhaleLog.exe --selfcheck          :: --quiet 只写日志不弹窗
 ::  ⚠ 脚本里跑一定要带 --quiet：不带会弹一个「自检完成」的对话框等人点，
 ::    批处理/agent 里就表现为"卡住不动"，直到超时被杀（日志其实早写完了）
@@ -525,7 +525,7 @@ python tools\drag_probe.py
 | `WhaleLog.csproj`（改，**1.4.1**） | 把仓库的 `assets\characters\` 随编译产物拷到 `Assets\characters\` —— 见下面的补丁 |
 | `MainWindow.xaml.cs`、`App.xaml.cs`（改，**1.4.1**） | 形象按钮加诊断钩子；缺素材的原因写进说明行；新增 `--shot-settings` |
 
-**验证状态**：主程序 `-c Release` **0 错 0 警**；自测 **294 项全过**；自检 **194 项全过**；
+**验证状态**：主程序 `-c Release` **0 错 0 警**；自测 **294 项全过**；自检 **195 项全过**；
 素材包 `--check` 0 硬问题、横向漂移 0.00px；便携包解压实测可跑。
 
 ### 补丁 1.4.1（2026-09-20 当天下午，用户报「设置里点新形象没反应」）
@@ -614,10 +614,12 @@ python tools\drag_probe.py
    表情差分走 `python tools\prepare_expression.py 新图.png out\whale-hover.png`，IoU ≥ 0.98 才算合格。
    换成别的源形象则照着 `tools\convert_dsh_webm.py` 改（它是给 dsh 写死的）。
 5. **README 自列的四项待办**（第 4 节 C）：周报对比视图、拖入自动打标、历史导出、语音输入。
-6. **产物已全部搬到 `E:\jingji`**（桌面已清空，只剩快捷方式）：1.1 / 1.2 / 1.3 / 1.3.1 / 1.3.2 / **1.4.0**
-   六个便携包 + 三个交接包 + `新设备继续指令.md`。以后打包**不带参数**就落到那儿
+6. **产物已全部搬到 `E:\jingji`**（桌面已清空，只剩快捷方式）：1.1 / 1.2 / 1.3 / 1.3.1 / 1.3.2 /
+   1.4.0 / **1.4.1**（七个便携包）+ 三个交接包 + `新设备继续指令.md`。以后打包**不带参数**就落到那儿
    （脚本会自动建目录），别再丢桌面。
-   ⚠️ **1.4.0 的包是 139.6 MB**（以前都是 58 MB）—— 多出来的是 52 MB 形象素材
+   - **1.4.1 是修「设置页新形象按钮点了没反应」的补丁包**，功能与 1.4.0 相同，只是
+     编译产物里自带了 `Assets\characters\`；**以后装 1.4.1，别再用 1.4.0**。
+   ⚠️ **1.4.x 的包是 139.6 MB**（以前都是 58 MB）—— 多出来的是 52 MB 形象素材
    和 84 MB 的 `ffmpeg.exe`（两者都是已压缩内容，zip 压不动，别以为是脚本写错了）。
    想要小包就自己删掉包里的 `ffmpeg.exe`：**静态形象和精灵图动画照常**，
    只有透明视频动作播不了（自检的「透明视频」那节会因此报出来）。

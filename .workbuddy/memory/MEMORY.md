@@ -37,7 +37,7 @@
 打包 `python tools/make_portable_zip.py [out.zip]` → 自包含 zip（默认落 `E:\jingji`）；
 自测 `tools/selftest/`（**294 项**断言，直接编译主程序非界面部分；
 含真起 ffmpeg 解视频的用例 → 先把 ffmpeg 拷到 `tools\selftest\bin\Release\net8.0\`）；
-诊断 `WhaleLog.exe --selfcheck` → `logs\selfcheck.log`（**194 项 / 21 段**；同样要 ffmpeg 在旁边；
+诊断 `WhaleLog.exe --selfcheck` → `logs\selfcheck.log`（**195 项 / 21 段**，有另一个实例在跑时 194；同样要 ffmpeg 在旁边；
 **脚本里跑必须带 `--quiet`**，否则弹一个"自检完成"对话框等人点，表现为卡死到超时）；
 截图 `--shot`/`--shot-notes`/`--shot-settings`/`--shot-floating`，均支持 `--x 值` 和 `--x=值`；
 交互探针 `python tools/drag_probe.py`（合成真实鼠标，会动光标、要求先退出运行实例 → 手动跑）。
