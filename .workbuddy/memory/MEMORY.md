@@ -25,7 +25,14 @@
   * ⚠️ **踩过**：升版本时只改了版本号、没同步 `AddedDate`，新版本就永远粘在首次归档那天，
     产生它的那天反而查不到（用户 9/17 报的正是这个）。老数据用
     `python tools\repair_archive_dates.py`（默认只预览，`--apply` 才写）按版本历史拆回各天。
+  * 归档会主动跳过**自己数据目录里**的文件（免得把 index.json 又拖回来）。
+    判断必须按**路径前缀 + 目录分隔符**比 —— 直接用 `AppPaths.Root` 做 `StartsWith`
+    会误伤名字以数据目录名开头的**兄弟目录**，整批静默跳过（1.4.4 修，现象是"接住了但归档 0 条"）。
 - 悬浮窗：鲸鱼娘抠图，透明置顶、松手吸边、收起成贴边小头像；显示条目数/文件数/倒计时。
+  **1.4.4 起：文件（或文件夹）拖到小鲸鱼身上就会自动打开主面板 + 切到「文件归档」页 +
+  一律记到今天**（开关 `AutoOpenMainWindowOnDrop`，默认开；关掉只静默归档不弹面板）。
+  悬浮窗只负责"支起主面板 + 弹气泡"，归档仍走 `FileIntakeService`，规则与主面板完全一致。
+  ⚠️ 给悬浮窗加任何交互前先看那条「透明像素接不住拖放」的坑（见「探针/自检纪律」）。
 - 提醒：默认 18:00 提前 15 分钟（气泡 + 弹跳 + 音效 + 托盘通知）；`Ctrl+Alt+N` 快速记一笔；
   日报/周报汇总；桌面快捷方式自建；开机自启。
 - **硬性约束：绝不移动/重命名/删除用户原文件。** 快照模式（复制副本）默认关闭。
@@ -35,13 +42,14 @@
 **受限会话里 restore 报 `path1` 为 null 时先跑 `python tools/mkenv.py` 再 `source .tmp-env.sh`**
 （真因是 bash 拿不到 Windows 会话的环境变量，不是"离线做不到"）；
 打包 `python tools/make_portable_zip.py [out.zip]` → 自包含 zip（默认落 `E:\jingji`）；
-自测 `tools/selftest/`（**305 项**断言，直接编译主程序非界面部分；
+自测 `tools/selftest/`（**312 项**断言，直接编译主程序非界面部分；
 含真起 ffmpeg 解视频的用例 → 先把 ffmpeg 拷到 `tools\selftest\bin\Release\net8.0\`）；
-诊断 `WhaleLog.exe --selfcheck` → `logs\selfcheck.log`（**208 项 / 21 段**，隔离空数据 202、
+诊断 `WhaleLog.exe --selfcheck` → `logs\selfcheck.log`（**217 项 / 22 段**，隔离空数据更少几项、
 有另一个实例在跑时再少 1；同样要 ffmpeg 在旁边；
 **脚本里跑必须带 `--quiet`**，否则弹一个"自检完成"对话框等人点，表现为卡死到超时）；
 截图 `--shot`/`--shot-notes`/`--shot-settings`/`--shot-floating`，均支持 `--x 值` 和 `--x=值`；
-交互探针 `python tools/drag_probe.py`（合成真实鼠标，会动光标、要求先退出运行实例 → 手动跑）。
+交互探针 `python tools/drag_probe.py`（合成真实鼠标，会动光标、要求先退出运行实例 → 手动跑）；
+拖放探针 `python tools/drop_probe.py`（合成真实 OLE 拖放，先 `dotnet build tools\dragsource\`；同上要手动跑）。
 素材：程序旁 `Assets\` 同名文件优先于内置（清单 `AssetCatalog`，加载 `IconAssets`）；
 `--export-assets [dir]` 只导出出厂素材；`WHALELOG_ASSET_DIR` 可改目录；
 `WHALELOG_FFMPEG` 指定 ffmpeg.exe（`FfmpegLocator` 找不到它时视频动作播不了，其余功能不受影响）。
@@ -132,8 +140,20 @@
 - ⚠️ **新写的断言要做一次反向验证**：把修复关掉重编，确认它**真的会挂**。
   不然很可能只是又添了几条永远通过的装饰 —— 这正是上一个 bug 溜出去的原因。
   本轮实测：关掉修复后自检挂 3 条（`全透明 0/4096 个像素`），改回来即全绿。
-- **自检项数会随数据浮动**（真实数据 207 / 隔离空数据 201 / 再有实例在跑 206），
-  段落数固定 21。**看结尾「结论：全部通过」，别死抠数字**。
+- **靠"运行时环境"决定成败的功能，断言和自检都测不到，必须真跑一次 + 配反向验证**（2026-09-20，1.4.4）。
+  「窗口接住了没有」（命中测试、DPI、模态循环、外部进程）和「处理函数对不对」是两回事：
+  `DragEventArgs` 的构造函数是 internal，造不出假事件 —— 处理函数全对、命中测试全错时自检会**全绿**。
+  现在有两套合成真实输入的探针：`tools/drag_probe.py`（鼠标拖拽 vs 点击）、
+  `tools/drop_probe.py` + `tools/dragsource/`（真实 OLE 文件拖放，三场景含一个"窗口外不该接住"的对照组）。
+  **探针的判据要落在"用户能看见的结果"上**：拖放那条只看「主面板开没开 + 文件进没进当天归档」，
+  **不看 `DoDragDrop` 的返回值** —— 桌面本身也是合法拖放目标，`effect` 恒为 `Copy`，看它会假绿。
+- ⚠️ **`AllowsTransparency` 的层叠窗口是逐像素看 alpha 做命中测试的**（2026-09-20）。
+  alpha=0 的像素上，鼠标消息和 OLE 拖放会**穿透到下层窗口** —— 拖到鲸鱼**旁边**的空白处
+  什么都不发生、**且一个错都不报**（鲸鱼本体上却是好的 → 看着像"时灵时不灵"）。
+  解法是让整块矩形可命中：根 `Grid` 背景从 `Transparent`(alpha=0) 改成 `#01000000`(alpha=1 的近透明黑)；
+  提示层反过来设 `IsHitTestVisible="False"`。**给悬浮窗加交互先问一句"这块像素是不是全透明"。**
+- **自检项数会随数据浮动**（真实数据 217 / 隔离空数据更少几项），**段落数固定 22**。
+  **看结尾「结论：全部通过」，别死抠数字**。
 
 ## 三、素材机制
 界面引用素材一律 `Source="{v:AssetImage <名字>}"`，**不要写 `pack://` URI**（会绕过「外部优先」解析）。
@@ -227,6 +247,18 @@
 - apphost 只能按本机已安装的运行时架构选（本机只有 x86）。
 - `dotnet.exe` 在 `C:\Program Files (x86)\dotnet\dotnet.exe`，**不在 bash 的 PATH 里**，
   要用完整路径（带空格，记得引号）。
+- ⚠️ **从 bash 启动鲸记必须先补 `SystemRoot` / `windir`**（2026-09-20 定位到，花了大半天）。
+  受限会话的 `os.environ` 里这两个变量**是空的**，而 WPF 初始化会去拼字体缓存路径
+  （`%SystemRoot%\Fonts` 那一套）—— 拿不到就抛
+  `Invalid URI: The format of the URI could not be determined`，**偶发崩溃**：
+  有的跑次没事、有的直接死在启动，看着像"随机闪退"，极难归因。
+  ```bash
+  cd src/WhaleLog/bin/Release/net8.0-windows
+  export SystemRoot="C:\\WINDOWS" windir="C:\\WINDOWS"
+  ./WhaleLog.exe --selfcheck --quiet
+  ```
+  `tools/drop_probe.py` / `tools/drag_probe.py` 里的 `child_env()` 已经处理了；
+  自己写临时脚本验程序时别忘了。（诊断脚本 `tools/_diag_launch.py` 已完成使命，已删。）
 - **不能从 bash 调 `cmd.exe`**（安全策略：`Invoking cmd.exe from Bash bypasses all command validation`），
   所以 `build-whalelog-offline.cmd` / `build-whalelog.cmd` 在只能执行 bash 的会话里跑不了，
   要手工复现它那四步（`offline_restore.py` → `dotnet build …` → 再跑一次
