@@ -550,7 +550,7 @@ dotnet build tools\selftest\selftest.csproj -c Release
 dotnet tools\selftest\bin\Release\net8.0\WhaleLog.SelfTest.dll
 ```
 
-覆盖 232 项断言，包括：
+覆盖 294 项断言，包括：
 
 - 12 个分类用例，验证「名字命中」要压过「类型兜底」（周报是 .docx，但不该归到「文档」）
 - 版本链基名归一化（`v2` / `(3)` / `- 副本` / `第2版` / `_final`，以及叠加后缀）
@@ -791,12 +791,14 @@ WhaleLog.exe --selfcheck
 
 有些东西断言不了，只能看：文字有没有被裁、某个主题下颜色是不是糊了、对齐歪没歪。
 `--shot` 渲染「文件归档」页（「全部」筛选，能看到跨天分组），`--shot-notes` 渲染
-今日记录页（当天的事项和归档文件），`--shot-floating` 把悬浮窗在最小 / 默认 / 最大
-三档下渲染成一张对照图。都是离屏渲染，不会弹到面前：
+今日记录页（当天的事项和归档文件），`--shot-settings` 渲染设置页（各项开关、滑杆、
+形象那一排按钮都在这一页 —— "按钮该亮还是该灰"这种事只能看图确认），`--shot-floating`
+把悬浮窗在最小 / 默认 / 最大三档下渲染成一张对照图。都是离屏渲染，不会弹到面前：
 
 ```bat
 WhaleLog.exe --shot D:\tmp\files-page.png
 WhaleLog.exe --shot-notes D:\tmp\notes-page.png
+WhaleLog.exe --shot-settings D:\tmp\settings-page.png
 WhaleLog.exe --shot-floating D:\tmp\floating-scales.png
 WhaleLog.exe --export-assets D:\tmp\Assets      :: 只导出出厂素材，不启界面
 ```

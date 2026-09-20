@@ -37,8 +37,9 @@
 打包 `python tools/make_portable_zip.py [out.zip]` → 自包含 zip（默认落 `E:\jingji`）；
 自测 `tools/selftest/`（**294 项**断言，直接编译主程序非界面部分；
 含真起 ffmpeg 解视频的用例 → 先把 ffmpeg 拷到 `tools\selftest\bin\Release\net8.0\`）；
-诊断 `WhaleLog.exe --selfcheck` → `logs\selfcheck.log`（**187 项 / 21 段**；同样要 ffmpeg 在旁边）；
-截图 `--shot`/`--shot-notes`/`--shot-floating`，均支持 `--x 值` 和 `--x=值`；
+诊断 `WhaleLog.exe --selfcheck` → `logs\selfcheck.log`（**194 项 / 21 段**；同样要 ffmpeg 在旁边；
+**脚本里跑必须带 `--quiet`**，否则弹一个"自检完成"对话框等人点，表现为卡死到超时）；
+截图 `--shot`/`--shot-notes`/`--shot-settings`/`--shot-floating`，均支持 `--x 值` 和 `--x=值`；
 交互探针 `python tools/drag_probe.py`（合成真实鼠标，会动光标、要求先退出运行实例 → 手动跑）。
 素材：程序旁 `Assets\` 同名文件优先于内置（清单 `AssetCatalog`，加载 `IconAssets`）；
 `--export-assets [dir]` 只导出出厂素材；`WHALELOG_ASSET_DIR` 可改目录；
@@ -114,6 +115,14 @@
 - 调试节奏：**先在 Debug 版验功能**（输出目录不同，不会被运行中的程序锁住），最后才切 Release。
 - `--tray` 起的实例「存活 N 秒」不等于启动成功，可能被单实例守卫的 MessageBox 阻塞 →
   顺手 `EnumWindows` 查有没有 `#32770` 对话框。
+- **界面层的断言要问「这个控件点得动吗」，不能只问「背后的函数返回对吗」**（2026-09-20 用户报
+  「设置里点新形象没反应」）：形象包那 13 条纯逻辑断言全过，问题照旧发生 ——
+  真实情况是按钮 `IsEnabled=false`（素材没在程序旁边），中间隔着一层谁都没测。
+  给界面控件开"诊断钩子"（读它 `IsEnabled/IsChecked/Content`、真翻一下 `IsChecked`）成本很低。
+- **点一个已经选中的 RadioButton 不会重抛 `Checked`**（`IsChecked` true→true 无变化）。
+  想断言"点得动"，必须点在**没被选中**的那一个上，否则测出来的是假的失败。
+- **脚本里跑 `--selfcheck` 必须带 `--quiet`**：不带会弹「自检完成」对话框等人点，
+  在批处理/agent 里表现为卡死到超时，而日志其实早写完了 —— 极易误判成"跑不完/挂了"。
 
 ## 三、素材机制
 界面引用素材一律 `Source="{v:AssetImage <名字>}"`，**不要写 `pack://` URI**（会绕过「外部优先」解析）。
@@ -123,6 +132,9 @@
 
 ### 形象包（2026-09-20 起）
 `Assets\characters\<形象ID>\` 一套形象一个目录；`classic` 是保留名、根目录就是 `Assets\` 本身（老布局没搬家）。
+**素材必须躺在 `WhaleLog.exe` 旁边**（`AppPaths.AssetsDir` = 程序目录\Assets）——
+`WhaleLog.csproj` 1.4.1 起把仓库 `assets\characters\` 拷进编译产物；在这之前
+从 `bin\Release\...` 直接跑是**没有形象素材**的，表现就是设置页「溟月」按钮灰着、点了没反应。
 `CharacterPacks.Resolve` 的降级顺序 **设置里那个（可用就用）→ `dsh` → `classic`** ——
 原版是嵌入资源、永远能用，所以这个函数**永远不返回用不了的形象**。
 `IconAssets.LoadPackOnly` 用于新形象：**没有差分图时不回落内置那张原版的闭眼图**

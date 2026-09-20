@@ -851,8 +851,9 @@ public partial class MainWindow : Window
         // 展示的是**实际生效**的那个（可能已经把设置里的值降级了），
         // 否则会出现"选了 A、界面显示 A 高亮、实际跑的是 B"这种最难查的不一致。
         var effective = CharacterPacks.Resolve(wanted);
+        var packs = CharacterPacks.Available();
 
-        foreach (var pack in CharacterPacks.Available())
+        foreach (var pack in packs)
         {
             var chip = new RadioButton
             {
@@ -874,7 +875,7 @@ public partial class MainWindow : Window
             CharacterChips.Children.Add(chip);
         }
 
-        CharacterHint.Text = DescribeCharacterChoice(wanted, effective);
+        CharacterHint.Text = DescribeCharacterChoice(wanted, effective, packs);
     }
 
     private void OnCharacterChipChecked(object sender, RoutedEventArgs e)
@@ -883,29 +884,105 @@ public partial class MainWindow : Window
         if (sender is not RadioButton chip || chip.Tag is not string id || id.Length == 0) return;
 
         App.Settings.Update(s => s.FloatingCharacter = id);
-        CharacterHint.Text = DescribeCharacterChoice(id, CharacterPacks.Resolve(id));
+        CharacterHint.Text = DescribeCharacterChoice(id, CharacterPacks.Resolve(id),
+                                                     CharacterPacks.Available());
     }
 
     /// <summary>
-    /// 形象选择下面那行说明。
+    /// 形象选择下面那几行说明。
     ///
-    /// 要专门把"设置里选的和实际生效的不一样"说出来 —— 用户把素材目录删了之后
-    /// 界面会静默回落到原版形象，没有这句话他只会觉得"这个开关坏了"。
+    /// 两件必须说出来的事：
+    ///
+    /// ① 设置里选的和实际生效的不一样。用户把素材目录删了之后界面会静默回落，
+    ///    没有这句话他只会觉得"这个开关坏了"。
+    /// ② **哪套形象缺素材、缺在哪个目录**。缺素材时按钮是禁用的，点上去毫无反应，
+    ///    而"为什么点不动"如果只写在 ToolTip 里就等于没写 —— 没人会去悬停一个灰按钮。
+    ///    2026-09-20 用户就是这么被卡住的：他在开发目录里跑，那个目录旁边没有
+    ///    <c>Assets\characters\</c>，于是「溟月」是灰的，看起来就是"点了没反应"。
     /// </summary>
-    private static string DescribeCharacterChoice(string wanted, string effective)
+    private static string DescribeCharacterChoice(string wanted, string effective,
+                                                 IReadOnlyList<CharacterPacks.Pack> packs)
     {
-        var title = CharacterPacks.TitleOf(effective);
-        var note = CharacterPacks.NoteOf(effective);
+        var lines = new List<string>();
 
         if (!string.IsNullOrWhiteSpace(wanted) &&
             !wanted.Equals(effective, StringComparison.OrdinalIgnoreCase))
         {
-            return $"设置里选的是「{wanted}」，但它的素材不在，已经自动改用「{title}」。" +
-                   $"{Environment.NewLine}{note}";
+            lines.Add($"设置里选的是「{wanted}」，但它的素材不在，已经自动改用" +
+                      $"「{CharacterPacks.TitleOf(effective)}」。");
         }
 
-        return $"{note}{Environment.NewLine}改完立刻生效，不用重启。";
+        var missing = packs.Where(p => !p.IsAvailable).ToList();
+        foreach (var pack in missing)
+        {
+            lines.Add($"「{pack.Title}」缺素材，上面那个按钮是灰的、点不动 —— " +
+                      $"把形象包放进 {pack.Root}，重启程序就能选。");
+        }
+
+        lines.Add(CharacterPacks.NoteOf(effective));
+        lines.Add(missing.Count == 0
+            ? "改完立刻生效，不用重启。"
+            : "在现有的几套形象之间切换是立刻生效的；新放进来的素材要重启程序才会被扫到。");
+
+        return string.Join(Environment.NewLine, lines);
     }
+
+    // ------------------------------------------------------------------
+    // 诊断自检用的钩子（设置页那一排形象按钮）
+    //
+    // 为什么要给这几个按钮开钩子：形象切换是**纯界面**的事。解析函数全对，
+    // 但按钮被禁用时用户看到的仍然是"点新形象没反应" —— 2026-09-20 的真实反馈。
+    // 断言"这个按钮能不能点"比断言"解析函数返回了什么"更贴近用户碰到的那一层。
+    // ------------------------------------------------------------------
+
+    /// <summary>设置页上形象按钮的个数。诊断自检用。</summary>
+    public int CharacterChipCount => CharacterChips?.Children.Count ?? 0;
+
+    /// <summary>那排按钮里的 radio（空面板时给个空序列，省得每处都判空）。</summary>
+    private IEnumerable<RadioButton> CharacterChipButtons
+        => CharacterChips == null
+            ? Enumerable.Empty<RadioButton>()
+            : CharacterChips.Children.OfType<RadioButton>();
+
+    /// <summary>某个形象按钮现在的样子：在不在、能不能点、选没选中、按钮上写的什么。诊断自检用。</summary>
+    public (bool Found, bool Enabled, bool Checked, string Text) CharacterChipState(string id)
+    {
+        foreach (var chip in CharacterChipButtons)
+        {
+            if (chip.Tag is string tag && tag.Equals(id, StringComparison.OrdinalIgnoreCase))
+                return (true, chip.IsEnabled, chip.IsChecked == true, chip.Content as string ?? "");
+        }
+
+        return (false, false, false, "");
+    }
+
+    /// <summary>形象选择下面那几行说明的字。诊断自检用。</summary>
+    public string CharacterHintText => CharacterHint?.Text ?? "";
+
+    /// <summary>
+    /// 真按一下那个按钮（翻 IsChecked，Checked 事件照常抛出来）。
+    ///
+    /// 刻意不直接改设置：要验的是"这一下点下去到底有没有用"。
+    /// 按钮禁用时返回 false —— 那正是"点了没反应"。
+    /// 诊断自检用。
+    /// </summary>
+    public bool ClickCharacterChip(string id)
+    {
+        foreach (var chip in CharacterChipButtons)
+        {
+            if (chip.Tag is string tag && tag.Equals(id, StringComparison.OrdinalIgnoreCase))
+            {
+                if (!chip.IsEnabled) return false;
+                chip.IsChecked = true;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>按当前素材目录重建形象按钮（正常是切到设置页时自动跑）。诊断自检用。</summary>
+    public void ReloadCharacterChips() => RefreshCharacterChips();
 
     private void OnWorkTimeChanged(object sender, TextChangedEventArgs e)
     {

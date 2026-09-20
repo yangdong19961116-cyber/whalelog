@@ -408,6 +408,10 @@ public static class DiagnosticsService
         Section("形象包（新版 / 原版切换）");
         ProbeCharacterPacks(Check, sb);
 
+        // 上面那节测的是"解析函数对不对"，这节测的是"设置页上那一排按钮点下去有没有用"。
+        // 两回事：解析全对但按钮是灰的，用户看到的仍然是"点新形象没反应"。
+        ProbeCharacterChipsPage(Check, sb);
+
         // ---- 透明视频 ----
         // 这条链路跨进程（ffmpeg 是外部程序），断了的表现是"点下去什么都不发生"。
         Section("透明视频动画");
@@ -1403,6 +1407,26 @@ public static class DiagnosticsService
     /// </summary>
     private static void ProbeCharacterPacks(CheckFn check, StringBuilder sb)
     {
+        // 先照一遍**真实素材目录**（不是下面那个探针目录），并且只用 info 行、不做断言。
+        //
+        // 这一段的价值全在排障：设置里「形象」那一排按钮是按"程序旁边实际有哪些形象包"
+        // 动态生成的，某套素材不在，那个按钮就是灰的、点上去毫无反应。
+        // 用户报"点新形象没反应"时，日志里有这几行就能一眼定位，不用猜。
+        // 不写成断言是因为"故意删掉素材瘦身"是允许的，那不算故障。
+        var live = CharacterPacks.Available();
+        sb.AppendLine($"  素材目录：{AppPaths.AssetsDir}");
+        foreach (var pack in live)
+        {
+            sb.AppendLine(pack.IsAvailable
+                ? $"    [有] {pack.Title}（{pack.Id}）"
+                : $"    [缺] {pack.Title}（{pack.Id}）→ 期望 {pack.Root}");
+        }
+        if (!CharacterPacks.IsAvailable(CharacterPacks.DshId))
+        {
+            sb.AppendLine("    ↑ 缺的是随包发的那个形象：设置里的按钮会显示成灰的「（缺素材）」，" +
+                          "点它不会有任何反应。把形象包放进上面的目录再重启即可。");
+        }
+
         var probeRoot = Path.Combine(AppPaths.LogDir, "pack-probe");
         var assetDir = Path.Combine(probeRoot, "Assets");
 
@@ -1538,6 +1562,140 @@ public static class DiagnosticsService
 
             settings.FloatingCharacter = previousCharacter;
             settings.FloatingAnimations = previousAnimations;
+
+            try
+            {
+                Environment.SetEnvironmentVariable("WHALELOG_ASSET_DIR", previousAssetDir);
+                IconAssets.Reload();
+            }
+            catch { /* 还原失败也只能继续 */ }
+
+            try { Directory.Delete(probeRoot, true); } catch { /* 删不掉不影响结论 */ }
+        }
+    }
+
+    /// <summary>
+    /// 设置页那一排「形象」按钮。
+    ///
+    /// 为什么要单独真起一个窗口量它：形象切换是纯界面的事，上一节
+    /// <see cref="ProbeCharacterPacks"/> 只证明"解析函数返回对了"。而用户 2026-09-20
+    /// 报的「设置里点新形象没有反应」，代码一行都没错 —— 是按钮被禁用了
+    /// （那个构建旁边的 <c>Assets\characters\</c> 根本不存在）。禁用按钮点下去不抛异常、
+    /// 不报错、日志里一个字都没有，只有真去问"它能不能点"才测得到。
+    ///
+    /// 两支都要走：素材在 → 按钮必须可点、点了设置真跟着变；素材不在 → 按钮必须禁用，
+    /// 而且**原因要写在说明行里**（只写在 ToolTip 里等于没写，没人会去悬停一个灰按钮）。
+    /// </summary>
+    private static void ProbeCharacterChipsPage(CheckFn check, StringBuilder sb)
+    {
+        var probeRoot = Path.Combine(AppPaths.LogDir, "chip-probe");
+        var emptyAssets = Path.Combine(probeRoot, "empty-assets");
+
+        MainWindow? window = null;
+        string? previousAssetDir = null;
+        var settings = App.Settings.Settings;
+        var previousCharacter = settings.FloatingCharacter;
+
+        try
+        {
+            previousAssetDir = Environment.GetEnvironmentVariable("WHALELOG_ASSET_DIR");
+            Directory.CreateDirectory(emptyAssets);
+
+            window = new MainWindow
+            {
+                WindowStartupLocation = WindowStartupLocation.Manual,
+                ShowInTaskbar = false,
+                Left = Offscreen,
+                Top = Offscreen,
+            };
+            window.Show();
+            window.SwitchTo(NavPage.Settings);
+            window.UpdateLayout();
+
+            var packs = CharacterPacks.Available();
+
+            check("设置页列出的形象按钮数 = 扫到的形象包数",
+                window.CharacterChipCount == packs.Count,
+                $"按钮 {window.CharacterChipCount} 个；形象包 {packs.Count} 套：" +
+                string.Join("、", packs.Select(p => p.Id)));
+
+            // 「点了没反应」的直接原因就是这一条。
+            var dead = packs.Where(p => p.IsAvailable && !window.CharacterChipState(p.Id).Enabled)
+                            .Select(p => p.Id).ToList();
+
+            check("素材在的形象，按钮就是能点的（灰按钮 = 点了没反应）",
+                dead.Count == 0,
+                dead.Count == 0 ? "全部可点" : "被禁用：" + string.Join("、", dead));
+
+            var dsh = window.CharacterChipState(CharacterPacks.DshId);
+            sb.AppendLine($"  溟月那个按钮：{(dsh.Found ? dsh.Text : "没找到")}｜" +
+                          $"可点={(dsh.Enabled ? "是" : "否")}｜选中={(dsh.Checked ? "是" : "否")}");
+
+            if (dsh.Enabled)
+            {
+                // 点**没被选中**的那一个。RadioButton 把 IsChecked 从 true 置成 true
+                // 不会重抛 Checked —— 点一个已经选中的按钮本来就是无操作，不是 bug。
+                // 这里要验的是"这一下点下去有没有用"，所以必须点在另一个上。
+                var clickedClassic = window.ClickCharacterChip(CharacterPacks.ClassicId);
+
+                check("在设置页点「原版」，设置里真的跟着改了",
+                    clickedClassic && settings.FloatingCharacter == CharacterPacks.ClassicId,
+                    $"点得动={clickedClassic}；设置里现在是「{settings.FloatingCharacter}」");
+
+                window.ReloadCharacterChips();
+                var classicAfterReload = window.CharacterChipState(CharacterPacks.ClassicId);
+
+                check("重建按钮后高亮的跟着设置走（不会停在旧的那个上）",
+                    classicAfterReload.Checked
+                        && !window.CharacterChipState(CharacterPacks.DshId).Checked,
+                    $"原版选中={classicAfterReload.Checked}，" +
+                    $"溟月选中={window.CharacterChipState(CharacterPacks.DshId).Checked}");
+
+                var clickedDsh = window.ClickCharacterChip(CharacterPacks.DshId);
+
+                check("再点回「溟月」也点得动（开关是双向的）",
+                    clickedDsh && settings.FloatingCharacter == CharacterPacks.DshId,
+                    $"点得动={clickedDsh}；设置里现在是「{settings.FloatingCharacter}」");
+            }
+            else
+            {
+                sb.AppendLine($"  按钮是灰的（素材不在 {CharacterPacks.DirOf(CharacterPacks.DshId)}），" +
+                              "跳过点击 —— 这正是用户报的「点了没反应」");
+            }
+
+            // ---- 素材不在的那一支 ----
+            Environment.SetEnvironmentVariable("WHALELOG_ASSET_DIR", emptyAssets);
+            window.ReloadCharacterChips();
+            window.UpdateLayout();
+
+            var missing = window.CharacterChipState(CharacterPacks.DshId);
+            var hint = window.CharacterHintText;
+
+            check("素材不在时，那套形象的按钮禁用并标出「缺素材」",
+                missing.Found && !missing.Enabled && missing.Text.Contains("缺素材"),
+                $"在={missing.Found}｜可点={missing.Enabled}｜按钮文字：{missing.Text}");
+
+            check("禁用的原因写在说明行里（不是只藏在悬停提示）",
+                hint.Contains("缺素材") &&
+                hint.Contains(CharacterPacks.DirOf(CharacterPacks.DshId, emptyAssets)),
+                hint.Replace(Environment.NewLine, " ／ "));
+
+            check("素材不在时点它无效，也不会把设置改坏",
+                !window.ClickCharacterChip(CharacterPacks.DshId),
+                $"点击返回={(window.ClickCharacterChip(CharacterPacks.DshId) ? "true" : "false")}");
+        }
+        catch (Exception ex)
+        {
+            check("设置页的形象按钮", false, ex.Message);
+            sb.AppendLine("      " + ex);
+        }
+        finally
+        {
+            try { window?.Close(); } catch { /* 关不掉不影响结论 */ }
+
+            // 这里走的是真按钮 → 真的落了盘，所以必须把原值写回去，别动用户的设置。
+            try { App.Settings.Update(s => s.FloatingCharacter = previousCharacter); }
+            catch { /* 写不回去也只能继续 */ }
 
             try
             {

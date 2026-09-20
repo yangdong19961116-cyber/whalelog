@@ -89,7 +89,8 @@ public partial class App : Application
         // 会被守卫拦下来弹个"已经在运行"，然后什么都不做，
         // 用户只能看到一个莫名其妙的提示、日志却没有任何更新。
         bool oneShot = HasFlag("--selfcheck") || HasFlag("--create-shortcut")
-                    || HasFlag("--shot") || HasFlag("--shot-notes") || HasFlag("--shot-floating")
+                    || HasFlag("--shot") || HasFlag("--shot-notes") || HasFlag("--shot-settings")
+                    || HasFlag("--shot-floating")
                     || HasFlag("--export-assets");
 
         if (!oneShot)
@@ -181,16 +182,29 @@ public partial class App : Application
         // 截图模式：把主面板的某一页渲染成 PNG。
         // 自检能断言"有几个栏头""卡片有没有叠住"，但断言不了"看起来对不对"（文字被裁、
         // 颜色糊、对齐歪），需要肉眼确认时用它出一张图；渲染的是离屏窗口，不会弹到用户面前。
-        //   --shot <png>        文件归档页（「全部」筛选，能看到跨天分组）
-        //   --shot-notes <png>  今日记录页（当天的事项和归档文件）
+        //   --shot <png>            文件归档页（「全部」筛选，能看到跨天分组）
+        //   --shot-notes <png>      今日记录页（当天的事项和归档文件）
+        //   --shot-settings <png>   设置页 —— 各项开关、滑杆、形象那一排按钮都在这一页，
+        //                           "按钮该亮还是该灰"这种事只能看图确认
         var shotPage = HasFlag("--shot-notes") ? NavPage.Notes
+                     : HasFlag("--shot-settings") ? NavPage.Settings
                      : HasFlag("--shot") ? NavPage.Files
                      : (NavPage?)null;
 
         if (shotPage != null)
         {
-            var flag = shotPage == NavPage.Notes ? "--shot-notes" : "--shot";
-            var fallback = shotPage == NavPage.Notes ? "notes-page.png" : "files-page.png";
+            var flag = shotPage switch
+            {
+                NavPage.Notes => "--shot-notes",
+                NavPage.Settings => "--shot-settings",
+                _ => "--shot",
+            };
+            var fallback = shotPage switch
+            {
+                NavPage.Notes => "notes-page.png",
+                NavPage.Settings => "settings-page.png",
+                _ => "files-page.png",
+            };
             var target = ArgValue(flag) ?? Path.Combine(AppPaths.LogDir, fallback);
             try
             {

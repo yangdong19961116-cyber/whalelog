@@ -49,14 +49,14 @@
 
 | 项 | 值 |
 |---|---|
-| 版本 | `1.4.0`（`src/WhaleLog/WhaleLog.csproj` 的 `<Version>`，界面读 `Assembly.GetName().Version` 自动跟） |
+| 版本 | `1.4.1`（`src/WhaleLog/WhaleLog.csproj` 的 `<Version>`，界面读 `Assembly.GetName().Version` 自动跟） |
 | TFM | `net8.0-windows`（**不要加 OS 版本号**） |
 | 平台 | AnyCPU（**不能设 x64**，见第 5 节） |
 | 主程序 | `src/WhaleLog/`：App + MainWindow + `Views/`(6 个窗口 + `SpritePlayer`/`Converters`/`AssetImageExtension`) + `Services/`(24 个，含 `AnimSheet`/`AnimLibrary`/`CharacterPacks`/`VideoDecoder`/`FfmpegLocator`) + `Models/`(4 个) |
 | 可运行产物 | `src/WhaleLog/bin/Release/net8.0-windows/WhaleLog.exe`；解压态副本 `build/portable/鲸记 WhaleLog/` |
 | 分发产物 | **统一放 `E:\jingji`**（2026-09-17 起的项目约定，别再丢桌面）：便携包 `鲸记 WhaleLog <版本>.zip`（自包含、解压即用，版本号从 csproj 读）、交接包 `鲸记 WhaleLog 项目交接包 <日期>.zip`。两个打包脚本**不带参数**就输出到这儿，目录不存在会自动建 |
 | 自测 | `tools/selftest/` **294 项**断言，直接编译主程序非界面部分，测的是发货代码 |
-| 诊断自检 | `WhaleLog.exe --selfcheck` → `logs\selfcheck.log`（**187 项，21 个段落**；含「形象包」「透明视频」两节，视频那节**真的起一次 ffmpeg 解一遍**） |
+| 诊断自检 | `WhaleLog.exe --selfcheck` → `logs\selfcheck.log`（**194 项，21 个段落**；含「形象包」「透明视频」两节，视频那节**真的起一次 ffmpeg 解一遍**；形象那节会先列出**真实素材目录里有哪些形象包**） |
 | 形象素材 | `Assets\characters\dsh\`：106 个动作 / 25423 帧 / **51.9 MB**（透明 webm，原样搬运）。播放要 `ffmpeg.exe` 在程序目录（便携包已带） |
 | 版本控制 | ✅ 有 git 仓库（`workwork\.git`），基线 `f05c39b`，当前 HEAD 见 `git log` |
 
@@ -81,7 +81,15 @@
 
 ## 4. 未完成 / 在研 ← **重点看这节**
 
-### A. 动态素材（悬浮窗动画）—— 已出厂自带 106 个动作，版本 1.4.0
+### A. 动态素材（悬浮窗动画）—— 已出厂自带 106 个动作，版本 1.4.0 起
+
+> ⚠️ **形象素材必须躺在 `WhaleLog.exe` 旁边的 `Assets\characters\` 里。**
+> 找不到的话程序照跑，只是设置页那个「溟月」按钮会变成灰的「（缺素材）」，
+> **点上去毫无反应** —— 2026-09-20 用户报的「设置里点新形象没反应」就是这个。
+> 1.4.1 起 `WhaleLog.csproj` 会把仓库的 `assets\characters\` 一起拷进编译产物，
+> 所以从 `bin\Release\...` 直接跑也有；万一还是灰的：
+> 手动拷一份 `assets\characters` 到那个目录，或者直接 `--selfcheck` 看日志里
+> 「形象包」那节列出来的 `[缺] …→ 期望 …` 路径。
 
 9/14 做的这一批已经补记进 `workwork\.workbuddy\memory\2026-09-14.md`（原本是漏的，最容易被新任务忽略）。
 
@@ -289,21 +297,24 @@ dotnet tools\selftest\bin\Release\net8.0\WhaleLog.SelfTest.dll
 ::  ⚠ 自测里含「真的起一次 ffmpeg 解一遍视频」的用例，先把这个 exe 拷到
 ::    tools\selftest\bin\Release\net8.0\ffmpeg.exe，否则那几项会跳过/失败
 
-:: 诊断自检 → %AppData%\WhaleLog\logs\selfcheck.log（187 项，21 段）
+:: 诊断自检 → %AppData%\WhaleLog\logs\selfcheck.log（194 项，21 段）
 WhaleLog.exe --selfcheck          :: --quiet 只写日志不弹窗
+::  ⚠ 脚本里跑一定要带 --quiet：不带会弹一个「自检完成」的对话框等人点，
+::    批处理/agent 里就表现为"卡住不动"，直到超时被杀（日志其实早写完了）
 ::  ⚠ 跑之前把 ffmpeg.exe 放到 WhaleLog.exe 旁边 —— 「透明视频」那节要靠它真解一遍
 ::  ⚠ 造临时数据时用 WHALELOG_DATA_DIR 指到别处，**别往用户真实记录里塞测试文件**
 
 :: 离屏截图（不弹到面前）
 WhaleLog.exe --shot D:\tmp\files-page.png
 WhaleLog.exe --shot-notes D:\tmp\notes-page.png
+WhaleLog.exe --shot-settings D:\tmp\settings-page.png   :: 开关/滑杆/形象按钮那一页
 WhaleLog.exe --shot-floating D:\tmp\floating-scales.png
 WhaleLog.exe --export-assets D:\tmp\Assets
 
 :: 打包自包含 zip（不带参数就输出到 E:\jingji\鲸记 WhaleLog <版本>.zip，版本号从 csproj 读）
 python tools\make_portable_zip.py
 python tools\make_portable_zip.py D:\某目录
-python tools\make_portable_zip.py "E:\jingji\鲸记 WhaleLog 1.4.0.zip"
+python tools\make_portable_zip.py "E:\jingji\鲸记 WhaleLog 1.4.1.zip"
 ::  脚本会把 assets\characters（形象包）和 ffmpeg.exe 一并拷进去
 ::  找不到 ffmpeg 时按 WHALELOG_FFMPEG → assets\tools → PATH → imageio_ffmpeg 的顺序找
 
@@ -511,9 +522,46 @@ python tools\drag_probe.py
 | `tools/fetch_dsh_assets.py`（新） | 从 GitHub 拉源素材（mirror 不通时逐级降级） |
 | `tools/make_portable_zip.py`（改） | 把 `assets\characters` 与 `ffmpeg.exe` 一并拷进便携包；README 补「换形象」「动起来」「ffmpeg 是 GPL」 |
 | `tools/selftest/`、`DiagnosticsService.cs`（改） | 自测 232 → **294**；自检 164 → **187**（21 段），新增「形象包」「透明视频」两节 |
+| `WhaleLog.csproj`（改，**1.4.1**） | 把仓库的 `assets\characters\` 随编译产物拷到 `Assets\characters\` —— 见下面的补丁 |
+| `MainWindow.xaml.cs`、`App.xaml.cs`（改，**1.4.1**） | 形象按钮加诊断钩子；缺素材的原因写进说明行；新增 `--shot-settings` |
 
-**验证状态**：主程序 `-c Release` **0 错 0 警**；自测 **294 项全过**；自检 **187 项全过**；
+**验证状态**：主程序 `-c Release` **0 错 0 警**；自测 **294 项全过**；自检 **194 项全过**；
 素材包 `--check` 0 硬问题、横向漂移 0.00px；便携包解压实测可跑。
+
+### 补丁 1.4.1（2026-09-20 当天下午，用户报「设置里点新形象没反应」）
+
+**现象**：设置页「形象」那排按钮里，「溟月 · 蓝鲸（新版）」是灰的、写着「（缺素材）」，
+点上去毫无反应。（它旁边那个说明行当时只会说原版形象的事，看不出为什么。
+
+**根因**：形象按钮是按"程序旁边实际有哪些形象包"动态生成的，而**只有打包脚本**会把
+`assets\characters\` 放进便携包；`WhaleLog.csproj` 从来没把它拷进编译产物。
+于是从 `src\WhaleLog\bin\Release\net8.0-windows\` 直接跑（桌面快捷方式指的就是这儿）
+看到的是一套完全没有形象素材的程序。代码一行都没错。
+
+**修了什么**：
+
+1. `WhaleLog.csproj`：加 `Content Include="..\..\assets\characters\**\*"` +
+   `Link="Assets\characters\..."` + `PreserveNewest`。开发构建从此和出厂包同一套布局。
+   （首次编译多拷 274 个文件 / 52 MB，之后按时间戳增量，不改素材就一个都不重拷。）
+2. `MainWindow.xaml.cs`：**缺素材的原因写在说明行里**，不再只放 ToolTip ——
+   没人会去悬停一个灰按钮。现在会直接写出「「溟月」缺素材，上面那个按钮是灰的、点不动 ——
+   把形象包放进 `<路径>`，重启程序就能选。」
+3. `DiagnosticsService.cs`：自检的「形象包」节**先列出真实素材目录里有哪些形象包**
+   （`[有]/[缺]` 逐套 + 缺的时候直接写出期望路径）。这类问题以后一眼可见。
+4. `DiagnosticsService.cs`：新增 `ProbeCharacterChipsPage` —— 真起一个设置页，
+   断言"素材在的形象按钮**能点**、点了设置真的跟着改、再点回来也有效"，
+   以及"素材不在时按钮禁用 + 原因写在说明行里"。5 条断言。
+
+**这一轮抓到的坑（值得记）**：
+
+- **要断言的应该是"按钮能不能点"，不是"解析函数返回了什么"。** 上一节 `ProbeCharacterPacks`
+  13 条断言全过，问题照样发生 —— 因为它测的是纯逻辑，而用户碰到的是界面那一层。
+- **点一个已经选中的 RadioButton 不会重抛 `Checked`**（`IsChecked` 从 true 置成 true）。
+  第一版断言就栽在这儿：默认选中「溟月」，再去点「溟月」什么都不会发生。
+  要验"点得动"必须点在**没被选中**的那一个上。
+- **脚本里跑 `--selfcheck` 一定要带 `--quiet`。** 不带的话最后会弹一个「自检完成」的对话框
+  等人点，在批处理 / agent 里表现为"卡住不动直到超时"，而日志其实早就写完了 ——
+  极易误判成"自检跑不完"。
 
 ---
 

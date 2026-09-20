@@ -19,7 +19,7 @@
     <AssemblyTitle>WhaleLog 鲸记</AssemblyTitle>
     <Product>WhaleLog</Product>
     <Description>每日工作记录与文件归档台</Description>
-    <Version>1.4.0</Version>
+    <Version>1.4.1</Version>
     <Authors>WhaleLog</Authors>
     <Copyright>MIT</Copyright>
     <NeutralLanguage>zh-CN</NeutralLanguage>
@@ -51,6 +51,21 @@
     <None Update="app.manifest">
       <CopyToOutputDirectory>Never</CopyToOutputDirectory>
     </None>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 形象包（仓库的 assets\characters\）跟着编译产物走，落到 Assets\characters\。
+         为什么必须有这一步：形象按钮是按「程序旁边实际有哪些形象包」动态生成的，
+         而打包脚本只把素材放进便携包、不放进 bin\。于是"从 bin 目录直接跑"（开发时
+         就是走桌面快捷方式跑这里）看到的是一排按钮里「溟月」灰着写「缺素材」，
+         点上去毫无反应 —— 2026-09-20 用户报的正是这个。
+
+         PreserveNewest 是按时间戳增量的：第一次编译拷 274 个文件（约 52 MB），
+         之后没改素材就一个都不会重拷。 -->
+    <Content Include="..\..\assets\characters\**\*"
+             Link="Assets\characters\%(RecursiveDir)%(Filename)%(Extension)">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
 
 </Project>
