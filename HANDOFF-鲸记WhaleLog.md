@@ -49,7 +49,7 @@
 
 | 项 | 值 |
 |---|---|
-| 版本 | `1.4.2`（`src/WhaleLog/WhaleLog.csproj` 的 `<Version>`，界面读 `Assembly.GetName().Version` 自动跟） |
+| 版本 | `1.4.3`（`src/WhaleLog/WhaleLog.csproj` 的 `<Version>`，界面读 `Assembly.GetName().Version` 自动跟） |
 | TFM | `net8.0-windows`（**不要加 OS 版本号**） |
 | 平台 | AnyCPU（**不能设 x64**，见第 5 节） |
 | 主程序 | `src/WhaleLog/`：App + MainWindow + `Views/`(6 个窗口 + `SpritePlayer`/`Converters`/`AssetImageExtension`) + `Services/`(24 个，含 `AnimSheet`/`AnimLibrary`/`CharacterPacks`/`VideoDecoder`/`FfmpegLocator`) + `Models/`(4 个) |
@@ -290,7 +290,7 @@ build-whalelog.cmd
 :: 只编译不发布
 dotnet build WhaleLog.sln -c Release
 
-:: 自测（303 项断言，直接编译主程序非界面部分）
+:: 自测（305 项断言，直接编译主程序非界面部分）
 dotnet build tools\selftest\selftest.csproj -c Release
 dotnet tools\selftest\bin\Release\net8.0\WhaleLog.SelfTest.dll
 ::  加 --keep 保留临时目录，方便翻看产出的 Markdown 和 index.json
@@ -314,7 +314,7 @@ WhaleLog.exe --export-assets D:\tmp\Assets
 :: 打包自包含 zip（不带参数就输出到 E:\jingji\鲸记 WhaleLog <版本>.zip，版本号从 csproj 读）
 python tools\make_portable_zip.py
 python tools\make_portable_zip.py D:\某目录
-python tools\make_portable_zip.py "E:\jingji\鲸记 WhaleLog 1.4.2.zip"
+python tools\make_portable_zip.py "E:\jingji\鲸记 WhaleLog 1.4.3.zip"
 ::  脚本会把 assets\characters（形象包）和 ffmpeg.exe 一并拷进去
 ::  找不到 ffmpeg 时按 WHALELOG_FFMPEG → assets\tools → PATH → imageio_ffmpeg 的顺序找
 
@@ -570,7 +570,7 @@ python tools\drag_probe.py
 
 **根因**：`VideoDecoder.cs` 起 ffmpeg 时没点名解码器，ffmpeg 默认挑 **native vp9**，
 而它**不认 VP9 的 alpha 附加数据**（matroska `BlockAdditional`，`ffmpeg -i` 里写着 `ALPHA_MODE: 1`）。
-它照样一帧帧吐 RGBA，只是 **alpha 位全填 255** —— 透明区成了不透明黑，羽化边缘成了硬边。
+它照样一帧帧吐像素，只是 **alpha 位全填 255** —— 透明区成了不透明黑，羽化边缘成了硬边。
 
 实测对照（`idle-待机呼吸休闲`，241 帧）：
 
@@ -739,11 +739,19 @@ WPF 这个格式在内存里是 **B,G,R,A**。两个顺序差一格，等于**�
 6. **产物已全部搬到 `E:\jingji`**（桌面已清空，只剩快捷方式）：1.1 / 1.2 / 1.3 / 1.3.1 / 1.3.2 /
    1.4.0 / 1.4.1（七个便携包）+ 三个交接包 + `新设备继续指令.md`。以后打包**不带参数**就落到那儿
    （脚本会自动建目录），别再丢桌面。
-   - **1.4.1 是修「设置页新形象按钮点了没反应」的补丁包**，功能与 1.4.0 相同，只是
-     编译产物里自带了 `Assets\characters\`。
-   - **1.4.2 是修「形象顶着黑底、边缘生硬」的补丁包** —— 根因是解码透明 webm 时
-     没点名 `libvpx-vp9`，alpha 被 native 解码器整条丢掉（详见第 4 节补丁 1.4.2）。
-     **装 1.4.2，1.4.0 / 1.4.1 里所有形象动画都是黑底。**
+   - ⚠️ **`E:\jingji` 里目前一个"全对"的包都没有 —— 别拿 1.4.0 / 1.4.1 当可用版本。**
+     这两个包**同时带着黑底和红蓝互换两个 bug**。`1.4.2` 当天就被 `1.4.3` 顶掉、
+     **没打过包**；`1.4.3` 的便携包**也还没打** —— 要用便携包先跑一次打包脚本（见第 6 节）。
+   - 三个版本各修了什么：
+     · **1.4.1** —— 修「设置页新形象按钮点了没反应」：`WhaleLog.csproj` 把
+       `assets\characters\` 一起拷进编译产物；
+     · **1.4.2** —— 修「形象顶着黑底、边缘生硬」：解码透明 webm 时没点名 `libvpx-vp9`，
+       alpha 被 native 解码器整条丢掉（详见补丁 1.4.2）；
+     · **1.4.3** —— 修「颜色像反色了、本来应该是蓝色」：`-pix_fmt` 以前吐 `rgba`，
+       而贴图那边按 `PixelFormats.Bgra32`（内存序 **B,G,R,A**）解读，**红蓝整个互换**，
+       深蓝紫的头发显示成栗棕红（详见补丁 1.4.3）。
+   - 用户本机跑的是**开发输出目录**（桌面快捷方式指过去），**重编译即生效、不必等打包**；
+     但 `E:\jingji` 里的旧包该换成 1.4.3。
    ⚠️ **1.4.x 的包是 139.6 MB**（以前都是 58 MB）—— 多出来的是 52 MB 形象素材
    和 84 MB 的 `ffmpeg.exe`（两者都是已压缩内容，zip 压不动，别以为是脚本写错了）。
    想要小包就自己删掉包里的 `ffmpeg.exe`：**静态形象和精灵图动画照常**，
