@@ -164,6 +164,13 @@ public partial class FloatingWindow : Window
             if (!IsMouseOver && !_dragging && !_hasBubble) Collapse();
         };
 
+        // 文件拖放：把文件丢到小鲸鱼上就归档。走 Preview 阶段，和主面板一致。
+        AllowDrop = true;
+        PreviewDragEnter += OnFileDragEnter;
+        PreviewDragOver += OnFileDragOver;
+        PreviewDragLeave += OnFileDragLeave;
+        PreviewDrop += OnFileDrop;
+
         MouseEnter += OnMouseEnter;
         MouseLeave += OnMouseLeave;
         MouseLeftButtonDown += OnLeftButtonDown;
@@ -825,6 +832,122 @@ public partial class FloatingWindow : Window
         }
         return false;
     }
+
+    // ------------------------------------------------------------------
+    // 文件拖放（把文件丢到小鲸鱼上 → 归档并打开主面板）
+    // ------------------------------------------------------------------
+
+    // 拖放和上面的"拖动窗口"不会互相误判：外部文件拖进来走的是 OLE 拖放，
+    // 鼠标按钮确实按着，但按下那一刻发生在资源管理器里，这个窗口根本收不到
+    // MouseLeftButtonDown —— 所以不会走进 OnLeftButtonDown 的窗口拖动分支。
+
+    private static bool HasFiles(IDataObject data) => data.GetDataPresent(DataFormats.FileDrop);
+
+    private void OnFileDragEnter(object sender, DragEventArgs e)
+    {
+        if (!HasFiles(e.Data)) return;
+
+        e.Effects = DragDropEffects.Copy;
+        ShowDropHint(CountFiles(e.Data));
+        e.Handled = true;
+    }
+
+    private void OnFileDragOver(object sender, DragEventArgs e)
+    {
+        if (!HasFiles(e.Data)) return;
+
+        // 拖动全程系统会反复问，每次都要重新表态一次 Effect ——
+        // 漏一次光标就变回"禁止"图标。顺手兜一下提示层：万一 DragLeave 判早了
+        // （见 OnFileDragLeave），下一次 DragOver 会把它重新点亮。
+        e.Effects = DragDropEffects.Copy;
+        if (DropHint.Visibility != Visibility.Visible) ShowDropHint(CountFiles(e.Data));
+        e.Handled = true;
+    }
+
+    private void OnFileDragLeave(object sender, DragEventArgs e)
+    {
+        // DragLeave 在鼠标掠过**任何子元素**边界时都会冒上来（鲸鱼图、状态条、
+        // 角标各算一个），无脑隐藏会让提示层一闪一闪。用相对坐标判断是不是真的离开了窗口。
+        var pos = e.GetPosition(this);
+        bool outside = pos.X < 0 || pos.Y < 0 || pos.X > ActualWidth || pos.Y > ActualHeight;
+        if (outside) HideDropHint();
+    }
+
+    private async void OnFileDrop(object sender, DragEventArgs e)
+    {
+        HideDropHint();
+        if (!HasFiles(e.Data)) return;
+
+        e.Handled = true;
+        if (e.Data.GetData(DataFormats.FileDrop) is not string[] paths || paths.Length == 0) return;
+
+        await AcceptDropAsync(paths);
+    }
+
+    private static int CountFiles(IDataObject data)
+    {
+        try { return data.GetData(DataFormats.FileDrop) is string[] p ? p.Length : 0; }
+        catch { return 0; }
+    }
+
+    /// <summary>
+    /// 收到文件之后的全部动作：打开主面板 → 记入今天 → 弹气泡报结果。
+    ///
+    /// 单独抽出来是为了让自检能绕过 OLE 事件层直接调它 —— <see cref="DragEventArgs"/>
+    /// 的构造函数是 internal，测试里造不出来，能覆盖的边界只能划在这里。
+    /// "系统到底有没有把拖放交到这个窗口上"由 tools/drag_probe.py 做真实拖放来验。
+    /// </summary>
+    public async Task<string> AcceptDropAsync(string[] paths)
+    {
+        // 先动一下。主面板从零创建要几百毫秒，这段空档界面上必须有点反应，
+        // 否则用户以为没接住、会再拖一次。没有点击素材时这个调用什么都不做，
+        // 靠提示层收掉 + 下面那个气泡也够了。
+        PlayRandomOfRole(_clickActions);
+
+        var app = (App)Application.Current;
+        var main = await app.ShowMainWindowForDropAsync();
+
+        if (main == null)
+        {
+            const string failed = "主面板打不开，文件没有归档";
+            ShowBubble("没能归档", failed, urgency: 1);
+            return failed;
+        }
+
+        var summary = await main.IntakeDroppedAsync(paths);
+        ShowBubble("已归档", summary);
+        return summary;
+    }
+
+    /// <summary>拖进来时把落点提示亮出来。</summary>
+    private void ShowDropHint(int fileCount)
+    {
+        // 收起态那个小胶囊（60px）里塞不下图标和两行字，只留高亮框。
+        // 也别为此把它展开：拖拽中途改窗口尺寸会让光标相对位置漂移，拖拽会抖。
+        bool room = !_collapsed;
+
+        DropHintIcon.Visibility = room ? Visibility.Visible : Visibility.Collapsed;
+        DropHintText.Visibility = room ? Visibility.Visible : Visibility.Collapsed;
+        DropHintText.Text = fileCount > 1 ? $"松手归档\n{fileCount} 个文件" : "松手归档";
+
+        DropHint.Visibility = Visibility.Visible;
+    }
+
+    private void HideDropHint() => DropHint.Visibility = Visibility.Collapsed;
+
+    // ---- 拖放（诊断自检入口）----
+
+    /// <summary>自检用：落点提示此刻亮着没有。</summary>
+    public bool DropHintVisible => DropHint.Visibility == Visibility.Visible;
+
+    /// <summary>自检用：落点提示上的字。</summary>
+    public string DropHintLabel => DropHintText.Text;
+
+    /// <summary>自检用：走一遍真实的"拖进来"，验证提示层真的会亮。</summary>
+    public void ShowDropHintForProbe(int fileCount) => ShowDropHint(fileCount);
+
+    /// <summary>自检用：走一遍真实的"拖走了"。</summary>
+    public void HideDropHintForProbe() => HideDropHint();
 
     // ------------------------------------------------------------------
     // 动态素材（精灵图动画）

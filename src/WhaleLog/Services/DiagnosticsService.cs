@@ -5,6 +5,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Media.Imaging;
+using System.Windows.Threading;
 using WhaleLog.Models;
 using WhaleLog.Views;
 
@@ -412,6 +413,14 @@ public static class DiagnosticsService
         // 两回事：解析全对但按钮是灰的，用户看到的仍然是"点新形象没反应"。
         ProbeCharacterChipsPage(Check, sb);
 
+        // ---- 悬浮窗接收文件拖放 ----
+        // 用户要的是"把文件拖到小鲸鱼上，自动打开主面板并归档"。
+        // 这里验拖入之后的全部动作；"系统有没有把拖放交到这个窗口上"那一段
+        // 造不出 DragEventArgs（构造函数是 internal），交给 tools/drop_probe.py
+        // 用真实的 DoDragDrop 验。
+        Section("悬浮窗的文件拖放");
+        ProbeFloatingDrop(Check, sb);
+
         // ---- 透明视频 ----
         // 这条链路跨进程（ffmpeg 是外部程序），断了的表现是"点下去什么都不发生"。
         Section("透明视频动画");
@@ -722,6 +731,12 @@ public static class DiagnosticsService
             };
             window.Show();
             window.SwitchTo(NavPage.Settings);   // Collapsed 时不会走布局，量不到尺寸
+
+            // 设置页是可滚动的长页面，两个滑杆都排在靠下的位置。
+            // 探针窗口按默认高度装不下整页时，滑杆会被底部的状态栏压住，
+            // 命中测试打上去得到 StatusBar —— 那是"没滚到"，不是"被挡住了"。
+            // 把探针窗口临时撑高让整页摊开（窗口在屏幕外，撑多高都不碍事）。
+            window.Height = 1400;
             window.UpdateLayout();
 
             foreach (var name in new[] { "ScaleSlider", "OpacitySlider" })
@@ -1710,6 +1725,169 @@ public static class DiagnosticsService
             catch { /* 还原失败也只能继续 */ }
 
             try { Directory.Delete(probeRoot, true); } catch { /* 删不掉不影响结论 */ }
+        }
+    }
+
+    /// <summary>
+    /// 自检整体是同步的、跑在 UI 线程上，而界面里有些流程是 async。
+    /// 在这里 .Wait() 会把 UI 线程堵死，await 的续体永远排不上 —— 直接死锁。
+    /// 所以要一边推 Dispatcher 的消息队列，一边等任务自己完成。
+    /// </summary>
+    private static bool PumpUntilComplete(Task task, int timeoutMs = 20000)
+    {
+        var dispatcher = Dispatcher.CurrentDispatcher;
+        var frame = new DispatcherFrame();
+        var deadline = Environment.TickCount64 + timeoutMs;
+
+        var timer = new DispatcherTimer(
+            TimeSpan.FromMilliseconds(50),
+            DispatcherPriority.Background,
+            (_, _) =>
+            {
+                if (task.IsCompleted || Environment.TickCount64 > deadline) frame.Continue = false;
+            },
+            dispatcher);
+
+        // 完成时立刻收手，不用等下一次定时器 tick
+        task.ContinueWith(_ => dispatcher.BeginInvoke(new Action(() => frame.Continue = false)));
+
+        try { Dispatcher.PushFrame(frame); }
+        finally { timer.Stop(); }
+
+        return task.IsCompleted;
+    }
+
+    /// <summary>
+    /// 把文件拖到桌面小鲸鱼上，能不能一路走到"归档 + 打开主面板"。
+    ///
+    /// 这一节覆盖的边界是**从"窗口拿到路径"往后**：OLE 事件那一段
+    /// （系统有没有把拖放交到这个窗口上）造不出 DragEventArgs，测不了 ——
+    /// 那段由 tools/drop_probe.py 用真实的 DoDragDrop 验（三个场景，含对照组）。
+    /// 但"接住之后该发生的事有没有发生"才是功能的主体，必须断言；
+    /// 否则就会停在前几轮那种"事件收到了、后面什么都没做"的状态上。
+    /// </summary>
+    private static void ProbeFloatingDrop(CheckFn check, StringBuilder sb)
+    {
+        var previousAutoOpen = App.Settings.Settings.AutoOpenMainWindowOnDrop;
+
+        // 待归档的测试文件必须放在数据目录**外面**：归档会主动跳过自己数据目录里的文件
+        // （免得把 index.json、快照副本又拖回来归档），放 logs\ 下就一个都收不上，
+        // 而且表现只是"没有可归档的文件"，看不出是被过滤了。
+        var probeRoot = Path.Combine(Path.GetTempPath(),
+            "whalelog-drop-probe-" + Guid.NewGuid().ToString("N")[..8]);
+        var app = (App)Application.Current;
+        var made = new List<string>();
+
+        FloatingWindow? floating = null;
+
+        try
+        {
+            Directory.CreateDirectory(probeRoot);
+
+            // 造两个真文件。路径里带中文，顺便验一遍非 ASCII 不会在路上出问题。
+            for (int i = 1; i <= 2; i++)
+            {
+                var f = Path.Combine(probeRoot, $"季报 {i}.txt");
+                File.WriteAllText(f, $"自检造的第 {i} 个文件\n");
+                made.Add(f);
+            }
+
+            // 探针验的就是"按设置打开主面板"这条路
+            App.Settings.Update(s => s.AutoOpenMainWindowOnDrop = true);
+
+            floating = new FloatingWindow
+            {
+                WindowStartupLocation = WindowStartupLocation.Manual,
+                ShowInTaskbar = false,
+                Left = Offscreen,
+                Top = Offscreen,
+                BackgroundProbeMode = true,      // 待在屏幕外，别打扰用户
+            };
+            floating.Show();
+            floating.UpdateLayout();
+
+            // 拖进来的时候提示层要亮出来 —— "一声不吭地收下"和"没接住"是分不清的
+            floating.ShowDropHintForProbe(2);
+            check("拖入过程中会亮出落点提示",
+                floating.DropHintVisible && floating.DropHintLabel.Contains('2'),
+                $"可见={floating.DropHintVisible}，文案=「{floating.DropHintLabel.Replace(Environment.NewLine, " ")}」");
+
+            floating.HideDropHintForProbe();
+            check("松手之后落点提示会收掉", !floating.DropHintVisible,
+                floating.DropHintVisible ? "还亮着" : "已收掉");
+
+            int before = App.Store.Book.Files.Count;
+            var today = DateTime.Today.ToString("yyyy-MM-dd");
+
+            // 先把主面板支起来、并翻到昨天 —— 用户上次可能正好停在别的日期上。
+            // 悬浮窗拖入必须记到今天，跟主面板当时在看哪天无关；
+            // 不先翻走的话，主面板恰好就在今天，这条规则对不对根本测不出来。
+            var yesterday = DateTime.Today.AddDays(-1);
+            var opening = app.ShowMainWindowForDropAsync();
+            if (PumpUntilComplete(opening, 10000)) opening.Result?.SetViewingDateForProbe(yesterday);
+            sb.AppendLine($"  拖入前主面板正在看：{app.MainWindowForProbe?.ViewingDate:yyyy-MM-dd}");
+
+            var task = floating.AcceptDropAsync(made.ToArray());
+            bool finished = PumpUntilComplete(task, 20000);
+
+            check("整条拖入流程跑完了（没卡在半路）", finished, finished ? "已返回" : "超时未返回");
+
+            var summary = finished ? task.Result : "";
+            sb.AppendLine($"  悬浮窗会弹的气泡：{summary}");
+
+            var main = app.MainWindowForProbe;
+
+            check("主面板被打开了", main is { IsVisible: true },
+                main == null ? "主面板没创建" : $"IsVisible={main.IsVisible}");
+
+            check("主面板切到了「文件归档」页",
+                main?.ActivePage == NavPage.Files,
+                main == null ? "主面板没创建" : $"当前页={main.ActivePage}");
+
+            var mine = App.Store.Book.Files
+                .Where(f => made.Contains(f.FullPath, StringComparer.OrdinalIgnoreCase))
+                .ToList();
+
+            check("拖进去的文件真的进了归档", mine.Count == 2,
+                $"归档前 {before} 条 → 现在 {App.Store.Book.Files.Count} 条，其中本次 {mine.Count} 条");
+
+            check("归属日期是今天（不是上次翻到的那一天）",
+                mine.Count == 2 && mine.All(f => f.AddedDate == today),
+                mine.Count == 0
+                    ? "一条都没找到"
+                    : string.Join("、", mine.Select(f => $"{f.FileName}={f.AddedDate}")));
+
+            check("主面板跟着跳回了今天（不然用户会以为文件丢了）",
+                main?.ViewingDate.Date == DateTime.Today,
+                $"拖入前看的是 {yesterday:yyyy-MM-dd}，现在是 {main?.ViewingDate:yyyy-MM-dd}");
+
+            check("结果被报成了人话", summary.Contains("新增"), $"「{summary}」");
+        }
+        catch (Exception ex)
+        {
+            check("悬浮窗的文件拖放", false, ex.Message);
+            sb.AppendLine("      " + ex);
+        }
+        finally
+        {
+            try { floating?.Close(); } catch { /* 关不掉不影响结论 */ }
+            try { app.CloseMainWindowForProbe(); } catch { }
+
+            // 探针真的往库里写了归档记录。自检日志是给用户看的，
+            // 但绝不能让用户自己的记录里多出两个「季报 1.txt」—— 原样撤回。
+            try
+            {
+                var added = App.Store.Book.Files
+                    .Where(f => made.Contains(f.FullPath, StringComparer.OrdinalIgnoreCase))
+                    .ToList();
+
+                foreach (var f in added) App.Store.Book.Files.Remove(f);
+                if (added.Count > 0) App.Store.Save();   // Save 会把当天那份 md 一并重写回去
+            }
+            catch { /* 撤不回去也只能继续 */ }
+
+            try { App.Settings.Update(s => s.AutoOpenMainWindowOnDrop = previousAutoOpen); } catch { }
+            try { Directory.Delete(probeRoot, true); } catch { }
         }
     }
 

@@ -493,7 +493,7 @@
                         <StackPanel>
                             <TextBlock Text="桌面小鲸鱼" Style="{StaticResource H2Text}" />
                             <TextBlock Foreground="{DynamicResource TextMutedBrush}" Margin="0,4,0,12"
-                                       Text="拖动可以移动位置，松手自动吸附到最近的屏幕边缘；不操作时收起成小圆头像，鼠标移上去展开。" />
+                                       Text="拖动可以移动位置，松手自动吸附到最近的屏幕边缘；不操作时收起成小圆头像，鼠标移上去展开。把文件拖到小鲸鱼身上可以直接归档。" />
                             <StackPanel Orientation="Horizontal">
                                 <CheckBox x:Name="FloatingEnabledBox" Style="{StaticResource FlatCheckBox}"
                                           Content="显示悬浮窗" Click="OnFloatingToggle" />
@@ -501,6 +501,11 @@
                                           Content="松手吸附屏幕边缘" Margin="24,0,0,0" Click="OnFloatingToggle" />
                                 <CheckBox x:Name="FloatingCollapseBox" Style="{StaticResource FlatCheckBox}"
                                           Content="不用时收起成小图标" Margin="24,0,0,0" Click="OnFloatingToggle" />
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                                <CheckBox x:Name="FloatingDropOpenBox" Style="{StaticResource FlatCheckBox}"
+                                          Content="文件拖到小鲸鱼上时，自动打开主面板并切到归档页"
+                                          Click="OnFloatingToggle" />
                             </StackPanel>
                             <StackPanel Orientation="Horizontal" Margin="0,16,0,0">
                                 <TextBlock Text="大小" VerticalAlignment="Center" FontSize="13" Width="34" />

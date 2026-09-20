@@ -806,6 +806,7 @@ public partial class MainWindow : Window
         FloatingEnabledBox.IsChecked = s.FloatingEnabled;
         FloatingSnapBox.IsChecked = s.FloatingSnapToEdge;
         FloatingCollapseBox.IsChecked = s.FloatingAutoCollapse;
+        FloatingDropOpenBox.IsChecked = s.AutoOpenMainWindowOnDrop;
 
         ScaleSlider.Value = s.FloatingScale;
         OpacitySlider.Value = s.FloatingOpacity;
@@ -1050,6 +1051,7 @@ public partial class MainWindow : Window
             s.FloatingEnabled = FloatingEnabledBox.IsChecked == true;
             s.FloatingSnapToEdge = FloatingSnapBox.IsChecked == true;
             s.FloatingAutoCollapse = FloatingCollapseBox.IsChecked == true;
+            s.AutoOpenMainWindowOnDrop = FloatingDropOpenBox.IsChecked == true;
         });
 
         var app = (App)Application.Current;
@@ -1342,8 +1344,12 @@ public partial class MainWindow : Window
         await IntakeAsync(paths);
     }
 
-    /// <summary>共享的归档流程：窗口拖拽、悬浮窗拖拽都走这里。</summary>
-    public async Task IntakeAsync(string[] paths)
+    /// <summary>
+    /// 共享的归档流程：主面板自己拖入、悬浮窗拖入都走这里。
+    /// 记入的是 <see cref="_currentDate"/>（悬浮窗那条路会先把它拨到今天，见
+    /// <see cref="IntakeDroppedAsync"/>）。返回逐条结果供调用方拼提示，出错返回 null。
+    /// </summary>
+    public async Task<IReadOnlyList<IntakeResult>?> IntakeAsync(string[] paths)
     {
         SetStatus($"正在归档 {paths.Length} 项…");
         AddEntryButton.IsEnabled = false;
@@ -1354,23 +1360,14 @@ public partial class MainWindow : Window
 
             int added = results.Count(r => r.Status == IntakeStatus.Added);
             int versioned = results.Count(r => r.Status == IntakeStatus.NewVersion);
-            int unchanged = results.Count(r => r.Status == IntakeStatus.Unchanged);
-            int duplicate = results.Count(r => r.Status == IntakeStatus.Duplicate);
-            int failed = results.Count(r => r.Status == IntakeStatus.Failed);
-
-            var parts = new List<string>();
-            if (added > 0) parts.Add($"新增 {added}");
-            if (versioned > 0) parts.Add($"新版本 {versioned}");
-            if (unchanged > 0) parts.Add($"内容未变 {unchanged}");
-            if (duplicate > 0) parts.Add($"重复 {duplicate}");
-            if (failed > 0) parts.Add($"失败 {failed}");
 
             var scope = _currentDate.Date == DateTime.Today ? "" : $"（记入 {_currentDate:M月d日}）";
-            SetStatus(parts.Count == 0
-                ? "没有可归档的文件"
-                : $"归档完成{scope}：{string.Join("，", parts)}");
+            var summary = FileIntakeService.Summarize(results);
+            SetStatus(summary == "没有可归档的文件" ? summary : $"归档完成{scope}：{summary}");
 
-            if (App.Settings.Settings.AutoOpenMainWindowOnDrop && NavFiles.IsChecked != true)
+            // 归档完还停在「今日记录」页时加一句指路：新加的这些文件在页面下方的清单里，
+            // 而「文件归档」页能按类别看全部。已经在文件页就不用重复提示了。
+            if (_activePage == NavPage.Notes && (added > 0 || versioned > 0))
                 SetStatus(StatusText.Text + "（可在「文件归档」页查看）");
 
             RefreshFileList();
@@ -1382,16 +1379,75 @@ public partial class MainWindow : Window
             {
                 DayFilesSection.BringIntoView();
             }
+
+            return results;
         }
         catch (Exception ex)
         {
             SetStatus($"归档出错：{ex.Message}");
+            return null;
         }
         finally
         {
             AddEntryButton.IsEnabled = true;
         }
     }
+
+    /// <summary>
+    /// 悬浮窗拖入文件的落点：**一律记入今天**，并按设置切到「文件归档」页。
+    /// 返回给悬浮窗做气泡提示的一句话。
+    ///
+    /// 为什么不像主面板那样跟着"正在看的那一天"走：那条规则靠拖拽横幅上的字来说明
+    /// （见 <see cref="UpdateDropBanner"/>），而悬浮窗上没有地方写这句话 ——
+    /// 规则必须不言自明。把文件丢给桌面上的小鲸鱼，意思就是"此刻"；
+    /// 想补录过去某天，用主面板自己拖。
+    /// </summary>
+    public async Task<string> IntakeDroppedAsync(string[] paths)
+    {
+        if (paths.Length == 0) return "没有可归档的文件";
+
+        // 先把这个窗口拨到今天再归档：IntakeAsync 记的是 _currentDate，
+        // 顺序反了就会记到用户上次翻到的那一天去。
+        if (_currentDate.Date != DateTime.Today) LoadDay(DateTime.Today);
+
+        if (App.Settings.Settings.AutoOpenMainWindowOnDrop) SwitchTo(NavPage.Files);
+
+        var results = await IntakeAsync(paths);
+        if (results == null) return "归档出错，详情看主面板左下角";
+
+        return "已记入今天：" + FileIntakeService.Summarize(results);
+    }
+
+    /// <summary>
+    /// 自检用：把主面板拨到指定日期，模拟"用户上次停在那一天"。
+    ///
+    /// 有这个钩子才能验到那条要紧的规则：悬浮窗拖入**一律记到今天**，
+    /// 不管主面板当时正翻在哪一天。用户平时会碰到（前一天忘了记、今天想补），
+    /// 但探针不先翻走的话，主面板恰好停在今天，这条规则对不对根本测不出来。
+    /// </summary>
+    public void SetViewingDateForProbe(DateTime date) => LoadDay(date);
+
+    /// <summary>
+    /// 等这个窗口加载完。
+    ///
+    /// 悬浮窗拖入时主面板可能是**这一刻才创建**的：构造函数虽然已经把列表和日期装好了，
+    /// 但 Show 之后的布局还没跑。归档结果要落到列表上，宁可在这里等一下。
+    /// </summary>
+    public Task WaitLoadedAsync()
+    {
+        if (IsLoaded) return Task.CompletedTask;
+
+        var tcs = new TaskCompletionSource();
+        void OnLoaded(object? s, RoutedEventArgs e)
+        {
+            Loaded -= OnLoaded;
+            tcs.TrySetResult();
+        }
+
+        Loaded += OnLoaded;
+        return tcs.Task;
+    }
+
 
     // ==================================================================
     // 公共刷新与辅助

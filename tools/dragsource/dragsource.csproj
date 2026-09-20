@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    拖拽源：用真实的 OLE 拖放把文件"拖"到鲸记的窗口上。
+
+    为什么非要有这么个东西：文件拖放走的是 OLE，不是鼠标消息 ——
+    SetCursorPos 加 mouse_event 只能模拟鼠标，模拟不出"另一个进程正在拖一个文件"。
+    而"WPF 的透明窗口到底能不能接住拖放"这件事恰恰只能靠真拖一次来回答，
+    断言测不了。所以这里起一个真窗口（摆在屏幕外）、真按下左键、真调 DoDragDrop。
+
+    用法与参数表见 Program.cs；输出里 effect=Copy 表示目标接住了，
+    effect=None 表示没有窗口接受（多半是命中测试没过，拖到全透明像素上了）。
+  -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>dragsource</AssemblyName>
+    <RootNamespace>DragSource</RootNamespace>
+    <EnableDefaultApplicationDefinition>false</EnableDefaultApplicationDefinition>
+  </PropertyGroup>
+
+</Project>

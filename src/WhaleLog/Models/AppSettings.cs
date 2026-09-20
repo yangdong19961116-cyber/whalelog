@@ -91,7 +91,16 @@ public sealed class AppSettings
     /// <summary>超过该大小（MB）的文件改用分块采样哈希。</summary>
     public int FullHashLimitMb { get; set; } = 200;
 
-    public bool AutoOpenMainWindowOnDrop { get; set; }
+    /// <summary>
+    /// 把文件拖到桌面小鲸鱼上时，自动打开主面板并切到「文件归档」页。
+    ///
+    /// 默认开。这个开关管的是**悬浮窗**那条路：主面板自己拖入时它本来就在最前面，
+    /// 无所谓"打开"。
+    ///
+    /// 关掉之后归档照做，只是不抢当前视图 —— 结果由悬浮窗的气泡回报。
+    /// 但默认必须是开：不然拖上去"什么都没发生"，这个功能在用户看来等于不存在。
+    /// </summary>
+    public bool AutoOpenMainWindowOnDrop { get; set; } = true;
 
     // ---- 系统集成 ----
     public bool StartWithWindows { get; set; }

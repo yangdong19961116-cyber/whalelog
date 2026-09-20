@@ -12,9 +12,21 @@
         WindowStartupLocation="Manual"
         SnapsToDevicePixels="True"
         FontFamily="Microsoft YaHei UI, Segoe UI, sans-serif"
-        Width="236" Height="296">
+        Width="236" Height="296"
+        AllowDrop="True">
 
-    <Grid x:Name="RootGrid" Background="Transparent">
+    <!--
+        背景刻意用 alpha=1 而不是 Transparent。
+
+        这个窗口是 AllowsTransparency 的层叠窗口，Windows 对这类窗口的命中测试是
+        **逐像素看 alpha** 的：alpha=0 的地方，鼠标点击和文件拖放都会穿到下面的窗口上去。
+        真用 Transparent 的话，能接住拖入文件的就只有鲸鱼身上那一小块不透明像素，
+        鲸鱼周围的空白全漏下去 —— 拖个文件得瞄准。
+
+        填一层 alpha=1/255 的黑，肉眼完全看不出来（纯白背景上也只是 254,254,254），
+        但整块矩形就都能接住了。副作用是点击也不再穿透到下层窗口 —— 对桌宠而言这是改进。
+    -->
+    <Grid x:Name="RootGrid" Background="#01000000">
 
         <!-- ===================== 展开态 ===================== -->
         <Grid x:Name="ExpandedRoot">
@@ -138,6 +150,32 @@
                                Foreground="{DynamicResource AccentForegroundBrush}" />
                 </Border>
             </Grid>
+        </Border>
+
+        <!-- ===================== 拖入文件时的落点提示 ===================== -->
+        <!--
+            IsHitTestVisible=False 很要紧：它盖住整块窗口，能命中就会把 DragOver
+            从下面的元素手里抢走，落点判定会变得不稳定。
+        -->
+        <Border x:Name="DropHint"
+                Visibility="Collapsed"
+                IsHitTestVisible="False"
+                CornerRadius="16"
+                BorderThickness="2"
+                Background="#30000000"
+                BorderBrush="{DynamicResource AccentBrush}">
+            <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Margin="10">
+                <Image x:Name="DropHintIcon" Source="{v:AssetImage whale-head}"
+                       Width="40" Height="40" Stretch="Uniform"
+                       HorizontalAlignment="Center" />
+                <TextBlock x:Name="DropHintText"
+                           Margin="0,8,0,0"
+                           FontSize="12.5"
+                           FontWeight="Medium"
+                           TextAlignment="Center"
+                           TextWrapping="Wrap"
+                           Foreground="{DynamicResource FloatingTextBrush}" />
+            </StackPanel>
         </Border>
     </Grid>
 </Window>

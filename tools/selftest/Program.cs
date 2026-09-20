@@ -42,12 +42,14 @@ internal static class Program
             TestReports();
             TestFileDateGrouping();
             TestSettingsClamp();
+            TestIntakeSummary();
             TestAssetCatalog(workspace);
             TestCommandLine();
             TestAnimAssets(workspace);
             TestVideoAssets(workspace);
             TestCharacterPacks(workspace);
             await TestEndToEndIntakeAsync(workDir);
+            await TestDataDirSiblingNotSkippedAsync();
             await TestDateScopedIntakeAsync(workspace);
             await TestVersionAcrossDaysAsync(workspace);
             TestLargeFileSampling(dataDir);
@@ -605,6 +607,87 @@ internal static class Program
             "NaN 位置往返之后应该还是 NaN，而不是变成 0");
         Check(reloaded.Settings.FloatingTop is double v && double.IsNaN(v),
             "上下两个坐标都要能往返");
+    }
+
+    /// <summary>
+    /// 归档结果的文案。
+    ///
+    /// 悬浮窗的气泡和主面板左下角的状态栏共用这一句 —— 两处各写一份的话，
+    /// 同一次拖入在两个地方会显示成两种说法。
+    /// </summary>
+    private static void TestIntakeSummary()
+    {
+        Section("归档：结果文案");
+
+        static IntakeResult R(IntakeStatus s) => new() { Status = s };
+
+        var mixed = new List<IntakeResult>
+        {
+            R(IntakeStatus.Added), R(IntakeStatus.Added),
+            R(IntakeStatus.NewVersion),
+            R(IntakeStatus.Duplicate),
+            R(IntakeStatus.Failed),
+        };
+
+        var text = FileIntakeService.Summarize(mixed);
+        CheckEq(text, "新增 2，新版本 1，重复 1，失败 1", "五个状态合起来");
+
+        CheckEq(FileIntakeService.Summarize(Array.Empty<IntakeResult>()),
+            "没有可归档的文件", "一条结果都没有时");
+
+        CheckEq(FileIntakeService.Summarize(new[] { R(IntakeStatus.Added) }, "（记入 9月16日）"),
+            "新增 1（记入 9月16日）", "后缀要接在最后");
+
+        var unchangedOnly = FileIntakeService.Summarize(new[] { R(IntakeStatus.Unchanged) });
+        Check(!unchangedOnly.Contains("新增"), $"只读的状态不该冒出「新增」：实际「{unchangedOnly}」");
+    }
+
+    /// <summary>
+    /// 归档会跳过"自己的数据目录"（免得把 index.json、快照副本又拖回来归档）。
+    ///
+    /// 判断用的是路径前缀。只比目录名本身的话，名字**以数据目录名开头**的兄弟目录
+    /// （数据目录是 data、拖的是 data-备份）会被整批误跳过；而且是静默的 ——
+    /// 拖一个文件夹进来，一个文件都收不上，界面只说"没有可归档的文件"，
+    /// 看不出是被过滤掉了。
+    /// </summary>
+    private static async Task TestDataDirSiblingNotSkippedAsync()
+    {
+        Section("归档：只跳过自己的数据目录");
+
+        var root = AppPaths.Root;
+        var sibling = root + "-兄弟";
+
+        Directory.CreateDirectory(sibling);
+        Directory.CreateDirectory(root);
+
+        var file = Path.Combine(sibling, "兄弟目录里的文件.txt");
+        File.WriteAllText(file, "不该被当成数据目录里的文件");
+
+        var settings = new SettingsService();
+        settings.Load();
+        settings.Update(s => s.SnapshotMode = false);
+
+        var store = new LogBookStore();
+        store.Load();
+        var classify = new ClassifyService();
+        classify.Load();
+        var intake = new FileIntakeService(store, classify, new VersionService(settings), settings);
+
+        var results = await intake.IntakeAsync(new[] { file });
+        var record = store.FindFileByPath(file);
+
+        Check(record != null,
+            $"数据目录的兄弟目录（只差一个后缀）里的文件应该能归档：" +
+            $"拿到 {results.Count} 条结果，记录{(record == null ? "没" : "")}落库");
+
+        Check(results.All(r => r.Status != IntakeStatus.Nothing),
+            "不该被判成「没有可归档的文件」—— 那正是前缀误判时的表现");
+
+        // 反过来：数据目录里面的文件仍然必须跳过
+        var skipped = await intake.IntakeAsync(new[] { Path.Combine(root, "index.json") });
+        var skippedStatus = string.Join("、", skipped.Select(r => r.Status.ToString()));
+        Check(skipped.All(r => r.Status == IntakeStatus.Nothing),
+            $"数据目录**里面**的文件仍然要跳过（否则会把索引和快照副本又拖回来归档）：实际判成 {skippedStatus}");
     }
 
     private static async Task TestEndToEndIntakeAsync(string workDir)    {

@@ -42,6 +42,32 @@ public sealed class FileIntakeService
     /// <summary>单个文件处理完成就立刻回调一次，界面可以边处理边刷进度。</summary>
     public event Action<IntakeResult>? FileProcessed;
 
+    /// <summary>
+    /// 把一批归档结果压成一句话。
+    ///
+    /// 主窗口的状态栏和悬浮窗的气泡都走这里 —— 两处各写一份的话，
+    /// 同一次拖入在两个地方会显示成两种说法（一个说"新增 2"、另一个说"添加了 2 个文件"）。
+    /// </summary>
+    /// <param name="dateSuffix">可选后缀，例如「（记入 9月16日）」。</param>
+    public static string Summarize(IReadOnlyList<IntakeResult> results, string? dateSuffix = null)
+    {
+        int added = results.Count(r => r.Status == IntakeStatus.Added);
+        int versioned = results.Count(r => r.Status == IntakeStatus.NewVersion);
+        int unchanged = results.Count(r => r.Status == IntakeStatus.Unchanged);
+        int duplicate = results.Count(r => r.Status == IntakeStatus.Duplicate);
+        int failed = results.Count(r => r.Status == IntakeStatus.Failed);
+
+        var parts = new List<string>();
+        if (added > 0) parts.Add($"新增 {added}");
+        if (versioned > 0) parts.Add($"新版本 {versioned}");
+        if (unchanged > 0) parts.Add($"内容未变 {unchanged}");
+        if (duplicate > 0) parts.Add($"重复 {duplicate}");
+        if (failed > 0) parts.Add($"失败 {failed}");
+
+        if (parts.Count == 0) return "没有可归档的文件";
+        return string.Join("，", parts) + (dateSuffix ?? "");
+    }
+
     public Task<IReadOnlyList<IntakeResult>> IntakeAsync(
         IEnumerable<string> paths,
         DateTime? forDate = null,
@@ -335,7 +361,12 @@ public sealed class FileIntakeService
     private static List<string> Expand(IEnumerable<string> paths)
     {
         var files = new List<string>();
-        var dataRoot = AppPaths.Root;
+
+        // 末尾要补上分隔符再比。只比目录名本身的话，前缀相同的兄弟目录会被误判成
+        // "在数据目录里面"而整批悄悄跳过 —— 数据目录是 C:\Logs 时，
+        // 拖着 C:\Logs2\a.txt 进来会一个文件都收不上，且没有任何提示。
+        var dataRoot = AppPaths.Root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                       + Path.DirectorySeparatorChar;
 
         void AddFile(string file)
         {

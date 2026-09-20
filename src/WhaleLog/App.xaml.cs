@@ -137,6 +137,10 @@ public partial class App : Application
         // 挨个跑一遍并写日志，然后直接退出。
         if (HasFlag("--selfcheck"))
         {
+            // 自检里有一节要验"拖文件到小鲸鱼上会不会自动打开主面板"，
+            // 会真的把主面板建出来。让它待在屏幕外，别糊在用户桌面上。
+            OffscreenWindowProbe = true;
+
             var path = DiagnosticsService.WriteReport(out var content);
             var conclusion = content
                 .Split('\n')
@@ -354,6 +358,17 @@ public partial class App : Application
             if (_mainWindow == null)
             {
                 _mainWindow = new MainWindow();
+
+                // 自检要在屏幕外建一个**真实的**主面板来验"拖入后会不会自动打开"，
+                // 这个开关就是给它用的 —— 不然自检会在用户桌面上弹出一个窗口。
+                if (OffscreenWindowProbe)
+                {
+                    _mainWindow.WindowStartupLocation = WindowStartupLocation.Manual;
+                    _mainWindow.ShowInTaskbar = false;
+                    _mainWindow.Left = -32000;
+                    _mainWindow.Top = -32000;
+                }
+
                 _mainWindow.Closed += (_, _) => _mainWindow = null;
             }
 
@@ -384,6 +399,42 @@ public partial class App : Application
         {
             LogCrash(ex);
         }
+    }
+
+    /// <summary>
+    /// 悬浮窗拖入文件时用：把主面板叫出来，并把它交给调用方。
+    ///
+    /// 和 <see cref="ShowMainWindow"/> 只差一点：主面板可能是这一刻才创建的，
+    /// 这时要等它加载完再返回 —— 紧接着的归档结果要显示在列表上，
+    /// 打在还没加载完的窗口上会白做。
+    /// </summary>
+    public async Task<MainWindow?> ShowMainWindowForDropAsync()
+    {
+        ShowMainWindow();
+        if (_mainWindow is not { } main) return null;
+
+        await main.WaitLoadedAsync();
+        return main;
+    }
+
+    // ------------------------------------------------------------------
+    // 诊断自检用的入口
+    // ------------------------------------------------------------------
+
+    /// <summary>
+    /// 让接下来创建的主面板待在屏幕外。对应悬浮窗的 <c>BackgroundProbeMode</c>，
+    /// 只在 <c>--selfcheck</c> 里打开，正常运行全程为 false。
+    /// </summary>
+    public bool OffscreenWindowProbe { get; set; }
+
+    /// <summary>自检用：当前的主面板实例（没创建过时为 null）。</summary>
+    public MainWindow? MainWindowForProbe => _mainWindow;
+
+    /// <summary>自检用：把主面板收掉，别把它留在用户屏幕上。</summary>
+    public void CloseMainWindowForProbe()
+    {
+        try { _mainWindow?.Close(); } catch { /* 关不掉不影响结论 */ }
+        _mainWindow = null;
     }
 
     public void HideFloating() => _floatingWindow?.Hide();
