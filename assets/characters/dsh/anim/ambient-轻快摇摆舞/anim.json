@@ -1,0 +1,23 @@
+{
+  "name": "ambient-轻快摇摆舞",
+  "type": "video",
+  "video": "video.webm",
+  "filter": "crop=384:360:128:0,pad=384:384:0:6:color=black@0,crop=384:384:0:0",
+  "frameWidth": 384,
+  "frameHeight": 384,
+  "cols": 1,
+  "rows": 241,
+  "count": 241,
+  "fps": 24.0,
+  "loop": false,
+  "characterHeight": 270,
+  "anchor": {
+    "x": 192.0,
+    "y": 336.0
+  },
+  "returnTo": "base",
+  "sound": "",
+  "role": "ambient",
+  "source": "轻快摇摆舞.webm",
+  "_comment": "由 tools/convert_dsh_webm.py 生成。frameWidth/Height 是解码后的格子尺寸；filter 是裁进格子的 ffmpeg 滤镜串，运行时按它解码。不要手改。"
+}

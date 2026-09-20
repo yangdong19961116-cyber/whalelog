@@ -36,11 +36,29 @@ public sealed class AnimSheet
 
     public int Version { get; private init; } = 1;
 
-    /// <summary>容器类型。目前只认 "sheet"。</summary>
+    /// <summary>容器类型。认 "sheet"（精灵图 PNG）与 "video"（透明 webm）。</summary>
     public string SheetType { get; private init; } = "sheet";
 
-    /// <summary>精灵图文件名（相对帧表所在目录）。</summary>
+    /// <summary>精灵图文件名（相对帧表所在目录）。video 类型时为空。</summary>
     public string Sheet { get; private init; } = "";
+
+    /// <summary>视频文件名（相对帧表所在目录）。sheet 类型时为空。</summary>
+    public string Video { get; private init; } = "";
+
+    /// <summary>
+    /// 视频类型专用的 ffmpeg 滤镜串（把源画布裁进格子）。
+    ///
+    /// 为什么存在帧表里、而不是在代码里再算一遍：源坐标 ↔ 格子坐标的换算
+    /// 只有一处实现（tools/convert_dsh_webm.py 的 Geometry），运行时原样复用。
+    /// 两边各写一份的话，离线校验通过、运行时却错位，而且很难查。
+    /// </summary>
+    public string Filter { get; private init; } = "";
+
+    /// <summary>视频动作（运行时用 ffmpeg 解码）。</summary>
+    public bool IsVideo => SheetType.Equals("video", StringComparison.Ordinal);
+
+    /// <summary>这个动作真正要读的媒体文件（精灵图或视频）。</summary>
+    public string MediaFile => IsVideo ? Video : Sheet;
 
     public int FrameWidth { get; private init; }
     public int FrameHeight { get; private init; }
@@ -116,22 +134,40 @@ public sealed class AnimSheet
 
             // ---- 容器类型 ----
             var type = ReadString(root, "type");
-            if (!string.IsNullOrEmpty(type) && !type.Equals("sheet", StringComparison.OrdinalIgnoreCase))
+            if (!string.IsNullOrEmpty(type) &&
+                !type.Equals("sheet", StringComparison.OrdinalIgnoreCase) &&
+                !type.Equals("video", StringComparison.OrdinalIgnoreCase))
             {
                 if (type.Equals("sequence", StringComparison.OrdinalIgnoreCase))
                     return AnimSheetParseResult.Failure(
-                        "type=sequence（PNG 序列）暂不支持，请改成 type=sheet 的精灵图");
-                return AnimSheetParseResult.Failure($"不认识的 type：「{type}」，目前只支持 \"sheet\"");
+                        "type=sequence（PNG 序列）暂不支持；静态图请用 type=sheet，" +
+                        "透明视频请用 type=video");
+                return AnimSheetParseResult.Failure(
+                    $"不认识的 type：「{type}」，目前支持 \"sheet\"（精灵图）与 \"video\"（透明 webm）");
             }
 
-            // ---- 精灵图文件名 ----
-            var sheetFile = ReadString(root, "sheet");
-            if (string.IsNullOrWhiteSpace(sheetFile))
-                return AnimSheetParseResult.Failure("缺字段 sheet（精灵图文件名）");
-            // 只认文件名，不许带路径 —— 否则帧表能指到任意位置去
-            if (sheetFile.Contains("..", StringComparison.Ordinal) ||
-                sheetFile.IndexOfAny(new[] { '/', '\\' }) >= 0)
-                return AnimSheetParseResult.Failure($"sheet 只能是同目录下的文件名，不能带路径：「{sheetFile}」");
+            var isVideo = type.Equals("video", StringComparison.OrdinalIgnoreCase);
+
+            // ---- 媒体文件名 ----
+            // 精灵图和视频都只认文件名、不许带路径 —— 否则帧表能指到任意位置去
+            var mediaField = isVideo ? "video" : "sheet";
+            var mediaFile = ReadString(root, mediaField);
+            if (string.IsNullOrWhiteSpace(mediaFile))
+                return AnimSheetParseResult.Failure(
+                    isVideo ? "缺字段 video（视频文件名）" : "缺字段 sheet（精灵图文件名）");
+            if (mediaFile.Contains("..", StringComparison.Ordinal) ||
+                mediaFile.IndexOfAny(new[] { '/', '\\' }) >= 0)
+                return AnimSheetParseResult.Failure(
+                    $"{mediaField} 只能是同目录下的文件名，不能带路径：「{mediaFile}」");
+
+            // ---- 视频的裁剪滤镜 ----
+            var filter = "";
+            if (isVideo)
+            {
+                filter = ReadString(root, "filter");
+                var filterError = ValidateFilter(filter);
+                if (filterError.Length > 0) return AnimSheetParseResult.Failure(filterError);
+            }
 
             // ---- 几何 ----
             int fw = ReadInt(root, "frameWidth", 0);
@@ -141,19 +177,23 @@ public sealed class AnimSheet
             if (fw > MaxFrameSide || fh > MaxFrameSide)
                 return AnimSheetParseResult.Failure($"帧尺寸 {fw}×{fh} 超过上限 {MaxFrameSide}");
 
-            int cols = ReadInt(root, "cols", 0);
-            int rows = ReadInt(root, "rows", 0);
-            if (cols <= 0 || rows <= 0)
-                return AnimSheetParseResult.Failure($"网格不合法：{cols} 列 × {rows} 行（cols / rows 必须是正整数）");
-
             int count = ReadInt(root, "count", 0);
-            if (count <= 0)
+            if (count <= 0 && !isVideo)
                 return AnimSheetParseResult.Failure("缺字段 count（帧数），或者它不是一个正整数");
             if (count > MaxCount)
                 return AnimSheetParseResult.Failure($"帧数 {count} 超过上限 {MaxCount}");
+
+            // 网格只有精灵图用得上；视频没有"排帧"这回事，给 1×1 占位即可
+            int cols = isVideo ? 1 : ReadInt(root, "cols", 0);
+            int rows = isVideo ? Math.Max(1, count) : ReadInt(root, "rows", 0);
+            if (cols <= 0 || rows <= 0)
+                return AnimSheetParseResult.Failure($"网格不合法：{cols} 列 × {rows} 行（cols / rows 必须是正整数）");
             if (cols * rows < count)
                 return AnimSheetParseResult.Failure(
                     $"网格放不下 {count} 帧：{cols} 列 × {rows} 行 = {cols * rows}");
+
+            if (isVideo && count <= 0)
+                warnings.Add("帧表没写 count（视频的帧数）—— 播放时以实际解出的帧数为准");
 
             // 网格比帧数多出来的那些格子是允许的（方便排版成 4×2 放 6 帧），
             // 但要在日志里说一声，免得做素材的人以为程序"多数了一格"。
@@ -209,7 +249,9 @@ public sealed class AnimSheet
                 Name = ReadString(root, "name"),
                 Version = ReadInt(root, "version", 1),
                 SheetType = string.IsNullOrEmpty(type) ? "sheet" : type.ToLowerInvariant(),
-                Sheet = sheetFile,
+                Sheet = isVideo ? "" : mediaFile,
+                Video = isVideo ? mediaFile : "",
+                Filter = filter,
                 FrameWidth = fw,
                 FrameHeight = fh,
                 Cols = cols,
@@ -274,6 +316,116 @@ public sealed class AnimSheet
         if (!HasCharacterHeight) return null;
         return designCharacterHeight * FrameHeight / CharacterHeight;
     }
+
+    // ==================================================================
+    // 视频滤镜的校验
+    // ==================================================================
+
+    /// <summary>
+    /// 校验帧表里的 ffmpeg 滤镜串。
+    ///
+    /// 这段字符串会被原样拼进 ffmpeg 命令，所以**必须当成不可信输入**：
+    /// 帧表是用户可以手改的文件，放任它写任意内容就等于给了执行任意命令的口子
+    /// （滤镜串里的 `,` 分隔下一个滤镜，写对了就能越出裁剪的范围）。
+    ///
+    /// 这里只放行"我们自己生成的形状"：
+    ///
+    ///     crop=宽:高:x:y
+    ///     pad=宽:高:x:y:color=black@0
+    ///     scale=宽:高:flags=lanczos
+    ///
+    /// 解析时**先按 `=` 切出滤镜名**（ffmpeg 是「名字=参数:参数」），再按 `:` 切参数 ——
+    /// 反过来切会把 `crop=384:360:128:0` 的名字认成 `crop=384`，于是正常的滤镜串
+    /// 全被判成"不认识的滤镜"。（这个坑真踩过：生成出来的 106 个动作一个都扫不进来。）
+    ///
+    /// 返回空串表示通过，否则返回人能看懂的原因。
+    /// </summary>
+    private static string ValidateFilter(string filter)
+    {
+        if (string.IsNullOrWhiteSpace(filter)) return "";   // 允许不写，运行时会给默认值
+
+        if (filter.Length > 512)
+            return "filter 太长（超过 512 字符）—— 正常的裁剪滤镜不会这么长";
+
+        foreach (var raw in filter.Split(','))
+        {
+            var part = raw.Trim();
+            if (part.Length == 0) return "filter 里有空的滤镜段（多写了逗号？）";
+
+            // 「名字=参数」是标准写法；也容忍「名字:参数」这种老写法
+            int eq = part.IndexOf('=');
+            int colon = part.IndexOf(':');
+            int cut = eq > 0 ? eq : colon;
+            if (cut <= 0) return $"filter 段「{part}」不像是一个滤镜";
+
+            var name = part[..cut];
+            if (name is not ("crop" or "scale" or "pad"))
+                return $"filter 只允许 crop / scale / pad，不接受「{name}」";
+
+            foreach (var arg in part[(cut + 1)..].Split(':'))
+            {
+                if (arg.Length == 0) return $"filter 段「{part}」里有空参数";
+
+                var inner = arg.IndexOf('=');
+                if (inner > 0)
+                {
+                    var key = arg[..inner];
+                    var value = arg[(inner + 1)..];
+
+                    // 具名参数只放行两个：pad 的填充色、scale 的插值算法
+                    if (key.Equals("color", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (!IsAllowedPadColor(value))
+                            return $"filter 段「{part}」的填充色只允许 black@0 / black / none，不接受「{value}」";
+                        continue;
+                    }
+
+                    if (key.Equals("flags", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (!IsAllowedScaleFlag(value))
+                            return $"filter 段「{part}」的插值算法只允许 lanczos / bilinear / bicubic / neighbor，不接受「{value}」";
+                        continue;
+                    }
+
+                    return $"filter 段「{part}」里不认识的参数名「{key}」";
+                }
+
+                // 位置参数：纯数字，或者白名单里的枚举词
+                if (IsFilterNumber(arg)) continue;
+                if (IsAllowedScaleFlag(arg)) continue;
+
+                return $"filter 段「{part}」的参数「{arg}」含有不允许的字符";
+            }
+        }
+
+        return "";
+    }
+
+    /// <summary>位置参数只允许数字（可带负号和小数点）。</summary>
+    private static bool IsFilterNumber(string s)
+    {
+        if (s.Length == 0) return false;
+        foreach (var c in s)
+        {
+            if (!char.IsAsciiDigit(c) && c != '.' && c != '-') return false;
+        }
+        return true;
+    }
+
+    /// <summary>pad 的填充色：只要透明黑就是我们要的（黑边不透明会把角色框起来）。</summary>
+    private static bool IsAllowedPadColor(string v)
+        => v.Equals("black@0", StringComparison.OrdinalIgnoreCase)
+        || v.Equals("black", StringComparison.OrdinalIgnoreCase)
+        || v.Equals("none", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>scale 的插值算法白名单。默认是双三次，我们生成时用 lanczos。</summary>
+    private static bool IsAllowedScaleFlag(string v)
+        => v.Equals("lanczos", StringComparison.OrdinalIgnoreCase)
+        || v.Equals("bilinear", StringComparison.OrdinalIgnoreCase)
+        || v.Equals("bicubic", StringComparison.OrdinalIgnoreCase)
+        || v.Equals("neighbor", StringComparison.OrdinalIgnoreCase)
+        || v.Equals("fast_bilinear", StringComparison.OrdinalIgnoreCase)
+        || v.Equals("spline", StringComparison.OrdinalIgnoreCase);
 
     // ==================================================================
     // JSON 取值小工具（缺字段/类型不对都退回默认值，不抛）
@@ -341,25 +493,65 @@ public sealed class AnimSheetParseResult
 /// 动作键 = 素材目录名。目录名是人手敲的，大小写、下划线、连字符都会飘，
 /// 所以统一归一化之后再比对 —— 否则用户把目录建成「Click_Bounce」就"没反应"，
 /// 而界面上完全看不出为什么。
+///
+/// ## 动作名还兼职"角色"
+///
+/// 一个形象可以有很多个动作（dsh 那个形象有 106 个）。界面要能回答
+/// "点击时该播哪些""闲下来该播什么"，就得知道每个动作是干什么用的。
+/// 这件事用**目录名的前缀**表达，而不是另开一个字段：
+///
+///     idle-待机呼吸休闲      持续循环的待机
+///     clickBounce-开心跃动   点击回应（多个时随机挑一个）
+///     ambient-哈欠连天       闲置时随机冒出来的小动作
+///
+/// 前缀怎么认、认不出来怎么办，全在 <see cref="RoleOf"/> 一处。
+/// 好处是**老素材不用改**：目录名叫 <c>blink</c> / <c>clickBounce</c> 的
+/// 本来就在用，它们各自就是一个角色。
 /// </summary>
 public static class AnimActions
 {
     /// <summary>单击小鲸鱼。</summary>
     public const string Click = "clickBounce";
 
-    /// <summary>闲置时随机眨眼。</summary>
+    /// <summary>闲置时随机眨眼（一次性的小动作）。</summary>
     public const string Blink = "blink";
 
     /// <summary>到点提醒。</summary>
     public const string Alert = "alert";
 
-    /// <summary>界面会主动尝试播放的动作（顺序即优先级，仅用于诊断报告）。</summary>
-    public static readonly IReadOnlyList<string> All = new[] { Click, Blink, Alert };
+    /// <summary>持续循环的待机动作。和 <see cref="Blink"/> 的区别是"一直播" vs "偶尔眨一下"。</summary>
+    public const string Idle = "idle";
+
+    /// <summary>被拖拽时循环播。</summary>
+    public const string Drag = "drag";
+
+    /// <summary>闲置时随机冒出来的小动作。</summary>
+    public const string Ambient = "ambient";
+
+    /// <summary>贴边滑动时播（当前没有自主走动，只在吸附滑行时用）。</summary>
+    public const string Move = "move";
+
+    /// <summary>转向。素材里有，但还没有用上它的交互。</summary>
+    public const string Turn = "turn";
+
+    /// <summary>所有角色。顺序即优先级，仅用于诊断报告。</summary>
+    public static readonly IReadOnlyList<string> All = new[]
+    {
+        Idle, Click, Blink, Ambient, Alert, Drag, Move, Turn,
+    };
+
+    /// <summary>这些角色是"一直循环"，播完不会自己结束。</summary>
+    public static bool IsLoopingRole(string role)
+        => role is Idle or Drag;
 
     /// <summary>
     /// 把目录名归一化成规范动作键。
     /// 认不出来的一律原样返回（带前后空格去掉）—— 允许用户自定义动作，
     /// 只是界面不会主动去播它。
+    ///
+    /// ⚠️ 注意 <c>"idle"</c> 仍然归一化成 <see cref="Blink"/>（历史行为，改了会让
+    /// 老素材注册的名字变掉）。所以「目录叫 idle」的**动作键**是 blink，
+    /// 但它的**角色**是 <see cref="Idle"/> —— 两者刻意不强行统一，见 <see cref="RoleOf"/>。
     /// </summary>
     public static string Canonical(string? key)
     {
@@ -372,6 +564,38 @@ public static class AnimActions
             "blink" or "idle" or "idleblink" or "blinkidle" => Blink,
             "alert" or "remind" or "reminder" or "notify" or "warning" => Alert,
             _ => raw,
+        };
+    }
+
+    /// <summary>
+    /// 这个动作用来干什么。
+    ///
+    /// 只看目录名的**第一段**（第一个 <c>-</c> / <c>_</c> / 空格之前），
+    /// 所以 <c>ambient-哈欠连天</c> 和 <c>ambient-偷吃零食</c> 都是
+    /// <see cref="Ambient"/>，界面据此在两者之间随机挑。
+    ///
+    /// 认不出来返回空串 —— 那是用户自制的动作，界面不会主动播它，
+    /// 但它的素材仍然被扫描、登记、能手动播。
+    /// </summary>
+    public static string RoleOf(string? key)
+    {
+        var raw = (key ?? "").Trim();
+        if (raw.Length == 0) return "";
+
+        var cut = raw.IndexOfAny(new[] { '-', '_', ' ' });
+        var head = (cut < 0 ? raw : raw[..cut]).ToLowerInvariant();
+
+        return head switch
+        {
+            "click" or "clickbounce" or "tap" or "poke" => Click,
+            "blink" => Blink,
+            "idle" or "idleloop" or "loop" => Idle,
+            "alert" or "remind" or "reminder" or "notify" or "warning" => Alert,
+            "drag" or "dragging" => Drag,
+            "ambient" or "random" or "act" or "acts" => Ambient,
+            "move" or "walk" => Move,
+            "turn" => Turn,
+            _ => "",
         };
     }
 

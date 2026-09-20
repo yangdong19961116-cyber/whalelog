@@ -10,11 +10,19 @@ TestResults/
 *.tmp
 Publish/
 publish/
-build/portable/
+# 构建 / 打包 / 探针留下的临时目录，整体不进仓库。
+# 这里**只写 build/**：脚本是 build-whalelog*.cmd 这种带前缀的名字，不受影响；
+# 而 build/ 下面全是随时可再生成的产物（打包暂存、自检隔离数据、素材导出探针数据），
+# 一个个列容易漏 —— 漏掉的那个会在下次提交时被 git add 进去。
+build/
 
 # 探针 / 自检 / 图像处理留下的临时文件与目录（数据和素材都要隔离，绝不碰用户的）
 # 用 .tmp-* 而不是 .tmp-*/：后者只匹配目录，prepare_expression.py 吐出来的
 # .tmp-xxx.png 这类文件会漏网被 git add 进去。
 .tmp-*
 tmp/
+
+# Python 字节码缓存。以前被误提交过 10 个 .pyc，二进制、每次跑脚本都变 —— 纯噪音。
+__pycache__/
+*.pyc
 

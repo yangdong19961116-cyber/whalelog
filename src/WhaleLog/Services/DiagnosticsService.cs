@@ -402,6 +402,17 @@ public static class DiagnosticsService
         Section("悬浮态形象（表情差分）");
         ProbeHoverImage(Check, sb);
 
+        // ---- 形象包 ----
+        // 新版溟月与原版鲸鱼娘并存、可一键切换，且"永远解析得到一个能用的形象"。
+        // 切换没接上时界面上只是"看起来还是原来那只"，几乎没法归因，所以真换一遍。
+        Section("形象包（新版 / 原版切换）");
+        ProbeCharacterPacks(Check, sb);
+
+        // ---- 透明视频 ----
+        // 这条链路跨进程（ffmpeg 是外部程序），断了的表现是"点下去什么都不发生"。
+        Section("透明视频动画");
+        ProbeVideoPlayback(Check, sb);
+
         // ---- 月历面板 ----
         // 网格偏移、42 格、跨月边界这类算错的话，日历"看着正常"但日期整体错位，
         // 肉眼很难发现。这里把几何和事件都断言一遍。
@@ -1308,7 +1319,7 @@ public static class DiagnosticsService
             // 而这在界面上只表现为"好像抖了一下"，几乎没法归因
             check("本体与悬浮形象同画布（不同就会在悬浮瞬间跳一下）",
                 window.StillImageSize.HasValue && window.StillImageSize == window.HoverImageSize,
-                $"本体 {Fmt(window.StillImageSize)}，悬浮 {Fmt(window.HoverImageSize)}");
+                $"本体 {FormatSize(window.StillImageSize)}，悬浮 {Fmt(window.HoverImageSize)}");
 
             check("还没悬浮时贴的是本体", window.ShowingStillImage,
                 $"配上悬浮图={window.HasHoverImage}");
@@ -1379,6 +1390,388 @@ public static class DiagnosticsService
     /// 在临时素材目录里造一份最小可用的动画素材（真 PNG + 真帧表 + 同画布静态本体）。
     /// 「小鲸鱼动画」和「悬浮态形象」两段探针共用它。
     /// </summary>
+    /// <summary>
+    /// 形象包：新版溟月与原版鲸鱼娘并存、能一键切换。
+    ///
+    /// 这是"加了个开关、但开关其实没接上"的高发区，而且失效方式很安静：
+    /// 切换没生效只是"看起来还是原来那只鲸鱼"，没人会想到去查配置。
+    /// 这里自己造两套形象（本体用蓝/绿两种纯色区分），把切换真的走一遍。
+    ///
+    /// 另外钉死一条兜底规则：**任何情况下都要解析得到一个能用的形象**。
+    /// 用户把素材目录删了、或者从旧版本升级上来（配置里没这个字段），
+    /// 界面都不能空着 —— 那看起来就像程序坏了。
+    /// </summary>
+    private static void ProbeCharacterPacks(CheckFn check, StringBuilder sb)
+    {
+        var probeRoot = Path.Combine(AppPaths.LogDir, "pack-probe");
+        var assetDir = Path.Combine(probeRoot, "Assets");
+
+        string? previousAssetDir = null;
+        FloatingWindow? window = null;
+        var settings = App.Settings.Settings;
+        var previousCharacter = settings.FloatingCharacter;
+        var previousAnimations = settings.FloatingAnimations;
+
+        try
+        {
+            previousAssetDir = Environment.GetEnvironmentVariable("WHALELOG_ASSET_DIR");
+
+            settings.FloatingAutoCollapse = false;
+            settings.FloatingLeft = Offscreen;
+            settings.FloatingTop = Offscreen;
+            settings.FloatingAnimations = true;
+            settings.FloatingCharacter = CharacterPacks.ClassicId;   // 先把"从原版换到新版"这条路走出来
+
+            // 原版：素材根下直接放（老布局）；新版：characters\dsh\ 下。
+            // 本体用不同尺寸 + 不同颜色，切换有没有生效一眼可辨。
+            Directory.CreateDirectory(assetDir);
+            WriteProbeSolid(Path.Combine(assetDir, "whale.png"), 200, 200, 0, 0, 255);
+
+            var packDir = CharacterPacks.DirOf(CharacterPacks.DshId, assetDir);
+            Directory.CreateDirectory(packDir);
+            WriteProbeSolid(Path.Combine(packDir, "whale.png"), 384, 384, 0, 200, 0);
+
+            // ---- 纯逻辑部分（不起窗口）----
+            check("设置里没选过时默认用新形象（装了新素材就该看到新的）",
+                CharacterPacks.Resolve("", assetDir) == CharacterPacks.DshId,
+                $"解析结果：{CharacterPacks.Resolve("", assetDir)}");
+
+            // 「设置里的值给不出一个能用的形象」有三级降级，这里量前两级：
+            //   设置里那个（可用就用）→ 默认形象 dsh → 原版。
+            // 不存在的 ID（手改过 settings.json、自建的形象包被删了）落到的**是默认形象**，
+            // 不是原版 —— 和"没选过"同一个落点，因为两者对用户是同一件事："这个值不作数"。
+            // 原版只在默认形象也不在时才兜底（下一条）。
+            check("设置里是个不存在的形象时退回默认形象，而不是解析出空",
+                CharacterPacks.Resolve("根本没有这个形象", assetDir) == CharacterPacks.DshId,
+                $"解析结果：{CharacterPacks.Resolve("根本没有这个形象", assetDir)}");
+
+            // 默认形象也拿不到时（素材没随包发、用户删了 characters\），必须落到原版 ——
+            // 原版的图是编译进程序集的嵌入资源，素材目录整个不存在也在。
+            check("默认形象也不在时不存在的 ID 落到原版（原版是嵌入资源，永远能用）",
+                CharacterPacks.Resolve("根本没有这个形象", Path.Combine(probeRoot, "empty-assets"))
+                    == CharacterPacks.ClassicId,
+                $"解析结果：{CharacterPacks.Resolve("根本没有这个形象", Path.Combine(probeRoot, "empty-assets"))}");
+
+            check("形象 ID 里被塞了路径分隔符也不会越出素材目录",
+                CharacterPacks.DirOf("..\\..\\Windows", assetDir) == assetDir,
+                CharacterPacks.DirOf("..\\..\\Windows", assetDir));
+
+            // ---- 真的换一遍 ----
+            Environment.SetEnvironmentVariable("WHALELOG_ASSET_DIR", assetDir);
+
+            window = new FloatingWindow
+            {
+                WindowStartupLocation = WindowStartupLocation.Manual,
+                ShowInTaskbar = false,
+                ShowActivated = false,
+                BackgroundProbeMode = true,
+                Left = Offscreen,
+                Top = Offscreen,
+            };
+            window.Show();
+            window.UpdateLayout();
+
+            check("按设置里选的原版形象起窗口",
+                window.CharacterId == CharacterPacks.ClassicId,
+                $"实际形象：{window.CharacterId}");
+
+            check("原版用的是素材根下那张 200×200 的本体（老布局没被打乱）",
+                window.StillImageSize == (200, 200),
+                $"实际 {FormatSize(window.StillImageSize)}");
+
+            // 换成新形象：只需改设置 + 重新套用，不该要求重启
+            settings.FloatingCharacter = CharacterPacks.DshId;
+            window.ApplySettings();
+            window.UpdateLayout();
+
+            check("切换到新形象立刻生效（不用重启）",
+                window.CharacterId == CharacterPacks.DshId,
+                $"实际形象：{window.CharacterId}（{window.CharacterTitle}）");
+
+            check("换形象之后本体也换成了新版那张 384×384",
+                window.StillImageSize == (384, 384),
+                $"实际 {FormatSize(window.StillImageSize)}");
+
+            check("新形象的素材根是它自己的目录（不是素材根）",
+                window.CharacterRoot.EndsWith(Path.Combine(CharacterPacks.FolderName, CharacterPacks.DshId),
+                                             StringComparison.Ordinal),
+                window.CharacterRoot);
+
+            // 新版没有闭眼差分，就**不该**拿内置那张原版闭眼图去顶替 ——
+            // 那看起来是"换了形象、鼠标一移上去变回旧鲸鱼"
+            check("新形象没有差分图时不会回落成原版的闭眼图",
+                !window.HasHoverImage || window.CharacterIsClassic,
+                $"配上的差分图：{(window.HasHoverImage ? "有" : "没有")}");
+
+            // 切回原版：开关是双向的
+            settings.FloatingCharacter = CharacterPacks.ClassicId;
+            window.ApplySettings();
+            window.UpdateLayout();
+
+            check("能切回原版形象（开关是双向的）",
+                window.CharacterId == CharacterPacks.ClassicId && window.StillImageSize == (200, 200),
+                $"形象={window.CharacterId} 本体={FormatSize(window.StillImageSize)}");
+
+            // 素材整个不存在时也不能空着：删掉 characters\ 之后仍然要有一个能用的形象
+            settings.FloatingCharacter = CharacterPacks.DshId;
+            try { Directory.Delete(packDir, true); } catch { /* 删不掉就用下面的断言兜 */ }
+
+            window.ApplySettings();
+            window.UpdateLayout();
+
+            check("形象素材被删掉之后自动退回原版（界面不会空，也不会起不来）",
+                window.CharacterId == CharacterPacks.ClassicId,
+                $"实际形象：{window.CharacterId}");
+
+            check("界面能列出可选形象（内置两个排在最前）",
+                CharacterPacks.Available(assetDir).Count >= 2,
+                string.Join("、", CharacterPacks.Available(assetDir).Select(p => p.Id)));
+        }
+        catch (Exception ex)
+        {
+            check("形象包切换", false, ex.Message);
+            sb.AppendLine("      " + ex);
+        }
+        finally
+        {
+            try { window?.Close(); } catch { /* 关不掉不影响结论 */ }
+
+            settings.FloatingCharacter = previousCharacter;
+            settings.FloatingAnimations = previousAnimations;
+
+            try
+            {
+                Environment.SetEnvironmentVariable("WHALELOG_ASSET_DIR", previousAssetDir);
+                IconAssets.Reload();
+            }
+            catch { /* 还原失败也只能继续 */ }
+
+            try { Directory.Delete(probeRoot, true); } catch { /* 删不掉不影响结论 */ }
+        }
+    }
+
+    /// <summary>
+    /// 透明视频的**播放链路**实测：起 ffmpeg → 解码 → 贴到鲸鱼上 → 播完自己收手。
+    ///
+    /// 这条链路跨越进程边界（ffmpeg 是外部程序），任何一环断掉的表现都是
+    /// "点下去什么都不发生"，而日志里一个字都没有 —— 所以必须真跑一遍。
+    /// 探针素材用普通视频（不带 alpha）就够：解码、裁剪缩放、贴帧、收尾
+    /// 这几步和真的透明 webm 走的是同一套代码。
+    /// </summary>
+    private static void ProbeVideoPlayback(CheckFn check, StringBuilder sb)
+    {
+        var ffmpeg = FfmpegLocator.Path;
+        sb.AppendLine(Indent(FfmpegLocator.Describe()));
+
+        if (ffmpeg == null)
+        {
+            sb.AppendLine("      （本机没找到 ffmpeg，跳过透明视频的播放实测）");
+            return;
+        }
+
+        var probeRoot = Path.Combine(AppPaths.LogDir, "video-probe");
+        var assetDir = Path.Combine(probeRoot, "Assets");
+        var clip = Path.Combine(probeRoot, "clip.avi");
+
+        string? previousAssetDir = null;
+        FloatingWindow? window = null;
+        var settings = App.Settings.Settings;
+        var previousCharacter = settings.FloatingCharacter;
+        var previousAnimations = settings.FloatingAnimations;
+
+        const int cell = 384;
+        var probeActions = new[] { "clickBounce-探针点击跃动", "ambient-探针闲置小动作" };
+
+        try
+        {
+            previousAssetDir = Environment.GetEnvironmentVariable("WHALELOG_ASSET_DIR");
+
+            settings.FloatingAutoCollapse = false;
+            settings.FloatingLeft = Offscreen;
+            settings.FloatingTop = Offscreen;
+            settings.FloatingAnimations = true;
+            settings.FloatingCharacter = CharacterPacks.ClassicId;
+
+            Directory.CreateDirectory(probeRoot);
+            Directory.CreateDirectory(assetDir);
+
+            if (!TryMakeProbeClip(ffmpeg, clip, frames: 24, side: 192, out var makeError))
+            {
+                check("造一段测试视频", false, makeError);
+                return;
+            }
+
+            // 源素材只有 192×192，靠帧表里的滤镜放成 384 的格子 ——
+            // 顺便验证「运行时真的按帧表的滤镜解码」（滤镜写错/没生效时格子尺寸会不对）
+            foreach (var action in probeActions)
+                WriteProbeVideoAction(assetDir, action, clip, cell);
+
+            WriteProbeSolid(Path.Combine(assetDir, "whale.png"), cell, cell, 0, 0, 255);
+
+            Environment.SetEnvironmentVariable("WHALELOG_ASSET_DIR", assetDir);
+
+            window = new FloatingWindow
+            {
+                WindowStartupLocation = WindowStartupLocation.Manual,
+                ShowInTaskbar = false,
+                ShowActivated = false,
+                BackgroundProbeMode = true,
+                Left = Offscreen,
+                Top = Offscreen,
+            };
+            window.Show();
+            window.UpdateLayout();
+
+            check("视频动作都登记进了播放器",
+                window.RegisteredActionCount == probeActions.Length && window.VideoActionCount == probeActions.Length,
+                $"登记 {window.RegisteredActionCount} 个、其中视频 {window.VideoActionCount} 个");
+
+            check("视频动作按目录名认出了角色（点击 / 闲置小动作）",
+                window.ClickActionCount == 1 && window.AmbientActionCount == 1,
+                $"点击 {window.ClickActionCount}、闲置小动作 {window.AmbientActionCount}");
+
+            check("鲸鱼框按视频帧表算出了正确高度",
+                Math.Abs(window.WhaleHeight - 198) < 1.5,
+                $"实际 {window.WhaleHeight:0.#}px（静态形象是 168px）");
+
+            // ---- 真的播一段 ----
+            check("能起播视频动作", window.PlayRoleOnce(AnimActions.Click),
+                $"当前动作：{window.CurrentAnimation ?? "（没有）"}");
+
+            check("播的是视频那条路（不是精灵图）", window.IsVideoPlaying,
+                $"当前动作：{window.CurrentAnimation ?? "（没有）"}");
+
+            var frames = window.PumpVideoFrames(4, 8000);
+
+            check("视频帧真的被解出来并贴到鲸鱼上了", frames >= 4,
+                $"解出 {frames} 帧（起不来 / 解不出帧时这里会是 0）");
+
+            check("鲸鱼上贴的确实是一帧动画，而不是静止底图",
+                window.ShowingAnimationFrame && window.AnimPlayer?.FrameShown == true,
+                $"贴的是 {DescribeSource(window)}");
+
+            var whale = Descendants(window).OfType<Image>().FirstOrDefault(i => i.Name == "WhaleImage");
+            var frameBitmap = whale?.Source as System.Windows.Media.Imaging.WriteableBitmap;
+
+            check("解出来的帧尺寸和帧表的格子一致（滤镜真按帧表生效了）",
+                frameBitmap != null && frameBitmap.PixelWidth == cell && frameBitmap.PixelHeight == cell,
+                frameBitmap == null ? "没拿到帧位图" : $"{frameBitmap.PixelWidth}×{frameBitmap.PixelHeight}，期望 {cell}×{cell}");
+
+            // ---- 非循环动作播完要自己收手 ----
+            var waited = window.PumpUntilStopped(20000);
+
+            check("非循环视频播完自己收手（不会永远停在「播放中」堵住后面的动作）",
+                !window.IsAnimationPlaying,
+                $"等了 {waited} ms，当前动作={window.CurrentAnimation ?? "（没有，已停）"}");
+
+            check("播完把静止的底图贴回来了（不留最后一帧在脸上）",
+                whale != null && !window.ShowingAnimationFrame,
+                $"贴的是 {DescribeSource(window)}");
+        }
+        catch (Exception ex)
+        {
+            check("透明视频播放", false, ex.Message);
+            sb.AppendLine("      " + ex);
+        }
+        finally
+        {
+            try { window?.Close(); } catch { /* 关不掉不影响结论 */ }
+
+            settings.FloatingCharacter = previousCharacter;
+            settings.FloatingAnimations = previousAnimations;
+
+            try
+            {
+                Environment.SetEnvironmentVariable("WHALELOG_ASSET_DIR", previousAssetDir);
+                IconAssets.Reload();
+            }
+            catch { /* 还原失败也只能继续 */ }
+
+            try { Directory.Delete(probeRoot, true); } catch { /* 删不掉不影响结论 */ }
+        }
+    }
+
+    /// <summary>自检用：把一个像素尺寸写成「宽×高」，取不到时写「（没取到）」。公共用。</summary>
+    private static string FormatSize((int Width, int Height)? size)
+        => size.HasValue ? $"{size.Value.Width}×{size.Value.Height}" : "（没取到）";
+
+    /// <summary>自检用：此刻鲸鱼上贴的是什么（写断言失败信息时很有用）。</summary>
+    private static string DescribeSource(FloatingWindow window)
+    {
+        if (window.AnimPlayer?.CurrentIsVideo == true && window.AnimPlayer.FrameShown)
+            return "视频解出来的一帧";
+
+        if (window.ShowingAnimationFrame) return "精灵图切出来的一帧";
+        if (window.ShowingHoverImage) return "悬浮差分图";
+        if (window.ShowingStillImage) return "静态本体";
+        return "（认不出来）";
+    }
+
+    /// <summary>造一个视频动作目录（帧表里用滤镜把源素材放成格子大小）。</summary>
+    private static void WriteProbeVideoAction(string assetDir, string action, string clipFile, int cell)
+    {
+        var dir = Path.Combine(assetDir, AnimLibrary.FolderName, action);
+        Directory.CreateDirectory(dir);
+
+        File.Copy(clipFile, Path.Combine(dir, "video.webm"), overwrite: true);
+
+        File.WriteAllText(Path.Combine(dir, "anim.json"), $$"""
+        {
+          "name": "{{action}}", "version": 1, "type": "video",
+          "video": "video.webm",
+          "filter": "scale={{cell}}:{{cell}}",
+          "frameWidth": {{cell}}, "frameHeight": {{cell}},
+          "cols": 1, "rows": 1, "count": 24, "fps": 24,
+          "loop": false,
+          "anchor": { "x": {{cell / 2}}, "y": {{cell}} },
+          "characterHeight": {{cell * 600 / 720}},
+          "returnTo": "base", "sound": ""
+        }
+        """);
+    }
+
+    /// <summary>用 ffmpeg 现造一段小视频（不往仓库里塞二进制素材）。</summary>
+    private static bool TryMakeProbeClip(string ffmpeg, string path, int frames, int side, out string error)
+    {
+        error = "";
+
+        try
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo(ffmpeg)
+            {
+                RedirectStandardError = true,
+                RedirectStandardOutput = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+
+            void Arg(string a) => psi.ArgumentList.Add(a);
+
+            Arg("-v"); Arg("error");
+            Arg("-f"); Arg("lavfi");
+            Arg("-i"); Arg($"testsrc=size={side}x{side}:rate=24");
+            Arg("-frames:v"); Arg(frames.ToString());
+            Arg("-c:v"); Arg("mpeg4");
+            Arg("-y"); Arg(path);
+
+            using var process = System.Diagnostics.Process.Start(psi);
+            if (process == null) { error = "进程没起来"; return false; }
+
+            var stderr = process.StandardError.ReadToEnd();
+            process.WaitForExit(20000);
+
+            if (File.Exists(path) && new FileInfo(path).Length > 0) return true;
+
+            error = stderr.Length > 300 ? stderr[^300..] : stderr;
+            return false;
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            return false;
+        }
+    }
+
     private static void WriteProbeAnimation(
         string assetDir, string action, int frameSize, int cols, int count)
     {

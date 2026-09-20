@@ -32,13 +32,21 @@
 
 ### 命令与工具
 构建 `build-whalelog.cmd`（正常）/ `build-whalelog-offline.cmd`（受限）；
-打包 `python tools/make_portable_zip.py [out.zip]` → 自包含 zip；
-自测 `tools/selftest/`（232 项断言，直接编译主程序非界面部分）；
-诊断 `WhaleLog.exe --selfcheck` → `logs\selfcheck.log`（真实数据 164 项）；
+**受限会话里 restore 报 `path1` 为 null 时先跑 `python tools/mkenv.py` 再 `source .tmp-env.sh`**
+（真因是 bash 拿不到 Windows 会话的环境变量，不是"离线做不到"）；
+打包 `python tools/make_portable_zip.py [out.zip]` → 自包含 zip（默认落 `E:\jingji`）；
+自测 `tools/selftest/`（**294 项**断言，直接编译主程序非界面部分；
+含真起 ffmpeg 解视频的用例 → 先把 ffmpeg 拷到 `tools\selftest\bin\Release\net8.0\`）；
+诊断 `WhaleLog.exe --selfcheck` → `logs\selfcheck.log`（**187 项 / 21 段**；同样要 ffmpeg 在旁边）；
 截图 `--shot`/`--shot-notes`/`--shot-floating`，均支持 `--x 值` 和 `--x=值`；
 交互探针 `python tools/drag_probe.py`（合成真实鼠标，会动光标、要求先退出运行实例 → 手动跑）。
 素材：程序旁 `Assets\` 同名文件优先于内置（清单 `AssetCatalog`，加载 `IconAssets`）；
-`--export-assets [dir]` 只导出出厂素材；`WHALELOG_ASSET_DIR` 可改目录。
+`--export-assets [dir]` 只导出出厂素材；`WHALELOG_ASSET_DIR` 可改目录；
+`WHALELOG_FFMPEG` 指定 ffmpeg.exe（`FfmpegLocator` 找不到它时视频动作播不了，其余功能不受影响）。
+形象包：`Assets\characters\<ID>\` 一套形象一个目录，`dsh`（溟月，默认）/ `classic`（原版，根就是 `Assets\`）；
+降级顺序 **设置里那个 → dsh → classic**（`CharacterPacks.Resolve`），原版是嵌入资源、永远能用。
+转码素材：`python tools/fetch_dsh_assets.py` 拉源、`python tools/convert_dsh_webm.py --out assets/characters/dsh` 生成、
+`--check` 自校验。
 
 ### 状态与单选（踩过两次同类 bug）
 - **ToggleButton 不互斥，单选必须显式处理**：任何互斥组都要有唯一 source of truth（如 `_activePage`），
@@ -113,8 +121,34 @@
 `IconAssets.LoadedFromExternal`；报告要写清用的是外部还是内置。首次运行导出出厂素材到 `Assets\`
 （已存在的文件一律不覆盖）并附 `素材说明.txt`。
 
+### 形象包（2026-09-20 起）
+`Assets\characters\<形象ID>\` 一套形象一个目录；`classic` 是保留名、根目录就是 `Assets\` 本身（老布局没搬家）。
+`CharacterPacks.Resolve` 的降级顺序 **设置里那个（可用就用）→ `dsh` → `classic`** ——
+原版是嵌入资源、永远能用，所以这个函数**永远不返回用不了的形象**。
+`IconAssets.LoadPackOnly` 用于新形象：**没有差分图时不回落内置那张原版的闭眼图**
+（否则会出现"换了形象、鼠标一移上去变回旧鲸鱼"）。
+
+### 透明视频动作（2026-09-20 起）
+源素材 VP9-alpha webm **原样搬运不重编码**（转精灵图 PNG 全量 ≈ 1.4 GB，不可行），
+运行时用 ffmpeg 子进程解码（WPF 解不了 VP9 的 alpha，且 APNG 那条老结论同样适用）。
+- `VideoFrameStream`：**8 帧环形缓冲**，满则阻塞生产者（天然不积压、几乎不吃 CPU）；
+  一个 tick 最多贴一帧，落后逐帧追但**不快进**。
+- 冷启动 ≈150 ms → 鼠标**移入悬浮窗就预热**（`SpritePlayer.Warm`）。
+- **角色由目录名前缀认**（`idle-` / `clickBounce-` / `ambient-` / `drag-` / `move-` / `turn-`），
+  必须从目录名记，**不能从动作键反推**（`idle` 那支的键归一化成了 `blink`，是历史行为）。
+- ⚠️ **`filter` 是当不可信输入校验的**（防命令注入）：**先按 `=` 切滤镜名、再按 `:` 切参数**。
+  顺序反了会把 `crop=384:360:128:0` 的**名字**切成 `crop=384` → **106 个动作全被判非法**，
+  而界面表现只是"动画一个都不出来"，极难归因。这类"切分隔符"的活**先写用例再写实现**。
+- ⚠️ 素材许可：CC BY-NC-SA 类同人素材（OC「溟月」/ 画师上善无形），**仅限个人非商业、必须署名**；
+  要发布/商用必须整体撤下 `assets\characters\dsh\`（撤下后自动退回原版，有自检断言守着）。
+
 ## 四、自包含打包（离线）
 正路 `publish -r win-x86 --self-contained` 需要 NuGet 运行时包，本机没有 → `tools/make_portable_zip.py` 手工拼。
+⚠️ **不要再引入"暂存目录"**：2026-09-20 实测，受限环境会拦「一次删 50 个以上文件」，
+**被拦下的删除请求会在后台被逐个补执行** —— 打包期间把暂存树里的 `Assets\`
+以约 17 个/秒匀速删掉，打出来的包「程序在、素材没了」且**脚本不报任何错**。
+现在脚本**直接把源文件写进 zip**（生成的两份 json 用 `writestr`，出厂素材导出到系统临时目录），
+**落盘后回查关键条目**，缺一条就 `return 1`。以后改这个脚本务必保住这个自检。
 - 三块料：应用本体 + `hostfxr.dll`（在 `dotnet/host/fxr/<ver>/`，共享框架目录里没有）+ 两个共享框架全部文件；
   `runtimeconfig.json` 用 `includedFrameworks`。
 - **`WhaleLog.deps.json` 必须列出全部框架程序集**，否则报 `Could not resolve CoreCLR path`；
@@ -122,10 +156,19 @@
 - 两个框架有 3 个同名程序集（`WindowsBase`/`System.Drawing`/`Microsoft.VisualBasic`），
   必须让 WindowsDesktop 版本覆盖 NETCore 空壳，否则 WPF 起不来。
 - 验证：自检「运行环境」报运行时位置；再把 `DOTNET_ROOT` 指到不存在路径跑一遍。
+- **1.4.0 起包内还多两样**：`Assets\characters`（形象包，51.9 MB）与 `ffmpeg.exe`（约 84 MB，
+  找不到时按 `WHALELOG_FFMPEG` → `assets\tools\` → PATH → `imageio_ffmpeg` 的顺序搜）。
+  两者都是已压缩内容，zip 压不太动，所以包从 58 MB 涨到 **139.6 MB** —— **不是脚本算错了**。
+  ⚠️ ffmpeg 是 GPL 授权的独立可执行文件，包内 README 里必须写明这一点。
 
 ## 五、本机环境限制
-- `dotnet restore` 在受限会话不可用，稳定报 `Value cannot be null. (Parameter 'path1')`
-  —— NuGet 取不到 `CommonApplicationData`。用 `tools/offline_restore.py` 手写 restore 产物，
+- **`dotnet restore` 报 `Value cannot be null. (Parameter 'path1')` 时，先试 `tools/mkenv.py`。**
+  这个错一度被当成"受限会话做不到 restore"，**真因是会话里的 bash 拿不到 Windows 的环境变量**
+  （`ProgramData` / `APPDATA` / `ALLUSERSPROFILE` 全缺），NuGet 取不到 `CommonApplicationData`。
+  `python tools/mkenv.py` 读注册表（HKLM 机器级 + HKCU 用户级）导出 `.tmp-env.sh`，
+  `source` 之后 `dotnet build -c Release` 实测 **0 错 0 警**。
+  → **先找可变量，再下"不可行"的结论。**
+- 上面这条走不通时才用离线兜底：`tools/offline_restore.py` 手写 restore 产物，
   再带 `-p:SkipResolvePackageAssets=true -p:GenerateDependencyFile=false
   -p:GenerateRuntimeConfigurationFiles=false` 编译。
 - `dotnet.exe` 是 32 位宿主 → **项目不要设 `PlatformTarget=x64`**（FileLoadException），用 AnyCPU。
@@ -171,8 +214,15 @@
 - 交接包默认名 `鲸记 WhaleLog 项目交接包 <当天日期>.zip`，同样落在 `E:\jingji`
   （源目录默认取仓库根，`make_transfer_zip.py` 不带参数即可）。
 - 顺序：升版本 → 重建 Release + apphost → 打包 → **同步 HANDOFF 与 README 里所有数字** → 提交。
-- **文档里的项数必须 grep 校验**。交接单的断言数漂过 151 → 163 → 213，
-  每次都是改代码忘了改数字；发版前 `grep -n "163\|151\|144"` 一遍成本极低。
+  （1.4.0 起多一步：**打包前把 `ffmpeg.exe` 放到 `src\WhaleLog\bin\Release\net8.0-windows\`**，
+  并跑一次 `--selfcheck` 确认「透明视频」那节真的解出了帧。）
+- ⚠️ **打包前先确认没有 WhaleLog 实例在跑**（`tasklist /FI "IMAGENAME eq WhaleLog.exe"`）。
+  被占用时 `dotnet build` 报 `MSB3027 / MSB3021 文件被 WhaleLog (<PID>) 锁定`，
+  前面编译其实已经成功、只有最后拷贝 apphost 那步失败 —— **别误判成代码编译不过**。
+  杀实例属用户可见操作，**要先问**（用户可能正开着在记东西）。
+- **文档里的项数必须 grep 校验**。交接单的断言数漂过 151 → 163 → 213 → 232 → 294，
+  每次都是改代码忘了改数字；发版前 `grep -rn "232\|164 项"` 一遍成本极低
+  （注意：`memory/` 下**按日期记的历史段落里的旧数字是对的**，别一起改掉）。
 - **桌面属于个人目录：删桌面上的旧包必须用户明确同意**，不要自作主张清理。
 
 ## 七、Git 远端与「上传通道」的边界（2026-09-15 实测）

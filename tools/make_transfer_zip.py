@@ -108,12 +108,26 @@ def main() -> int:
     must = [
         f"{root_name}/.gitignore",
         f"{root_name}/HANDOFF-鲸记WhaleLog.md",
+        f"{root_name}/新设备继续指令.md",
         f"{root_name}/WhaleLog.sln",
         f"{root_name}/.workbuddy/memory/MEMORY.md",
         f"{root_name}/docs/动态素材规格.md",
+        f"{root_name}/docs/dsh-pet-集成方案与调研.md",
         f"{root_name}/src/WhaleLog/WhaleLog.csproj",
         f"{root_name}/src/WhaleLog/Views/SpritePlayer.cs",
+        f"{root_name}/src/WhaleLog/Views/FloatingWindow.xaml.cs",
+        f"{root_name}/src/WhaleLog/Services/VideoDecoder.cs",
+        f"{root_name}/src/WhaleLog/Services/CharacterPacks.cs",
+        f"{root_name}/src/WhaleLog/Services/FfmpegLocator.cs",
         f"{root_name}/tools/selftest/Program.cs",
+        f"{root_name}/tools/mkenv.py",
+        f"{root_name}/tools/convert_dsh_webm.py",
+        f"{root_name}/tools/fetch_dsh_assets.py",
+        # 形象素材本身也带上：这样换台机器不用重新联网拉素材，
+        # 解压即是完整可编译、可打包的状态。
+        f"{root_name}/assets/characters/dsh/whale.png",
+        f"{root_name}/assets/characters/dsh/来源与许可.txt",
+        f"{root_name}/assets/characters/dsh/anim/idle-待机呼吸休闲/video.webm",
     ]
     print()
     for m in must:

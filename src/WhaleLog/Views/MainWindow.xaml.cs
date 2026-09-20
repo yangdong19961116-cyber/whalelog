@@ -823,10 +823,88 @@ public partial class MainWindow : Window
         HeaderSubtitle.Text = $"· {s.WorkEndHour:00}:{s.WorkEndMinute:00} 下班";
         QuickCaptureEnabledBox.IsChecked = s.QuickCaptureEnabled;
         HotKeyText.Text = string.IsNullOrWhiteSpace(s.QuickCaptureHotkey) ? "未设置" : s.QuickCaptureHotkey;
+        RefreshCharacterChips();
         _syncing = false;
 
         RefreshHotKeyHint();
         RefreshShortcutHint();
+    }
+
+    // ==================================================================
+    // 形象切换（桌面小鲸鱼）
+    // ==================================================================
+
+    /// <summary>
+    /// 按磁盘上实际能找到的形象包，重建那一排形象按钮。
+    ///
+    /// 动态生成而不是在 XAML 里写死两个按钮：形象包是"往 characters\ 里丢一个目录"
+    /// 就能多出来的东西（用户也可以自己做），写死的话每加一套形象都得改代码。
+    /// </summary>
+    private void RefreshCharacterChips()
+    {
+        if (CharacterChips == null) return;
+
+        CharacterChips.Children.Clear();
+
+        var wanted = App.Settings.Settings.FloatingCharacter ?? "";
+
+        // 展示的是**实际生效**的那个（可能已经把设置里的值降级了），
+        // 否则会出现"选了 A、界面显示 A 高亮、实际跑的是 B"这种最难查的不一致。
+        var effective = CharacterPacks.Resolve(wanted);
+
+        foreach (var pack in CharacterPacks.Available())
+        {
+            var chip = new RadioButton
+            {
+                Content = pack.IsAvailable ? pack.Title : pack.Title + "（缺素材）",
+                GroupName = "FloatingCharacter",
+                Tag = pack.Id,
+                IsEnabled = pack.IsAvailable,
+                IsChecked = string.Equals(pack.Id, effective, StringComparison.OrdinalIgnoreCase),
+                ToolTip = pack.IsAvailable
+                    ? $"{pack.Note}{Environment.NewLine}{pack.Root}"
+                    : $"没有找到素材目录：{pack.Root}{Environment.NewLine}放好素材后重启程序即可使用。",
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+
+            // 直接借导航按钮那一套圆角胶囊样式（选中会高亮成主题色）
+            try { chip.Style = (Style)FindResource("ChipToggle"); } catch { /* 取不到就用默认样式 */ }
+
+            chip.Checked += OnCharacterChipChecked;
+            CharacterChips.Children.Add(chip);
+        }
+
+        CharacterHint.Text = DescribeCharacterChoice(wanted, effective);
+    }
+
+    private void OnCharacterChipChecked(object sender, RoutedEventArgs e)
+    {
+        if (_syncing) return;
+        if (sender is not RadioButton chip || chip.Tag is not string id || id.Length == 0) return;
+
+        App.Settings.Update(s => s.FloatingCharacter = id);
+        CharacterHint.Text = DescribeCharacterChoice(id, CharacterPacks.Resolve(id));
+    }
+
+    /// <summary>
+    /// 形象选择下面那行说明。
+    ///
+    /// 要专门把"设置里选的和实际生效的不一样"说出来 —— 用户把素材目录删了之后
+    /// 界面会静默回落到原版形象，没有这句话他只会觉得"这个开关坏了"。
+    /// </summary>
+    private static string DescribeCharacterChoice(string wanted, string effective)
+    {
+        var title = CharacterPacks.TitleOf(effective);
+        var note = CharacterPacks.NoteOf(effective);
+
+        if (!string.IsNullOrWhiteSpace(wanted) &&
+            !wanted.Equals(effective, StringComparison.OrdinalIgnoreCase))
+        {
+            return $"设置里选的是「{wanted}」，但它的素材不在，已经自动改用「{title}」。" +
+                   $"{Environment.NewLine}{note}";
+        }
+
+        return $"{note}{Environment.NewLine}改完立刻生效，不用重启。";
     }
 
     private void OnWorkTimeChanged(object sender, TextChangedEventArgs e)

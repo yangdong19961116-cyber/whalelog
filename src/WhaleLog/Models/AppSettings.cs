@@ -71,6 +71,16 @@ public sealed class AppSettings
     /// </summary>
     public bool FloatingAnimations { get; set; } = true;
 
+    /// <summary>
+    /// 桌面小鲸鱼用哪套形象（见 <c>CharacterPacks</c>）。
+    ///
+    /// 空串表示"没选过" —— 解析时按「新版溟月优先、素材不在就回落到原版鲸鱼娘」处理，
+    /// 所以从旧版本升级上来的用户（配置里没这个字段）也能直接拿到新形象。
+    /// 原版永远可用（它的形象图是编译进程序集的嵌入资源），因此这个值再怎么填
+    /// 都不会解析成一个用不了的形象。
+    /// </summary>
+    public string FloatingCharacter { get; set; } = "";
+
     // ---- 文件归档 ----
     /// <summary>
     /// true = 额外把每个版本复制一份到 archive\ 目录，版本可回滚（占磁盘）。

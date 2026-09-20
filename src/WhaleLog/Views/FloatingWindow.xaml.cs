@@ -1,3 +1,4 @@
+using System.IO;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
@@ -64,6 +65,34 @@ public partial class FloatingWindow : Window
 
     /// <summary>闲置眨眼的调度器。</summary>
     private DispatcherTimer? _blinkTimer;
+
+    /// <summary>闲置小动作（ambient）的调度器 —— dsh 那套素材靠它随机冒一个动作出来。</summary>
+    private DispatcherTimer? _ambientTimer;
+
+    /// <summary>拖拽动作的延迟器：真的拖起来了才播（见 <see cref="ScheduleDragAnimation"/>）。</summary>
+    private DispatcherTimer? _dragTimer;
+
+    // ---- 形象包 ----
+    /// <summary>当前生效的形象 ID（见 <see cref="CharacterPacks"/>）。</summary>
+    private string _characterId = CharacterPacks.ClassicId;
+
+    /// <summary>当前形象的素材根目录（形象包自己的那一层）。</summary>
+    private string _characterRoot = "";
+
+    /// <summary>上次按哪个形象建的播放器，设置改动后要重扫。</summary>
+    private string _characterSettingApplied = "";
+    private bool _characterSettingKnown;
+
+    // ---- 按角色分好的动作 ----
+    // 一个形象可以有一百多个动作，界面得知道"点击该播哪些""闲下来该冒什么"。
+    // 这件事全在扫描时算一次，播放时只管挑（见 AnimActions.RoleOf）。
+    private IReadOnlyList<string> _idleActions = Array.Empty<string>();
+    private IReadOnlyList<string> _clickActions = Array.Empty<string>();
+    private IReadOnlyList<string> _ambientActions = Array.Empty<string>();
+    private IReadOnlyList<string> _dragActions = Array.Empty<string>();
+
+    /// <summary>当前循环播着的待机动作（素材里可能有好几个，随机挑一个一直播）。</summary>
+    private string? _loopingIdle;
 
     private static readonly Random BlinkRng = new();
 
@@ -156,6 +185,14 @@ public partial class FloatingWindow : Window
             HookDataChanges();
             RefreshStatus();
         };
+
+        // 显示/隐藏的时候待机循环要跟着停走：窗口不可见时动画没人看，
+        // 但 ffmpeg 和渲染时钟还在跑 —— 白烧 CPU。
+        IsVisibleChanged += (_, _) =>
+        {
+            if (IsVisible) StartIdleLoop();
+            else _player?.Stop();
+        };
     }
 
     private bool _hasBubble;
@@ -189,9 +226,15 @@ public partial class FloatingWindow : Window
     {
         var s = App.Settings.Settings;
 
-        // 「小鲸鱼动画」开关翻动了要重建播放器（否则关掉之后还在眨）
-        if (!_animationsSettingKnown || _animationsSettingApplied != s.FloatingAnimations)
+        // 「小鲸鱼动画」开关或者「形象」翻动了都要重建播放器 ——
+        // 两者是同一个毛病：忘了重建，界面就停在旧素材上（关掉之后还在眨、换了形象还是旧鲸鱼）。
+        if (!_animationsSettingKnown ||
+            _animationsSettingApplied != s.FloatingAnimations ||
+            !_characterSettingKnown ||
+            !string.Equals(_characterSettingApplied, s.FloatingCharacter ?? "", StringComparison.Ordinal))
+        {
             ReloadAnimations();
+        }
 
         Opacity = s.FloatingOpacity;
 
@@ -212,6 +255,9 @@ public partial class FloatingWindow : Window
     /// </summary>
     public void ReloadAssets()
     {
+        // 素材缓存必须先清 —— 不清的话用户刚换的那张图根本读不到（还是旧图）
+        IconAssets.Reload();
+
         var head = IconAssets.Load("whale-head");
         if (head != null) HeadImage.Source = head;
 
@@ -403,39 +449,60 @@ public partial class FloatingWindow : Window
 
     private void SnapToEdge()
     {
-        if (!App.Settings.Settings.FloatingSnapToEdge)
+        var a = CurrentWorkArea();
+
+        double dLeft = Left - a.Left;
+        double dRight = a.Right - (Left + Width);
+        double dTop = Top - a.Top;
+        double dBottom = a.Bottom - (Top + Height);
+
+        if (App.Settings.Settings.FloatingSnapToEdge)
         {
-            _edge = Edge.None;
-            return;
+            // 两个轴各判各的。早先的写法是"四条边里挑最近的一条"，于是拖到角落里
+            // 只贴一条边 —— 看着就是"贴着贴着又偏出去一截"。两轴独立之后自然吸角。
+            bool snapX = Math.Min(dLeft, dRight) <= SnapThreshold;
+            bool snapY = Math.Min(dTop, dBottom) <= SnapThreshold;
+
+            bool toLeft = dLeft <= dRight;
+            bool toTop = dTop <= dBottom;
+
+            if (snapX) Left = toLeft ? a.Left : a.Right - Width;
+            if (snapY) Top = toTop ? a.Top : a.Bottom - Height;
+
+            if (snapX || snapY)
+            {
+                // 锚定边取贴住的那几条里更近的一条：收起 / 展开时靠它决定哪条边不动，
+                // 不然每次变尺寸都能看到窗口"挪"一下。
+                _edge = PickEdge(
+                    snapX ? (toLeft ? Edge.Left : Edge.Right) : Edge.None, Math.Min(dLeft, dRight),
+                    snapY ? (toTop ? Edge.Top : Edge.Bottom) : Edge.None, Math.Min(dTop, dBottom));
+
+                ClampToArea();
+                return;
+            }
         }
 
-        var a = CurrentWorkArea();
-        var edge = NearestEdge();
-
-        // 没进吸附范围就按离哪条边最近来决定锚定边，让后续收起有明确方向
-        if (edge == Edge.None)
+        // 没进吸附范围（或者用户关掉了吸附）：仍然记下离哪条边最近，
+        // 后续收起 / 展开才有明确方向 —— 否则会按"四边都不靠"处理，一收就四边乱动。
+        _edge = NearestEdge();
+        if (_edge == Edge.None)
         {
-            double dLeft = Left - a.Left;
-            double dRight = a.Right - (Left + Width);
-            double dTop = Top - a.Top;
-            double dBottom = a.Bottom - (Top + Height);
             double min = Math.Min(Math.Min(dLeft, dRight), Math.Min(dTop, dBottom));
-            edge = min == dLeft ? Edge.Left
+            _edge = min == dLeft ? Edge.Left
                  : min == dRight ? Edge.Right
                  : min == dTop ? Edge.Top
                  : Edge.Bottom;
         }
 
-        switch (edge)
-        {
-            case Edge.Left: Left = a.Left; break;
-            case Edge.Right: Left = a.Right - Width; break;
-            case Edge.Top: Top = a.Top; break;
-            case Edge.Bottom: Top = a.Bottom - Height; break;
-        }
-
-        _edge = edge;
         ClampToArea();
+    }
+
+    /// <summary>两条边都贴住时取更近的那条当锚定边；只贴了一条就用那一条。</summary>
+    private static Edge PickEdge(Edge x, double dx, Edge y, double dy)
+    {
+        if (x == Edge.None) return y;
+        if (y == Edge.None) return x;
+        return dx <= dy ? x : y;
     }
 
     private void SavePosition()
@@ -490,6 +557,11 @@ public partial class FloatingWindow : Window
         // 播完要落回的那张也得跟着切
         if (_player != null) _player.BaseImage = RestingImage;
 
+        // 悬停期间提前把"点击回应"备好（没移开就一直是备着的），
+        // 移开就收掉 —— 别让一个 ffmpeg 进程为了一个没发生的点击常驻。
+        if (hovering) WarmClick();
+        else _player?.ReleaseWarm();
+
         if (_player is { IsPlaying: true }) return;
         ApplyRestingImage();
     }
@@ -515,6 +587,10 @@ public partial class FloatingWindow : Window
         ExpandedRoot.Visibility = Visibility.Collapsed;
         CollapsedRoot.Visibility = Visibility.Visible;
 
+        // 收起了就没人看动画了：停掉播放器（顺手杀掉 ffmpeg）和闲置排期，
+        // 不然一个收成小胶囊的窗口还在后台一直解码、白烧 CPU
+        StopAnimations();
+
         ApplySize();
         SavePosition();
         RefreshStatus();
@@ -535,6 +611,18 @@ public partial class FloatingWindow : Window
         ApplySize();
         SavePosition();
         RefreshStatus();
+
+        StartIdleLoop();
+        ScheduleAmbient();
+    }
+
+    /// <summary>停掉所有动画活动（播放器 + 眨眼排期 + 闲置排期 + 预热）。</summary>
+    private void StopAnimations()
+    {
+        _blinkTimer?.Stop();
+        _ambientTimer?.Stop();
+        _player?.Stop();
+        _player?.ReleaseWarm();
     }
 
     private void ToggleCollapse()
@@ -575,6 +663,8 @@ public partial class FloatingWindow : Window
         _widgetTopAtPress = Top;
 
         _dragging = true;
+        ScheduleDragAnimation();
+
         try
         {
             // 阻塞式：返回时鼠标已经松开。
@@ -582,6 +672,9 @@ public partial class FloatingWindow : Window
             // 注意 WM_LBUTTONUP 是在这个模态移动循环里派发的 —— WPF 会在循环内部
             // 就抛出 MouseLeftButtonUp，**先于**这里后面的代码执行。所以判定不能在
             // 后面算完再等 Up 来读，必须在 OnLeftButtonUp 里独立算一遍。
+            //
+            // DragMove 是个嵌套消息循环，不是"界面冻住"：渲染时钟和 DispatcherTimer
+            // 在拖动全程照常跑，所以被拖着的那套动作是真的在放。
             DragMove();
         }
         catch
@@ -590,13 +683,76 @@ public partial class FloatingWindow : Window
         }
 
         _dragging = false;
+        _dragTimer?.Stop();
 
-        if (HasMovedSincePress())
+        var dragged = HasMovedSincePress();
+
+        if (dragged)
         {
             SnapToEdge();
             SavePosition();
-            if (App.Settings.Settings.FloatingAutoCollapse) Collapse();
         }
+
+        ResumeAfterDrag(dragged);
+    }
+
+    /// <summary>
+    /// 拖拽动作延迟一小会儿才起播。
+    ///
+    /// 不能一按下就播：视频动作每播一次都要起一个 ffmpeg（约 150 ms），
+    /// 而"点一下"根本不拖动 —— 那一趟进程启动纯属白花，还会跟点击弹跳
+    /// 抢着换动作（看起来就是闪了一下）。延迟 180 ms，真的拖起来了才播。
+    /// </summary>
+    private void ScheduleDragAnimation()
+    {
+        if (_dragActions.Count == 0) return;
+
+        _dragTimer ??= CreateDragTimer();
+        _dragTimer.Stop();
+        _dragTimer.Start();
+    }
+
+    private DispatcherTimer CreateDragTimer()
+    {
+        var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(180) };
+
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            if (_dragging) PlayRandomOfRole(_dragActions);
+        };
+
+        return timer;
+    }
+
+    /// <summary>
+    /// 拖拽结束后的收尾。
+    ///
+    /// 分两种情况，差别很要紧：
+    ///   · 真的拖动过 → 把拖拽动作收掉，回到待机循环（或者按设置收起）。
+    ///   · 只是点了一下 → **什么都别做**。那一下的"点击弹跳"是在 MouseUp 里
+    ///     刚起播的，这时候去 Stop 就会把反馈切掉；弹跳播完会自己接回待机。
+    /// </summary>
+    private void ResumeAfterDrag(bool dragged)
+    {
+        if (!dragged) return;
+
+        if (App.Settings.Settings.FloatingAutoCollapse)
+        {
+            Collapse();      // Collapse 里已经把动画停了
+            return;
+        }
+
+        if (_idleActions.Count == 0)
+        {
+            _player?.Stop();     // 没有待机素材（原版那套）：拖拽动作停掉，回静态形象
+            return;
+        }
+
+        _loopingIdle ??= _idleActions[BlinkRng.Next(_idleActions.Count)];
+
+        if (_player != null && (!_player.IsPlaying || _player.CurrentAction != _loopingIdle))
+            _player.Play(_loopingIdle);
     }
 
     /// <summary>
@@ -651,8 +807,9 @@ public partial class FloatingWindow : Window
         }
 
         // 戳一下鲸鱼先弹一跳：主面板要等一下才画出来，这一跳是"点到了"的即时反馈。
-        // 素材没装或不支持时 PlayAnimation 返回 false，行为完全等于以前。
-        PlayAnimation(AnimActions.Click);
+        // 素材里有多个点击动作用随机挑一个；一个都没有就退回按老名字找，
+        // 再没有 PlayAnimation 返回 false，行为完全等于以前。
+        if (!PlayRandomOfRole(_clickActions)) PlayAnimation(AnimActions.Click);
 
         ((App)Application.Current).ShowMainWindow();
     }
@@ -685,17 +842,33 @@ public partial class FloatingWindow : Window
         _animationsSettingApplied = wanted;
         _animationsSettingKnown = true;
 
+        // 形象：设置里那个能用就用，不能就降级（dsh → 原版）。原版永远兜底，
+        // 所以这里永远不会返回一个用不了的形象 —— 素材被删了、或者从旧版本
+        // 升级上来（配置里没这个字段），界面都不会空。
+        _characterSettingApplied = App.Settings.Settings.FloatingCharacter ?? "";
+        _characterSettingKnown = true;
+        _characterId = CharacterPacks.Resolve(_characterSettingApplied);
+        _characterRoot = CharacterPacks.DirOf(_characterId);
+
         try
         {
             _blinkTimer?.Stop();
+            _ambientTimer?.Stop();
             DetachPlayer();
+            ResetRoleLists();
 
-            _anim = AnimLibrary.Scan();
+            _anim = AnimLibrary.Scan(_characterRoot);
 
             // 静态图先取出来：无论开不开动画，它都是"没在播"时的底图。
             // anim\base.png 也在素材清单里，取到了它就是这张。
-            _stillImage = IconAssets.Load("whale") as BitmapSource;
-            _hoverImage = IconAssets.Load("whale-hover") as BitmapSource;
+            _stillImage = IconAssets.Load("whale", _characterRoot) as BitmapSource;
+
+            // 悬浮差分只在原版形象上允许回落到内置那张（闭眼）。新形象没有差分时
+            // 回落成原版闭眼图，效果就是「换了形象，鼠标一移上去变回旧鲸鱼」——
+            // 明显是错的，所以新形象只认自己目录里的图，没有就干脆不悬浮变化。
+            _hoverImage = IsClassicRoot
+                ? IconAssets.Load("whale-hover", _characterRoot) as BitmapSource
+                : IconAssets.LoadPackOnly("whale-hover", _characterRoot) as BitmapSource;
 
             // 悬浮态要立刻生效 —— 重扫素材时鼠标可能正停在鲸鱼上
             var resting = RestingImage;
@@ -709,7 +882,7 @@ public partial class FloatingWindow : Window
             }
             else
             {
-                // 画布从 610 变成 720 之后，框还留 168 的话角色会凭空小 15%。
+                // 画布比静态的大之后，框还留 168 的话角色会凭空缩小。
                 // 帧表没写 characterHeight 时算不出来，就老实保持静态尺寸。
                 var box = _anim.DisplayBoxHeight(AnimLibrary.FloatingCharacterDesignHeight);
                 _whaleHeight = box.HasValue
@@ -721,11 +894,17 @@ public partial class FloatingWindow : Window
                 foreach (var action in _anim.ActionNames)
                 {
                     var sheet = _anim.Find(action);
-                    var path = _anim.SheetImagePath(action);
+                    var path = _anim.MediaPath(action);
                     if (sheet != null && path != null) _player.Register(action, sheet, path);
                 }
 
                 _player.Finished += OnAnimationFinished;
+
+                // 按角色分好类：播的时候只管挑，不再去猜哪个动作是干什么的
+                _idleActions = _anim.ActionsWithRole(AnimActions.Idle);
+                _clickActions = _anim.ActionsWithRole(AnimActions.Click);
+                _ambientActions = _anim.ActionsWithRole(AnimActions.Ambient);
+                _dragActions = _anim.ActionsWithRole(AnimActions.Drag);
             }
 
             WhaleImage.Height = _whaleHeight;
@@ -734,7 +913,9 @@ public partial class FloatingWindow : Window
             // 这时候走 ResizeAnchored 会把窗口摆到 NaN 上去。
             if (_ready && _positioned) ApplySize();
 
+            StartIdleLoop();
             ScheduleBlink();
+            ScheduleAmbient();
         }
         catch (Exception ex)
         {
@@ -744,7 +925,153 @@ public partial class FloatingWindow : Window
             _whaleHeight = StaticWhaleHeight;
             WhaleImage.Height = _whaleHeight;
             DetachPlayer();
+            ResetRoleLists();
         }
+    }
+
+    private void ResetRoleLists()
+    {
+        _idleActions = Array.Empty<string>();
+        _clickActions = Array.Empty<string>();
+        _ambientActions = Array.Empty<string>();
+        _dragActions = Array.Empty<string>();
+        _loopingIdle = null;
+    }
+
+    /// <summary>
+    /// 当前形象就是原版（素材根目录 = 素材根本身）。
+    ///
+    /// 只有这种情形才允许把内置的闭眼差分当兜底 —— 内置那张画的是原版鲸鱼娘，
+    /// 拿它去配新形象就是穿帮。
+    /// </summary>
+    private bool IsClassicRoot
+    {
+        get
+        {
+            try
+            {
+                return string.Equals(
+                    Path.GetFullPath(_characterRoot),
+                    Path.GetFullPath(AppPaths.AssetsDir),
+                    StringComparison.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                return true;
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 待机循环 / 闲置小动作
+    // ------------------------------------------------------------------
+
+    /// <summary>
+    /// 此刻该不该有"待机循环"：开着动画、没收起、窗口可见、也没在拖。
+    ///
+    /// 刻意**不排除鼠标悬停** —— 待机是"呼吸"这种一直在动的东西，
+    /// 鼠标扫过去就定格会很怪。而眨眼那种一次性的小动作仍然避开悬停
+    /// （见 <see cref="CanBlinkNow"/>），不然像在偷看。
+    /// </summary>
+    private bool WantsIdleLoop
+        => _animationsOn && _player != null && !_collapsed && IsVisible && !_dragging;
+
+    /// <summary>此刻能不能自己冒个动作出来（闲置小动作用）。鼠标停在身上、或者正弹气泡时不冒。</summary>
+    private bool CanActFreely => WantsIdleLoop && !IsMouseOver && !_hasBubble;
+
+    /// <summary>
+    /// 开始（或恢复）待机循环。
+    ///
+    /// 这是"背景状态"：素材里有 idle 动作时，小鲸鱼平时一直循环播它；
+    /// 点击 / 闲置小动作 / 提醒这些一次性的动作播完之后，回到这里。
+    /// 没有 idle 素材（原版那套只有眨眼）时什么都不做 —— 退回静态形象 + 眨眼，
+    /// 行为和加这个功能之前完全一样。
+    /// </summary>
+    private void StartIdleLoop()
+    {
+        if (!WantsIdleLoop) return;
+        if (_player!.IsPlaying) return;
+        if (_idleActions.Count == 0) return;
+
+        _loopingIdle ??= _idleActions[BlinkRng.Next(_idleActions.Count)];
+        _player.Play(_loopingIdle);
+    }
+
+    /// <summary>没在播别的就恢复待机（一次性动作播完的回程）。</summary>
+    private void ResumeIdleIfFree()
+    {
+        if (_player is not { IsPlaying: false }) return;
+        StartIdleLoop();
+    }
+
+    /// <summary>
+    /// 从一堆同角色的动作里随机挑一个播。列表为空返回 false —— 调用方据此走降级分支，
+    /// 而不是硬编码假设某个动作一定存在。
+    /// </summary>
+    private bool PlayRandomOfRole(IReadOnlyList<string> actions)
+    {
+        if (!_animationsOn || _player == null || actions.Count == 0) return false;
+
+        // 尽量不连着播同一个：两三个动作的素材里，随机挑到重复的概率其实不低
+        int index = BlinkRng.Next(actions.Count);
+        if (actions.Count > 1 && actions[index] == _player.CurrentAction)
+            index = (index + 1) % actions.Count;
+
+        return PlayAnimation(actions[index]);
+    }
+
+    /// <summary>安排下一次"自己冒个小动作"。间隔 25~70 秒随机 —— 固定节拍一眼就看得出是循环。</summary>
+    private void ScheduleAmbient()
+    {
+        _ambientTimer ??= CreateAmbientTimer();
+
+        _ambientTimer.Stop();
+
+        if (!_animationsOn || _ambientActions.Count == 0) return;
+
+        _ambientTimer.Interval = TimeSpan.FromSeconds(25 + BlinkRng.NextDouble() * 45);
+        _ambientTimer.Start();
+    }
+
+    private DispatcherTimer CreateAmbientTimer()
+    {
+        var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(40) };
+
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+
+            // 鼠标在身上、或者正弹气泡时先不冒 —— 打断用户当下的注意力没礼貌
+            if (CanActFreely) PlayRandomOfRole(_ambientActions);
+
+            ScheduleAmbient();
+        };
+
+        return timer;
+    }
+
+    /// <summary>
+    /// 预热"点击回应"的动作。
+    ///
+    /// 透明视频每次起播都要 spawn 一个 ffmpeg（实测冷启动约 150 ms），
+    /// 点击这种要求立刻有反馈的场合能感觉到"卡了一下"。鼠标移进悬浮窗时
+    /// 提前把 ffmpeg 起好、头几帧解到手，点下去就是即时的。
+    /// </summary>
+    private void WarmClick(string? preferred = null)
+    {
+        if (!_animationsOn || _player == null) return;
+
+        if (_clickActions.Count == 0)
+        {
+            _player.ReleaseWarm();
+            return;
+        }
+
+        var target = preferred != null && _clickActions.Contains(preferred)
+            ? preferred
+            : _clickActions[BlinkRng.Next(_clickActions.Count)];
+
+        _player.Warm(target);
     }
 
     private void DetachPlayer()
@@ -777,11 +1104,20 @@ public partial class FloatingWindow : Window
         // 眨完一次就安排下一次 —— 用"播完再排期"而不是固定节拍器，
         // 播放耗时本身也被算进间隔里，节奏不会越走越密
         if (action == AnimActions.Blink) ScheduleBlink();
+
+        // 一次性动作（点击 / 闲置小动作 / 提醒）播完了，回到待机循环。
+        // 没有 idle 素材时这个调用什么都不做，播放器已经自己落回静态图了。
+        ResumeIdleIfFree();
+
+        // 鼠标还停在鲸鱼上就顺手把点击动作重新预热一份：连着点两下时，
+        // 第一下用掉了预热好的那条流，第二下才不用等 ffmpeg 启动
+        if (_hovering) WarmClick(action);
     }
 
     /// <summary>此刻适不适合眨眼：开着动画、展开着、显示着、鼠标不在上面。</summary>
     private bool CanBlinkNow
-        => _animationsOn && !_collapsed && IsVisible && !IsMouseOver && !_dragging;
+        => _animationsOn && !_collapsed && IsVisible && !IsMouseOver && !_dragging
+           && _player is { IsPlaying: false };
 
     /// <summary>
     /// 安排下一次眨眼。间隔取 4~9 秒随机 —— 固定节拍一眼就能看出是循环，
@@ -826,12 +1162,17 @@ public partial class FloatingWindow : Window
             if (_anim == null) return "（动态素材尚未扫描）";
 
             var head = _animationsOn
-                ? $"已启用：鲸鱼框 {_whaleHeight:0.#}px，窗口设计高 {ExpandedDesignHeight:0.#}px，" +
-                  $"登记动作 {_player?.RegisteredCount ?? 0} 个"
+                ? $"已启用：形象「{CharacterPacks.TitleOf(_characterId)}」，鲸鱼框 {_whaleHeight:0.#}px，" +
+                  $"窗口设计高 {ExpandedDesignHeight:0.#}px，登记动作 {_player?.RegisteredCount ?? 0} 个" +
+                  (_player is { VideoCount: > 0 } ? $"（其中透明视频 {_player.VideoCount} 个）" : "")
                 : $"未启用（开关={App.Settings.Settings.FloatingAnimations}，" +
                   $"扫到动作 {_anim.ActionNames.Count} 个）";
 
-            return head + Environment.NewLine + _anim.Describe();
+            var roles = $"按角色分：待机 {_idleActions.Count}、点击 {_clickActions.Count}、" +
+                        $"闲置小动作 {_ambientActions.Count}、拖拽 {_dragActions.Count}" +
+                        (_loopingIdle != null ? $"，当前待机 = {_loopingIdle}" : "");
+
+            return head + Environment.NewLine + roles + Environment.NewLine + _anim.Describe();
         }
     }
 
@@ -843,6 +1184,104 @@ public partial class FloatingWindow : Window
 
     /// <summary>自检用：鲸鱼框的当前高度（设计像素）。</summary>
     public double WhaleHeight => _whaleHeight;
+
+    // ---- 形象包 ----
+
+    /// <summary>自检用：当前生效的形象 ID。</summary>
+    public string CharacterId => _characterId;
+
+    /// <summary>自检用：形象在界面上的名字。</summary>
+    public string CharacterTitle => CharacterPacks.TitleOf(_characterId);
+
+    /// <summary>自检用：形象的素材根目录。</summary>
+    public string CharacterRoot => _characterRoot;
+
+    /// <summary>自检用：当前形象是不是原版（原版才允许回落到内置闭眼差分）。</summary>
+    public bool CharacterIsClassic => IsClassicRoot;
+
+    // ---- 角色动作 ----
+
+    /// <summary>自检用：登记的动作总数。</summary>
+    public int RegisteredActionCount => _player?.RegisteredCount ?? 0;
+
+    /// <summary>自检用：登记的动作里有几个是透明视频。</summary>
+    public int VideoActionCount => _player?.VideoCount ?? 0;
+
+    public int IdleActionCount => _idleActions.Count;
+    public int ClickActionCount => _clickActions.Count;
+    public int AmbientActionCount => _ambientActions.Count;
+    public int DragActionCount => _dragActions.Count;
+
+    /// <summary>自检用：此刻在播哪个动作。</summary>
+    public string? CurrentAnimation => _player?.CurrentAction;
+
+    /// <summary>自检用：此刻在播的是不是透明视频。</summary>
+    public bool IsVideoPlaying => _player is { CurrentIsVideo: true };
+
+    /// <summary>自检用：此刻有没有东西在播（含待机循环）。</summary>
+    public bool IsAnimationPlaying => _player is { IsPlaying: true };
+
+    /// <summary>自检用：ffmpeg 找没找到、在哪。</summary>
+    public string FfmpegState => FfmpegLocator.Describe();
+
+    /// <summary>自检用：按角色播一个动作（走真实的 <see cref="PlayRandomOfRole"/> 路径）。</summary>
+    public bool PlayRoleOnce(string role)
+    {
+        IReadOnlyList<string> list;
+
+        if (role == AnimActions.Idle) list = _idleActions;
+        else if (role == AnimActions.Click) list = _clickActions;
+        else if (role == AnimActions.Ambient) list = _ambientActions;
+        else if (role == AnimActions.Drag) list = _dragActions;
+        // 眨眼是原版那套素材的角色名：它有专门的 blink 动作，没有就退到点击
+        else if (role == AnimActions.Blink) list = _clickActions;
+        else list = Array.Empty<string>();
+
+        return PlayRandomOfRole(list);
+    }
+
+    /// <summary>
+    /// 自检用：视频动作是"边播边解"的，帧不会凭空出现，得给它一点真实时间。
+    /// 这里一边推时间轴一边让出线程，直到解出 <paramref name="minFrames"/> 帧或超时。
+    /// 返回实际解出了几帧。
+    /// </summary>
+    public int PumpVideoFrames(int minFrames, int timeoutMs = 4000)
+    {
+        var player = _player;
+        if (player == null) return 0;
+
+        var deadline = Environment.TickCount64 + timeoutMs;
+        while (player.VideoFramesShown < minFrames && Environment.TickCount64 < deadline)
+        {
+            player.AdvanceBy(TimeSpan.FromMilliseconds(50));
+            Thread.Sleep(20);
+        }
+
+        return player.VideoFramesShown;
+    }
+
+    /// <summary>
+    /// 自检用：一直推时间轴直到当前动作自己结束，返回等了多久（毫秒）。
+    ///
+    /// "非循环动作播完会不会自己收手"必须验：收不了手就会一直卡在"播放中"，
+    /// 后面所有动作都被堵住 —— 用户看到的是"点了一下之后就不动了"。
+    /// </summary>
+    public int PumpUntilStopped(int timeoutMs = 15000)
+    {
+        var player = _player;
+        if (player == null) return 0;
+
+        long start = Environment.TickCount64;
+        long deadline = start + timeoutMs;
+
+        while (player.IsPlaying && Environment.TickCount64 < deadline)
+        {
+            player.AdvanceBy(TimeSpan.FromMilliseconds(50));
+            Thread.Sleep(15);
+        }
+
+        return (int)(Environment.TickCount64 - start);
+    }
 
     /// <summary>
     /// 自检用：走一遍**真实的**鼠标移入 / 移出处理函数，而不是绕到 <see cref="SetHovering"/>。
@@ -872,8 +1311,14 @@ public partial class FloatingWindow : Window
     public bool ShowingStillImage
         => _stillImage != null && ReferenceEquals(WhaleImage.Source, _stillImage);
 
-    /// <summary>自检用：此刻贴的是不是动画的某一帧。</summary>
-    public bool ShowingAnimationFrame => WhaleImage.Source is CroppedBitmap;
+    /// <summary>
+    /// 自检用：此刻贴在鲸鱼上的是不是动画的某一帧。
+    ///
+    /// 两种素材的"帧"是两种类型：精灵图切出来的是 <see cref="CroppedBitmap"/>，
+    /// 透明视频解出来的是 <see cref="WriteableBitmap"/>（复用同一张，所以不能靠引用比较）。
+    /// </summary>
+    public bool ShowingAnimationFrame
+        => WhaleImage.Source is CroppedBitmap || WhaleImage.Source is WriteableBitmap;
 
     /// <summary>自检用：动画播完会落回的那张图（悬浮时为悬浮形象，否则为本体）。</summary>
     public BitmapSource? AnimBaseImage => _player?.BaseImage;

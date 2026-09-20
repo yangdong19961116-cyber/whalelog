@@ -46,12 +46,40 @@ public static class IconAssets
     /// 加载一个图片素材（外部优先）。
     /// 取不到返回 null —— 调用方请保留原值，不要赋 null 把界面清空。
     /// </summary>
-    public static ImageSource? Load(string name)
+    public static ImageSource? Load(string name) => Load(name, null);
+
+    /// <summary>
+    /// 在指定目录里优先找，找不到再回落到内置。
+    ///
+    /// 需要这个重载是因为**形象包**：新版溟月和原版鲸鱼娘各有自己的素材目录，
+    /// 同一个逻辑名（whale / whale-hover）在两套形象里是两张不同的图。
+    /// </summary>
+    public static ImageSource? Load(string name, string? dir)
+        => LoadCore(name, dir, allowEmbedded: true);
+
+    /// <summary>
+    /// 只认指定目录里的文件，找不到就认输（**不回落到内置**）。
+    ///
+    /// 给"新形象的差分图"用：新形象没有闭眼差分时，回落到内置那张画的是原版鲸鱼娘 ——
+    /// 效果是"换了形象，鼠标一移上去变回旧鲸鱼"，还不如干脆不动。
+    /// </summary>
+    public static ImageSource? LoadPackOnly(string name, string? dir)
+        => LoadCore(name, dir, allowEmbedded: false);
+
+    private static ImageSource? LoadCore(string name, string? dir, bool allowEmbedded)
     {
-        if (ImageCache.TryGetValue(name, out var cached)) return cached;
+        if (string.IsNullOrWhiteSpace(dir)) dir = null;
+
+        // 缓存键带上目录和"要不要回落"：同一个逻辑名在两套形象下是两张图，
+        // 只按名字缓存会让先加载的那张一直赢。
+        var key = dir == null
+            ? name
+            : name + "\u0000" + dir + (allowEmbedded ? "" : "\u0000pack");
+
+        if (ImageCache.TryGetValue(key, out var cached)) return cached;
 
         ImageSource? image = null;
-        var external = AssetCatalog.FindExternal(name);
+        var external = AssetCatalog.FindExternal(name, dir);
 
         if (external != null)
         {
@@ -67,9 +95,9 @@ public static class IconAssets
             }
         }
 
-        image ??= TryLoadEmbedded(name);
+        if (image == null && allowEmbedded) image = TryLoadEmbedded(name);
 
-        if (image != null) ImageCache[name] = image;
+        if (image != null) ImageCache[key] = image;
         return image;
     }
 

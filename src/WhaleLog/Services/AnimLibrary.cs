@@ -48,6 +48,13 @@ public sealed class AnimLibrary
     private readonly Dictionary<string, string> _dirs = new(StringComparer.Ordinal);
     private readonly List<string> _problems = new();
 
+    /// <summary>
+    /// 动作键 → 角色。**必须在扫描时从目录名记下来，不能事后从动作键推算** ——
+    /// 目录名叫 <c>idle</c> 时动作键会被归一化成 <c>blink</c>（历史行为），
+    /// 事后推算会把它的角色搞错。
+    /// </summary>
+    private readonly Dictionary<string, string> _roles = new(StringComparer.Ordinal);
+
     private AnimLibrary() { }
 
     /// <summary>扫到的、能读出来的动作，按名字排序。</summary>
@@ -71,18 +78,60 @@ public sealed class AnimLibrary
     public AnimSheet? Find(string action)
         => _actions.TryGetValue(AnimActions.Canonical(action), out var sheet) ? sheet : null;
 
+    /// <summary>这个动作的角色（<see cref="AnimActions.RoleOf"/> 的结果）。</summary>
+    public string RoleOf(string action)
+        => _roles.TryGetValue(AnimActions.Canonical(action), out var role) ? role : "";
+
+    /// <summary>
+    /// 某个角色下的全部动作键，按名字排序。
+    ///
+    /// 界面靠它决定"点击时随机挑一个"、"闲下来随机挑一个"。
+    /// 一个都没有时返回空列表 —— 调用方据此走降级分支，而不是硬编码假设它存在。
+    /// </summary>
+    public IReadOnlyList<string> ActionsWithRole(string role)
+    {
+        if (string.IsNullOrEmpty(role)) return Array.Empty<string>();
+
+        return _actions.Keys
+            .Where(k => _roles.TryGetValue(k, out var r) && r.Equals(role, StringComparison.Ordinal))
+            .OrderBy(k => k, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    /// <summary>每个角色各有多少个动作。诊断报告用。</summary>
+    public IReadOnlyDictionary<string, int> RoleCounts()
+    {
+        var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var role in _roles.Values)
+        {
+            if (role.Length == 0) continue;
+            counts[role] = counts.TryGetValue(role, out var n) ? n + 1 : 1;
+        }
+        return counts;
+    }
+
+    /// <summary>能认出角色的动作数（相对于"自定义动作"）。</summary>
+    public int RecognizedRoleCount => _roles.Values.Count(r => r.Length > 0);
+
+    /// <summary>视频动作的数量（这些需要 ffmpeg 才能播）。</summary>
+    public int VideoCount => _actions.Values.Count(s => s.IsVideo);
+
+    /// <summary>精灵图动作的数量。</summary>
+    public int SheetCount => _actions.Values.Count(s => !s.IsVideo);
+
     /// <summary>某个动作的素材目录（帧表里的 sheet 是相对它解析的）。</summary>
     public string? DirOf(string action)
         => _dirs.TryGetValue(AnimActions.Canonical(action), out var dir) ? dir : null;
 
-    /// <summary>精灵图的完整路径，取不到返回 null。</summary>
-    public string? SheetImagePath(string action)
+    /// <summary>这个动作的媒体文件完整路径（精灵图 PNG 或视频 webm，由帧表的 type 决定）。
+    /// 取不到返回 null。</summary>
+    public string? MediaPath(string action)
     {
         var sheet = Find(action);
         var dir = DirOf(action);
-        if (sheet == null || dir == null) return null;
+        if (sheet == null || dir == null || sheet.MediaFile.Length == 0) return null;
 
-        try { return Path.Combine(dir, sheet.Sheet); }
+        try { return Path.Combine(dir, sheet.MediaFile); }
         catch { return null; }
     }
 
@@ -188,6 +237,9 @@ public sealed class AnimLibrary
 
             _actions[key] = sheet;
             _dirs[key] = dir;
+            // 角色从**目录名**认，不是从归一化后的动作键认 —— 目录叫 idle 时
+            // 动作键会变成 blink，从键反推会把角色搞错。
+            _roles[key] = AnimActions.RoleOf(dirName);
         }
         catch (Exception ex)
         {
@@ -217,16 +269,19 @@ public sealed class AnimLibrary
             return null;
         }
 
-        // 帧表点名的精灵图得真的在
-        if (!File.Exists(Path.Combine(dir, result.Sheet.Sheet)))
+        // 帧表点名的媒体文件得真的在（精灵图 PNG 或视频 webm）
+        if (result.Sheet.MediaFile.Length == 0 ||
+            !File.Exists(Path.Combine(dir, result.Sheet.MediaFile)))
         {
-            _problems.Add($"{dirName}：找不到精灵图 {result.Sheet.Sheet}");
+            _problems.Add($"{dirName}：找不到{DescribeKind(result.Sheet)} {result.Sheet.MediaFile}");
             return null;
         }
 
         foreach (var w in result.Warnings) _problems.Add($"{dirName}：{w}");
         return result.Sheet;
     }
+
+    private static string DescribeKind(AnimSheet sheet) => sheet.IsVideo ? "视频" : "精灵图";
 
     /// <summary>
     /// 诊断报告用的一段话。要说清"看了哪个目录、认出了几个动作、哪个没认出来"——
@@ -248,7 +303,27 @@ public sealed class AnimLibrary
         }
         else
         {
-            lines.Add($"启用 {ActionNames.Count} 个动作：{string.Join("、", ActionNames)}");
+            var video = VideoCount;
+            var kind = video == 0 ? "精灵图"
+                     : SheetCount == 0 ? "透明视频"
+                     : $"精灵图 {SheetCount} + 透明视频 {video}";
+            lines.Add($"启用 {ActionNames.Count} 个动作（{kind}）");
+
+            // 动作少的时候逐个列出来；dsh 那种一百多个列出来没人看得下去
+            if (ActionNames.Count <= 12)
+                lines.Add(string.Join("、", ActionNames));
+
+            var counts = RoleCounts();
+            if (counts.Count > 0)
+            {
+                lines.Add("按角色分：" + string.Join("、", counts
+                    .OrderByDescending(p => p.Value)
+                    .Select(p => $"{p.Key}×{p.Value}")));
+            }
+
+            var custom = ActionNames.Count - RecognizedRoleCount;
+            if (custom > 0)
+                lines.Add($"{custom} 个动作认不出角色（前缀不在已知角色里，界面不会主动播它们）");
 
             var box = DisplayBoxHeight(FloatingCharacterDesignHeight);
             lines.Add(box.HasValue
@@ -258,6 +333,11 @@ public sealed class AnimLibrary
             lines.Add(BaseImagePath != null
                 ? $"静态本体：{Path.GetFileName(BaseImagePath)}（与精灵图同画布）"
                 : "没有 anim\\base.png —— 静止时仍用原来的形象图；画布不一致的话，切换动作时能看到尺寸跳变");
+
+            if (video > 0)
+            {
+                lines.Add(FfmpegLocator.Describe());
+            }
         }
 
         foreach (var p in Problems) lines.Add("· " + p);

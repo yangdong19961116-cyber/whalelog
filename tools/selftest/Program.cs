@@ -45,6 +45,8 @@ internal static class Program
             TestAssetCatalog(workspace);
             TestCommandLine();
             TestAnimAssets(workspace);
+            TestVideoAssets(workspace);
+            TestCharacterPacks(workspace);
             await TestEndToEndIntakeAsync(workDir);
             await TestDateScopedIntakeAsync(workspace);
             await TestVersionAcrossDaysAsync(workspace);
@@ -988,6 +990,31 @@ internal static class Program
         Check(!AnimActions.IsKnown("myCustom"), "自定义动作不会被界面主动播放");
 
         // ------------------------------------------------------------------
+        Section("动态素材：角色识别（界面靠它决定播哪个动作）");
+
+        // 一个形象可能有一百多个动作，界面必须知道"点击该播哪些""闲下来该冒什么"。
+        // 角色只认目录名的第一段，所以同一个角色的多个动作靠后缀区分。
+        CheckEq(AnimActions.RoleOf("idle-待机呼吸休闲"), AnimActions.Idle, "idle-* → 待机");
+        CheckEq(AnimActions.RoleOf("clickBounce-开心跃动"), AnimActions.Click, "clickBounce-* → 点击回应");
+        CheckEq(AnimActions.RoleOf("ambient-写代码"), AnimActions.Ambient, "ambient-* → 闲置小动作");
+        CheckEq(AnimActions.RoleOf("ambient-余额-钱袋满溢"), AnimActions.Ambient, "多段后缀也认第一段");
+        CheckEq(AnimActions.RoleOf("drag-被鼠标拖拽悬空反馈"), AnimActions.Drag, "drag-* → 拖拽");
+        CheckEq(AnimActions.RoleOf("move-左转奔跑"), AnimActions.Move, "move-* → 滑动");
+        CheckEq(AnimActions.RoleOf("turn-东张西望"), AnimActions.Turn, "turn-* → 转向");
+        CheckEq(AnimActions.RoleOf("blink"), AnimActions.Blink, "blink 单独一个目录也是角色");
+        CheckEq(AnimActions.RoleOf("随手动"), "", "认不出角色 → 空串（用户自制动作不会被主动播）");
+
+        // 这一条是那次踩过的坑：目录名 idle 归一化之后动作键变成 blink，
+        // 如果角色从动作键反推就会把它认成"眨眼" —— 而它其实是要一直循环播的待机。
+        CheckEq(AnimActions.Canonical("idle"), AnimActions.Blink, "目录名 idle 的动作键仍是 blink（历史行为）");
+        CheckEq(AnimActions.RoleOf("idle"), AnimActions.Idle, "但它的角色必须是待机（不能从动作键反推）");
+
+        Check(AnimActions.IsLoopingRole(AnimActions.Idle) && AnimActions.IsLoopingRole(AnimActions.Drag),
+            "待机与拖拽是一直循环的角色");
+        Check(!AnimActions.IsLoopingRole(AnimActions.Click) && !AnimActions.IsLoopingRole(AnimActions.Ambient),
+            "点击与闲置小动作是一次性的（播完要回到待机）");
+
+        // ------------------------------------------------------------------
         Section("动态素材：目录扫描");
 
         var assetDir = Path.Combine(workspace, "anim-assets");
@@ -1034,12 +1061,13 @@ internal static class Program
         Check(lib.Problems.Any(p => p.Contains("重复", StringComparison.Ordinal)),
             "动作名撞车的第二份被跳过并说明原因");
 
-        // 精灵图路径要落到动作自己的目录里 —— 拼错就会"素材在但不生效"
-        var sheetPath = lib.SheetImagePath(AnimActions.Click);
+        // 素材路径要落到动作自己的目录里 —— 拼错就会"素材在但不生效"。
+        // 统一叫 MediaPath：精灵图给 PNG、透明视频给 webm，由帧表的 type 决定。
+        var sheetPath = lib.MediaPath(AnimActions.Click);
         Check(sheetPath != null &&
               Path.GetDirectoryName(sheetPath)!.EndsWith("clickBounce", StringComparison.Ordinal) &&
               File.Exists(sheetPath),
-            $"精灵图路径指向动作自己的目录：{sheetPath}");
+            $"素材路径指向动作自己的目录：{sheetPath}");
 
         // 撞车时该让"名字就是动作键"的那份赢，而不是字母序更靠前的那个
         Check(sheetPath != null && Path.GetDirectoryName(sheetPath)!.EndsWith("clickBounce", StringComparison.Ordinal),
@@ -1062,6 +1090,368 @@ internal static class Program
 
         if (withSheetPng)
             File.WriteAllText(Path.Combine(dir, "sheet.png"), "not a real png");
+    }
+
+    // ==================================================================
+    // 透明视频素材
+    // ==================================================================
+
+    /// <summary>
+    /// 透明视频（dsh 那套素材）的帧表、滤镜校验，以及**真的解一遍**。
+    ///
+    /// 滤镜串是要原样拼进 ffmpeg 命令行的，帧表又是用户可以手改的文件 ——
+    /// 所以它必须被当成不可信输入校验，这里专门钉几条注入用例。
+    /// </summary>
+    private static void TestVideoAssets(string workspace)
+    {
+        Section("动态素材：透明视频的帧表");
+
+        const string goodJson = """
+        {
+          "name": "idle-待机呼吸休闲",
+          "type": "video",
+          "video": "video.webm",
+          "filter": "crop=384:360:128:0,pad=384:384:0:6:color=black@0,crop=384:384:0:0",
+          "frameWidth": 384, "frameHeight": 384,
+          "cols": 1, "rows": 241, "count": 241, "fps": 24.0, "loop": true,
+          "characterHeight": 270,
+          "anchor": { "x": 192.0, "y": 336.0 },
+          "returnTo": "base"
+        }
+        """;
+
+        var v = AnimSheet.Parse(goodJson);
+        Check(v.Ok, "透明视频的帧表能解析" + (v.Ok ? "" : "：" + v.Error));
+        Check(v.Ok && v.Sheet!.IsVideo, "type=video 被认成视频");
+        Check(v.Ok && v.Sheet!.MediaFile == "video.webm", "视频动作读的是 video 字段");
+        Check(v.Ok && v.Sheet!.Sheet.Length == 0, "视频动作的 sheet 字段留空（不给两条路）");
+        Check(v.Ok && v.Sheet!.Filter.StartsWith("crop=", StringComparison.Ordinal), "滤镜串原样保留给运行时用");
+        Check(v.Ok && v.Sheet!.Cols == 1 && v.Sheet.Rows == 241,
+            $"视频不需要排帧网格，占位给 1×N：{v.Sheet?.Cols}×{v.Sheet?.Rows}");
+        Check(v.Ok && v.Warnings.Count == 0, "正常的视频帧表不该产生警告");
+
+        // 视频的帧数允许不写：以实际解出来多少帧为准（生成工具换代时不会因为少个字段就报废）
+        var noCount = AnimSheet.Parse("""
+        {"type":"video","video":"v.webm","frameWidth":384,"frameHeight":384,"fps":24}
+        """);
+        Check(noCount.Ok && noCount.Sheet!.Count == 0 &&
+              noCount.Warnings.Any(w => w.Contains("count", StringComparison.Ordinal)),
+            "视频没写 count 也能用，只提示一句");
+
+        // ------------------------------------------------------------------
+        Section("动态素材：视频滤镜的安全校验（防命令注入）");
+
+        // 帧表是用户可改的文件，滤镜串会被原样拼进 ffmpeg 命令行 —— 必须当成不可信输入
+        static string FilterOf(string filter)
+            => "{\"type\":\"video\",\"video\":\"v.webm\",\"filter\":\"" +
+               filter + "\",\"frameWidth\":384,\"frameHeight\":384,\"fps\":24}";
+
+        var drawtext = AnimSheet.Parse(FilterOf("crop=384:360:0:0,drawtext=text=x"));
+        Check(!drawtext.Ok && drawtext.Error.Contains("crop / scale / pad", StringComparison.Ordinal),
+            "只放行 crop/scale/pad，别的滤镜一律拒绝：" + drawtext.Error);
+
+        var semicolon = AnimSheet.Parse(FilterOf("crop=384:360:0:0;whoami"));
+        Check(!semicolon.Ok, "参数里混进分隔符会被拒：" + semicolon.Error);
+
+        var percent = AnimSheet.Parse(FilterOf("crop=384:360:0:0,pad=384:384:0:0:color=%s"));
+        Check(!percent.Ok, "参数里出现 % 之类的特殊字符会被拒：" + percent.Error);
+
+        var tooLong = AnimSheet.Parse(FilterOf("crop=" + new string('9', 600) + ":1:0:0"));
+        Check(!tooLong.Ok && tooLong.Error.Contains("太长", StringComparison.Ordinal),
+            "过长的滤镜串直接拒绝");
+
+        var spacePath = AnimSheet.Parse("""
+        {"type":"video","video":"..\\..\\evil.webm","filter":"crop=1:1:0:0","frameWidth":384,"frameHeight":384,"fps":24}
+        """);
+        Check(!spacePath.Ok, "视频文件名不许带路径（不能指到素材目录外面）：" + spacePath.Error);
+
+        var sequence = AnimSheet.Parse("""{"type":"sequence","video":"v","frameWidth":1,"frameHeight":1,"fps":24}""");
+        Check(!sequence.Ok && sequence.Error.Contains("video", StringComparison.Ordinal),
+            "不支持的 type 要顺便说清该写什么：" + sequence.Error);
+
+        // ------------------------------------------------------------------
+        Section("动态素材：视频动作的目录扫描与角色");
+
+        var assetDir = Path.Combine(workspace, "video-assets");
+        var animDir = Path.Combine(assetDir, AnimLibrary.FolderName);
+
+        WriteVideoAction(animDir, "idle-待机呼吸休闲", loop: true);
+        WriteVideoAction(animDir, "clickBounce-开心跃动", loop: false);
+        WriteVideoAction(animDir, "clickBounce-元气挥手", loop: false);
+        WriteVideoAction(animDir, "ambient-写代码", loop: false);
+        WriteVideoAction(animDir, "drag-被拖着", loop: true);
+
+        var lib = AnimLibrary.Scan(assetDir);
+
+        CheckEq(lib.ActionNames.Count.ToString(), "5", "五个视频动作都被扫到");
+        Check(lib.VideoCount == 5 && lib.SheetCount == 0,
+            $"扫到的都是视频：视频 {lib.VideoCount}、精灵图 {lib.SheetCount}");
+        Check(lib.Problems.Count == 0, "正常素材不该有问题：" + string.Join(" / ", lib.Problems));
+
+        var idlePath = lib.MediaPath("idle-待机呼吸休闲");
+        Check(idlePath != null && idlePath.EndsWith("video.webm", StringComparison.OrdinalIgnoreCase) &&
+              Path.GetDirectoryName(idlePath)!.EndsWith("idle-待机呼吸休闲", StringComparison.Ordinal),
+            $"视频的素材路径落在动作自己的目录里：{idlePath}");
+
+        CheckEq(lib.ActionsWithRole(AnimActions.Click).Count.ToString(), "2", "点击角色下有两个动作（界面随机挑）");
+        CheckEq(lib.ActionsWithRole(AnimActions.Idle).Count.ToString(), "1", "待机角色下有一个动作");
+        CheckEq(lib.ActionsWithRole(AnimActions.Ambient).Count.ToString(), "1", "闲置小动作有一个");
+        CheckEq(lib.RoleOf("idle-待机呼吸休闲"), AnimActions.Idle, "库里也能按动作名问出角色");
+        Check(lib.RecognizedRoleCount == 5, $"五个动作都认得角色（实际 {lib.RecognizedRoleCount}）");
+
+        Check(lib.Describe().Contains("透明视频", StringComparison.Ordinal),
+            "诊断报告里说清了这些是透明视频：" + lib.Describe().Replace("\n", " | "));
+
+        // 视频动作一旦存在，诊断就必须顺带报告 ffmpeg 找没找到 ——
+        // "动画不播"十有八九是它缺失，报告里没有这一行会查很久
+        Check(lib.Describe().Contains("ffmpeg", StringComparison.Ordinal),
+            "有视频动作时诊断报告会报 ffmpeg 状态");
+
+        // ------------------------------------------------------------------
+        Section("动态素材：真的解一遍（ffmpeg 流式解码）");
+
+        var ffmpeg = FfmpegLocator.Path;
+        if (ffmpeg == null)
+        {
+            Console.WriteLine("  · 跳过：本机没找到 ffmpeg（" + FfmpegLocator.Where + "）");
+        }
+        else
+        {
+            TestVideoDecode(ffmpeg, workspace);
+        }
+    }
+
+    /// <summary>
+    /// 起一个真的 ffmpeg，把视频解成 RGBA 帧走一遍。
+    ///
+    /// 这一段测的是环形缓冲和读帧线程：取帧、还帧、解完（EOF）、循环。
+    /// 这几样出错的表现都很隐蔽 —— 要么卡住不动，要么跑着跑着内存涨上去。
+    /// </summary>
+    private static void TestVideoDecode(string ffmpeg, string workspace)
+    {
+        var dir = Path.Combine(workspace, "video-decode");
+        Directory.CreateDirectory(dir);
+
+        const int side = 64;
+        const int sourceFrames = 24;
+        var clip = Path.Combine(dir, "clip.avi");
+
+        // 造一段 24 帧的 64×64 素材：用 ffmpeg 自己生成，不依赖仓库里带一个视频文件
+        var made = RunFfmpeg(ffmpeg, new[]
+        {
+            "-v", "error",
+            "-f", "lavfi", "-i", $"testsrc=size={side}x{side}:rate=24",
+            "-frames:v", sourceFrames.ToString(),
+            "-c:v", "mpeg4", "-y", clip,
+        });
+
+        if (!File.Exists(clip))
+        {
+            Check(false, "造不出测试视频，跳过解码测试：" + made);
+            return;
+        }
+
+        // ---- 一次性（非循环）----
+        try
+        {
+            using var stream = new VideoFrameStream(ffmpeg, clip, filter: "", cellSide: side, loop: false);
+
+            Check(stream.FrameBytes == side * side * 4,
+                $"一帧的字节数按格子算：{stream.FrameBytes}");
+
+            int taken = 0;
+            var deadline = DateTime.UtcNow.AddSeconds(20);
+            while (DateTime.UtcNow < deadline)
+            {
+                if (!stream.TryTake(out var frame, 1500))
+                {
+                    if (stream.IsEof) break;
+                    continue;
+                }
+
+                if (frame == null || frame.Length != side * side * 4)
+                {
+                    Check(false, "取到的帧大小不对");
+                    stream.Return(frame);
+                    break;
+                }
+
+                taken++;
+                stream.Return(frame);
+
+                // 非循环素材：解到 EOF 之后就该停，不能没完没了
+                if (taken > sourceFrames + 8) break;
+            }
+
+            Check(taken >= sourceFrames - 2 && taken <= sourceFrames + 2,
+                $"非循环视频解出 {taken} 帧（源素材 {sourceFrames} 帧）");
+            Check(stream.IsEof && stream.IsDrained,
+                "非循环视频解完之后明确进入「解完」状态（界面靠它判断这一段播完了）");
+            Check(stream.Error.Length == 0, "解码过程没有报错：" + stream.Error);
+        }
+        catch (Exception ex)
+        {
+            Check(false, "非循环视频解码抛异常：" + ex.Message);
+        }
+
+        // ---- 循环（待机、拖拽这类要一直播的）----
+        try
+        {
+            using var stream = new VideoFrameStream(ffmpeg, clip, filter: "", cellSide: side, loop: true);
+
+            // 循环素材必须能解出比源帧数更多的帧 —— 解到源帧数就 EOF 的话，
+            // 待机动画每 10 秒会停一次，而那种"偶尔卡一下"极难归因
+            int taken = 0;
+            var deadline = DateTime.UtcNow.AddSeconds(25);
+            while (taken < sourceFrames + 10 && DateTime.UtcNow < deadline)
+            {
+                if (stream.TryTake(out var frame, 1500)) { taken++; stream.Return(frame); }
+                else if (stream.IsEof) break;
+            }
+
+            Check(taken >= sourceFrames + 10,
+                $"循环视频能一直解下去：解了 {taken} 帧（源素材只有 {sourceFrames} 帧）");
+            Check(!stream.IsEof, "循环中的视频不该报「解完」");
+        }
+        catch (Exception ex)
+        {
+            Check(false, "循环视频解码抛异常：" + ex.Message);
+        }
+
+        // ---- 参数不合法要立刻拒绝，而不是起一个必死的进程 ----
+        try
+        {
+            using var bad = new VideoFrameStream(ffmpeg, clip, "", cellSide: 4, loop: false);
+            Check(false, "格子边长过小应该被拒（4px）");
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            Check(true, "格子边长过小会当场被拒（不会去起一个必死的进程）");
+        }
+        catch (Exception ex)
+        {
+            Check(false, "格子边长过小时抛的不是预期异常：" + ex.GetType().Name);
+        }
+    }
+
+    /// <summary>造一个视频动作目录（Scan 只验文件在不在，内容不重要）。</summary>
+    private static void WriteVideoAction(string animDir, string name, bool loop)
+    {
+        var dir = Path.Combine(animDir, name);
+        Directory.CreateDirectory(dir);
+        File.WriteAllBytes(Path.Combine(dir, "video.webm"), new byte[] { 0x1A, 0x45, 0xDF, 0xA3 });
+
+        File.WriteAllText(Path.Combine(dir, "anim.json"), $$"""
+        {
+          "name": "{{name}}",
+          "type": "video",
+          "video": "video.webm",
+          "filter": "crop=384:360:128:0,pad=384:384:0:6:color=black@0,crop=384:384:0:0",
+          "frameWidth": 384, "frameHeight": 384,
+          "cols": 1, "rows": 241, "count": 241, "fps": 24.0,
+          "loop": {{(loop ? "true" : "false")}},
+          "characterHeight": 270,
+          "anchor": { "x": 192.0, "y": 336.0 }
+        }
+        """);
+    }
+
+    /// <summary>跑一次 ffmpeg，返回 stderr 的最后几行（用来报错）。</summary>
+    private static string RunFfmpeg(string exe, string[] args)
+    {
+        try
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo(exe)
+            {
+                RedirectStandardError = true,
+                RedirectStandardOutput = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+            foreach (var a in args) psi.ArgumentList.Add(a);
+
+            using var p = System.Diagnostics.Process.Start(psi);
+            if (p == null) return "进程没起来";
+
+            var err = p.StandardError.ReadToEnd();
+            p.WaitForExit(20000);
+            return err.Length > 400 ? err[^400..] : err;
+        }
+        catch (Exception ex)
+        {
+            return ex.Message;
+        }
+    }
+
+    // ==================================================================
+    // 形象包
+    // ==================================================================
+
+    /// <summary>
+    /// 形象包：新版溟月与原版鲸鱼娘并存、能一键切换，而且**永远解析得到一个能用的形象**。
+    /// </summary>
+    private static void TestCharacterPacks(string workspace)
+    {
+        Section("形象包：发现与降级");
+
+        var root = Path.Combine(workspace, "pack-assets");
+
+        Check(CharacterPacks.IsAvailable(CharacterPacks.ClassicId, root),
+            "原版形象永远可用（它的图是编译进程序集的嵌入资源）");
+        Check(!CharacterPacks.IsAvailable(CharacterPacks.DshId, root),
+            "角色目录还不存在时说它不可用（界面据此把它标灰）");
+
+        CheckEq(CharacterPacks.Resolve("dsh", root), CharacterPacks.ClassicId,
+            "设置里要 dsh 但素材不在 → 降级到原版，而不是解析出一个空形象");
+        CheckEq(CharacterPacks.Resolve("从旧版本升上来的未知ID", root), CharacterPacks.ClassicId,
+            "配置里是个认不出来的 ID 也降级到原版");
+        CheckEq(CharacterPacks.DirOf(CharacterPacks.ClassicId, root), root,
+            "原版不额外套一层目录（老用户放在 Assets\\ 根下的图不能失效）");
+
+        // 把新形象摆上
+        var dshDir = Path.Combine(root, CharacterPacks.FolderName, CharacterPacks.DshId);
+        Directory.CreateDirectory(Path.Combine(dshDir, "anim"));
+        File.WriteAllBytes(Path.Combine(dshDir, "whale.png"), new byte[] { 0x89, 0x50, 0x4E, 0x47 });
+        WriteVideoAction(Path.Combine(dshDir, "anim"), "idle-待机呼吸休闲", loop: true);
+
+        Check(CharacterPacks.IsAvailable(CharacterPacks.DshId, root), "有 whale.png 就算可用");
+        CheckEq(CharacterPacks.Resolve("", root), CharacterPacks.DshId,
+            "没选过（空串）时默认用新形象 —— 装了新素材就该看到新的");
+        CheckEq(CharacterPacks.Resolve(CharacterPacks.DshId, root), CharacterPacks.DshId, "选了的能用就用选的");
+        CheckEq(CharacterPacks.Resolve(CharacterPacks.ClassicId, root), CharacterPacks.ClassicId,
+            "选回原版就真的是原版（切换开关是双向的）");
+
+        var dshRoot = CharacterPacks.DirOf(CharacterPacks.DshId, root);
+        Check(dshRoot.EndsWith(Path.Combine(CharacterPacks.FolderName, CharacterPacks.DshId), StringComparison.Ordinal),
+            $"新形象有自己的素材根：{dshRoot}");
+
+        // 两个形象各扫各的：新形象的动作不该被原版的看到，反之亦然
+        var dshLib = AnimLibrary.Scan(dshRoot);
+        Check(dshLib.HasAny && dshLib.ActionNames.Count == 1,
+            $"新形象扫到自己的动作：{string.Join("、", dshLib.ActionNames)}");
+
+        var classicLib = AnimLibrary.Scan(root);
+        Check(classicLib.IsEmpty || !classicLib.ActionNames.Contains("idle-待机呼吸休闲"),
+            "原版的扫描不会串到 characters\\ 底下去（否则两个形象的动作会混在一起）");
+
+        Check(CharacterPacks.TitleOf(CharacterPacks.DshId).Length > 0 &&
+              !CharacterPacks.TitleOf(CharacterPacks.DshId).Equals(CharacterPacks.DshId, StringComparison.Ordinal),
+            "新形象在界面上有正经名字：" + CharacterPacks.TitleOf(CharacterPacks.DshId));
+
+        // ID 里被塞了路径分隔符时不能越出素材目录 —— 这个值来自可手改的配置文件
+        CheckEq(CharacterPacks.DirOf("..\\..\\Windows", root), root,
+            "ID 带路径分隔符 → 退回素材根（不能让配置文件指到系统目录去）");
+
+        // 用户自己丢一个形象包进去也该被发现（不用改代码）
+        Directory.CreateDirectory(Path.Combine(root, CharacterPacks.FolderName, "自制形象"));
+        Check(CharacterPacks.Discover(root).Contains("自制形象"),
+            "用户自制形象包能被发现：" + string.Join("、", CharacterPacks.Discover(root)));
+        Check(CharacterPacks.Available(root).Any(p => p.Id == "自制形象" && !p.IsAvailable),
+            "自制形象没放图时标记为不可用（界面上标灰而不是让你选了没反应）");
+
+        var packs = CharacterPacks.Available(root);
+        Check(packs.Count >= 3 && packs[0].Id == CharacterPacks.DshId,
+            "内置形象排在最前、新版优先：" + string.Join("、", packs.Select(p => p.Id)));
     }
 
     private static void Section(string name)

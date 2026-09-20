@@ -360,6 +360,54 @@ Assets\anim\
 
 不想让小鲸鱼动：托盘菜单 →「小鲸鱼动画」，素材文件不用删。
 
+#### 8.1 第二条路线：透明视频 + 形象包（2026-09-20 新增）
+
+精灵图那条路要求"画一套帧拼成一张大图"，不适合手上已经有一堆现成动画视频的情况。
+出厂自带的「溟月」形象（`Assets\characters\dsh\`，106 个动作）走的是**透明 webm 运行时解码**：
+
+| | 精灵图 PNG | 透明视频（VP9-alpha webm） |
+|---|---|---|
+| 素材做什么 | 按规格画帧、拼成网格 | 直接给透明视频，**原样搬运、不重编码** |
+| 帧表 | `sheet.json` 写清行列/锚点 | `anim.json`，多了 `type: "video"` 和 `filter` |
+| 谁来解码 | WPF 自己（`CroppedBitmap` 切帧） | **ffmpeg 子进程**（WPF 解不了 VP9 的 alpha） |
+| 体积 | 720×720 全量 106 个动作 ≈ **1.4 GB** | 同素材原样 106 个 = **51.9 MB** |
+| 依赖 | 无 | 要 `ffmpeg.exe` 在程序目录（便携包已带），缺了只是视频动作播不了 |
+
+解码器 `Services\VideoDecoder.cs` 的 `VideoFrameStream`，几个关键取舍：
+
+- **小环形缓冲（8 帧 = 4.6 MB），不够就卡住生产者。** ffmpeg 解出来的裸 RGBA 帧很占地方
+  （384×384×4 = 590 KB/帧），全解到内存里会爆。缓冲满时让它阻塞在写管道上，
+  天然不积压，**几乎不吃 CPU**。
+- **悬停预热（`SpritePlayer.Warm`）。** 起一次 ffmpeg 要 **≈150 ms**，直接等到点击才起
+  会有明显延迟。鼠标移进悬浮窗就先把流起起来、解出前几帧，点下去即时播。
+- **时间驱动取帧，一个 tick 最多贴一帧。** 落后了就逐帧追，但**不快进** ——
+  跳帧会让 24fps 的动作看起来像抽帧。
+- **`filter` 是按不可信输入校验的**（防命令注入）：先按 `=` 切出滤镜名、再按 `:` 切参数，
+  位置参数只放行纯数字，具名参数走白名单（`color=black@0`、`flags=lanczos` 等）。
+
+**形象包**（`Services\CharacterPacks.cs`）：一套形象一个目录 `Assets\characters\<形象ID>\`。
+
+```
+Assets\
+  whale.png                  ← classic（原版鲸鱼娘）的静态本体，**沿用老布局、没搬家**
+  anim\                      ← 原版的动作
+  characters\
+    dsh\                     ← 默认形象「溟月 · 蓝鲸（新版）」
+      whale.png  anim\<动作>\{video.webm, anim.json}
+      来源与许可.txt          ← 许可要求署名，别删
+```
+
+- 设置 →「桌面小鲸鱼」→「形象」里一键切换，**立刻生效、不用重启**
+- 往 `characters\` 里再丢一个目录，程序自动发现（可以做自己的形象包）
+- 降级顺序 **设置里那个 → `dsh` → `classic`**，永远退得到一个能用的形象；
+  `classic` 最后兜底是因为它的图是**编译进程序集的嵌入资源**，`Assets\` 整个不存在也在
+- **角色由目录名前缀认**：`idle-` 待机、`clickBounce-` 点击、`ambient-` 随机小动作、
+  `drag-` 拖拽、`move-` / `turn-` 保留。**要靠目录名记，不能从动作键反推**
+  （`idle` 那支的键历史原因归一化成了 `blink`）
+
+> ⚠️ 这套素材是 CC BY-NC-SA 类同人素材（OC「溟月」/ 画师上善无形），**仅限个人非商业、必须署名**。
+> 要发布或商用，`assets\characters\dsh\` 必须整体撤下 —— 撤下后程序会自动退回原版形象。
+
 ### 9. 悬浮时的表情差分
 
 鼠标停在悬浮窗上时，小鲸鱼整张换成另一张形象（默认是闭眼版），移开换回来。
@@ -416,9 +464,23 @@ dotnet build WhaleLog.sln -c Release
 NuGet.targets(745,5): error : Value cannot be null. (Parameter 'path1')
 ```
 
-这是 NuGet 构造机器级设置时取不到 `CommonApplicationData` 目录导致的，
-和本项目代码无关（对照实验：PowerShell 5.1 能正常返回 `C:\ProgramData`，.NET 8 返回 null）。
-鲸记不依赖任何 NuGet 包，所以可以绕过：
+**先试这个 —— 大多数情况到这里就解决了：**
+
+```bat
+python tools\mkenv.py        :: 读注册表导出 .tmp-env.sh
+```
+```bash
+source .tmp-env.sh && "C:/Program Files (x86)/dotnet/dotnet.exe" build src/WhaleLog/WhaleLog.csproj -c Release
+```
+
+真因往往是**会话里的 `dotnet` 拿不到 Windows 的环境变量**（`ProgramData` / `APPDATA` /
+`ALLUSERSPROFILE` 全缺）：NuGet 构造机器级设置时取不到 `CommonApplicationData`（就是那句
+`path1`），于是报了这个和项目代码毫无关系的错
+（对照实验：PowerShell 5.1 能正常返回 `C:\ProgramData`，.NET 8 返回 null）。
+`tools\mkenv.py` 把机器级 + 用户级的环境变量（读注册表）导出成能 `source` 的 shell 脚本，
+实测这样编译是 **0 错 0 警**。
+
+**环境变量这条路也走不通时**，才用离线兜底 —— 鲸记不依赖任何 NuGet 包，可以绕过：
 
 ```bat
 build-whalelog-offline.cmd
@@ -439,12 +501,18 @@ apphost 模板出发，替换里面的占位符、把子系统改成 GUI、再�
 ## 打包分发
 
 ```bat
-python tools\make_portable_zip.py            # 输出到桌面：鲸记 WhaleLog.zip
+python tools\make_portable_zip.py            # 输出到 E:\jingji\鲸记 WhaleLog <版本>.zip
 python tools\make_portable_zip.py D:\某目录    # 或指定位置
 ```
 
 产物是**自包含**的：解压到任意目录双击 `WhaleLog.exe` 就能用，
-目标机器不需要装 .NET 8（约 135 MB，压缩后 ~57 MB，32 位版，32/64 位 Windows 都能跑）。
+目标机器不需要装 .NET 8（约 135 MB，压缩后 32 位版）。
+
+> **1.4.0 起包大了**：从 58 MB 变成 **139.6 MB**。多了 `Assets\characters\dsh\`
+> 的 52 MB 形象素材和 `ffmpeg.exe`（84 MB）—— 两者都是已压缩内容，zip 里压不动。
+> 顺手把 `Assets\characters` 也拷了进去，换形象不用自己摆文件。
+> 想要小包就删掉包里的 `ffmpeg.exe`：静态形象和精灵图动画照常，只有透明视频动作播不了。
+> 找 ffmpeg 的顺序：`WHALELOG_FFMPEG` → `assets\tools\` → PATH → `imageio_ffmpeg`。
 
 正常情况下这件事应该由 `dotnet publish -r win-x86 --self-contained` 完成，
 但那需要 NuGet 上的运行时包（`Microsoft.NETCore.App.Runtime.*` /
@@ -507,8 +575,18 @@ dotnet tools\selftest\bin\Release\net8.0\WhaleLog.SelfTest.dll
 - 快照模式确实产出可读的副本，且原文件仍在原地
 - 动态素材（精灵图）：帧表字段校验与 8 类报错原因、能救回的 6 类、
   **行优先**切帧的坐标、动作名归一化与别名、目录扫描（含同名撞车时"目录名即动作键"者优先）
+- 动态素材（透明视频）：`filter` 的**分隔符解析与注入拦截**（先按 `=` 切滤镜名再按 `:` 切参数 ——
+  顺序反了会把 `crop=384:360:128:0` 的**名字**切成 `crop=384`，把 106 个动作全判成非法）、
+  非法参数被拒、真起一次 ffmpeg **解非循环流与循环流**
+- 形象包：发现 / 可用性 / 降级三级（设置里那个 → `dsh` → `classic`）、
+  越权路径（ID 里塞 `..\`）不越出素材目录、自建形象包能被发现
+- 角色识别：按**目录名前缀**归类（`idle-` / `clickBounce-` / `ambient-` / `drag-` / `move-` / `turn-`），
+  以及哪些角色是循环播放
 
 加 `--keep` 参数可以保留临时目录，方便翻看产出的 Markdown 和 index.json。
+
+> ⚠️ 自测里含「真的起一次 ffmpeg 解一遍视频」的用例。跑之前把 ffmpeg 拷到
+> `tools\selftest\bin\Release\net8.0\ffmpeg.exe`（`FfmpegLocator` 找的第一个位置就是程序目录）。
 
 ## 数据存放
 

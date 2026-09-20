@@ -522,6 +522,12 @@
                                 <TextBlock x:Name="OpacityText" VerticalAlignment="Center" Margin="10,0,0,0"
                                            FontSize="12" Foreground="{DynamicResource TextMutedBrush}" />
                             </StackPanel>
+
+                            <!-- 形象切换：按钮是按磁盘上实际找到的形象包动态生成的 -->
+                            <TextBlock Text="形象" FontSize="13" Margin="0,16,0,6" />
+                            <WrapPanel x:Name="CharacterChips" Orientation="Horizontal" />
+                            <TextBlock x:Name="CharacterHint" FontSize="11.5" TextWrapping="Wrap"
+                                       Foreground="{DynamicResource TextMutedBrush}" />
                         </StackPanel>
                     </Border>
 
