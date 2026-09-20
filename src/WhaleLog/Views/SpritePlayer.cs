@@ -529,6 +529,9 @@ public sealed class SpritePlayer : IDisposable
         int side = video.Entry.Sheet.FrameWidth;
 
         // 复用同一张位图：每帧新建一张 576 KB 的会把 GC 压垮（24fps = 每秒 13 MB 垃圾）
+        // ⚠️ Bgra32 的内存序是 B,G,R,A，所以解码器必须吐 bgra
+        //    （VideoFrameStream.PixelFormat）。这两处是一对，改一边就必须改另一边 ——
+        //    对不上时的表现是红蓝互换、不报任何错。
         video.Bitmap ??= new WriteableBitmap(side, side, 96, 96, PixelFormats.Bgra32, null);
         video.Bitmap.WritePixels(new System.Windows.Int32Rect(0, 0, side, side), pixels, side * 4, 0);
 

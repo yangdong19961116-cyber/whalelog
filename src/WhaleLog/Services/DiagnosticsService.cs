@@ -417,8 +417,9 @@ public static class DiagnosticsService
         Section("透明视频动画");
         ProbeVideoPlayback(Check, sb);
 
-        // 上面那节测的是"动画能不能播"，这节测的是"播出来的画面透不透明"。
-        // 两回事：帧数全对、一个错都不报，但 alpha 全丢了，角色会顶着黑底显示。
+        // 上面那节测的是"动画能不能播"，这节测的是"播出来的画面对不对"。
+        // 两回事：帧数全对、一个错都不报，但 alpha 全丢（角色顶黑底）、
+        // 或者红蓝互换（头发变栗棕）—— 两种都只有肉眼才看得见，所以这里直接验像素。
         ProbeVideoAlpha(Check, sb);
 
         // ---- 月历面板 ----
@@ -1870,16 +1871,16 @@ public static class DiagnosticsService
     }
 
     /// <summary>
-    /// 透明 webm 的 alpha 通道到底解出来没有。
+    /// 透明 webm 解出来的帧，**内容**到底对不对：alpha 在不在、红蓝有没有反。
     ///
-    /// 这一节是补的账：1.4.1 之前形象动画一直顶着黑底显示 —— ffmpeg 默认挑的
-    /// native vp9 解码器会把 alpha（VP9 把它存在「附加数据」里）整条丢掉，
-    /// 解出来照样是一帧帧 RGBA，只是 alpha 位全填 255。
-    /// 当时的自检只断言了"帧数对不对""每帧字节数对不对"，这两条它**全过** ——
-    /// 于是黑底顺利混进了出厂包，直到有人肉眼看见。
+    /// 这一节是补两次账攒出来的：1.4.1 之前形象动画一直顶着黑底显示；1.4.2 之前
+    /// 颜色一直是红蓝互换的（深蓝紫头发显示成栗棕红）。两次都是同一个性质 ——
+    /// ffmpeg 那个子进程照样一帧帧吐字节、帧数全对、不报任何错，
+    /// 而当时的自检只断言了"帧数对不对""每帧字节数对不对"，**这两条它全过**。
     ///
-    /// 所以这里不看帧数，**直接数像素里的透明值**：现造一段左半边不透明、
-    /// 右半边全透明的 VP9 素材，解一帧出来数 alpha。全 255 就说明透明丢了。
+    /// 所以这里不看帧数，直接看像素：
+    ///   · alpha —— 现造一段左半不透明、右半全透明的 VP9 素材，数透明值；
+    ///   · 通道序 —— 同一段素材的左半是**纯红**，红值必须落在 R 通道上。
     /// </summary>
     private static void ProbeVideoAlpha(CheckFn check, StringBuilder sb)
     {
@@ -1925,15 +1926,29 @@ public static class DiagnosticsService
             }
 
             int clear = 0, opaque = 0;
-            for (int i = 3; i < frame.Length; i += 4)
+            long sumB = 0, sumG = 0, sumR = 0;
+            int sampled = 0;
+
+            for (int i = 0; i + 3 < frame.Length; i += 4)
             {
-                if (frame[i] == 0) clear++;
-                else if (frame[i] == 255) opaque++;
+                int a = frame[i + VideoFrameStream.OffsetA];
+                if (a == 0) { clear++; continue; }
+                if (a != 255) continue;
+                opaque++;
+
+                // 只采左半边靠中间的一条：色度是二次采样的，紧贴边界的像素会被糊到
+                int px = (i / 4) % side;
+                if (px < 6 || px >= side / 2 - 6) continue;
+
+                sumB += frame[i + VideoFrameStream.OffsetB];
+                sumG += frame[i + VideoFrameStream.OffsetG];
+                sumR += frame[i + VideoFrameStream.OffsetR];
+                sampled++;
             }
 
             int total = frame.Length / 4;
 
-            // 这是整节的重点：native vp9 解出来的帧在这一条上会是 0 个透明像素
+            // 这是整节的重点之一：native vp9 解出来的帧在这一条上会是 0 个透明像素
             check("解出来的帧真有透明像素（alpha 没被丢掉）",
                 clear > 0,
                 $"全透明 {clear}/{total} 个像素" +
@@ -1941,6 +1956,29 @@ public static class DiagnosticsService
 
             check("解出来的帧也有实心像素（没把角色一起弄透明）",
                 opaque > 0, $"全不透明 {opaque}/{total} 个像素");
+
+            // 通道顺序：素材左半边是**纯红**，所以红值必须落在 R 通道上。
+            //
+            // 这一条同样是补的账：解码器以前吐的是 rgba，而贴图那边按 Bgra32 解读，
+            // 红蓝整个对调 —— 头发从深蓝紫变成栗棕红（用户的话是"像反色了"），
+            // 而上面那些"有没有透明像素""有没有实心像素"的断言**全部通过**。
+            // 所以这里不看有没有值，只看值落在哪条通道。
+            if (sampled > 0)
+            {
+                int avgB = (int)(sumB / sampled);
+                int avgG = (int)(sumG / sampled);
+                int avgR = (int)(sumR / sampled);
+
+                check("红蓝通道没有互换（纯红素材解出来还是红的）",
+                    avgR > avgB + 60 && avgR > avgG + 60,
+                    $"左半实心像素均色 R={avgR} G={avgG} B={avgB}（偏移 " +
+                    $"R={VideoFrameStream.OffsetR} B={VideoFrameStream.OffsetB}）" +
+                    (avgR <= avgB + 60 ? " —— 红蓝反了，角色颜色会整个错" : ""));
+            }
+            else
+            {
+                check("左半采得到实心像素来验通道顺序", false, "一个像素都没采到");
+            }
         }
         catch (Exception ex)
         {

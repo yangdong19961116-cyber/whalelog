@@ -28,7 +28,7 @@ namespace WhaleLog.Services;
 /// 这是踩过的坑：透明 webm 的 alpha 不是存在像素里，而是 VP9 的**附加数据**
 /// （matroska 的 BlockAdditional，文件头里能看到 ALPHA_MODE=1）。
 ///
-/// ffmpeg 默认挑的 native vp9 解码器**不认这层附加数据**，它照样给你一帧帧 RGBA，
+/// ffmpeg 默认挑的 native vp9 解码器**不认这层附加数据**，它照样给你一帧帧像素，
 /// 但 alpha 位全填 255 —— 于是"能播、帧数也对、一个错都不报"，
 /// 只是角色变成一个**带黑底的方形贴片**：透明区成了黑块，边缘的羽化没了变成硬边，
 /// 看上去就像"锯齿很严重"。这种错不会抛异常，光看帧数根本发现不了，
@@ -43,6 +43,22 @@ namespace WhaleLog.Services;
 /// 两条都满足才加点名参数 —— 否则遇到 mpeg4 之类的素材会因为"解码器不匹配"直接解不了。
 /// 万一本机 ffmpeg 是个精简版、没有 libvpx-vp9，就退回 native：至少还能播，
 /// 只是没有透明（真遇到时 <see cref="HasAlpha"/> 会是 false，诊断报告里看得见）。
+///
+/// ⚠️ 像素字节序必须是 bgra（红蓝别弄反）
+/// ------------------------------------
+/// 这是第二个同类型的坑：解出来的帧给的是**裸字节**，谁都不报错，只是颜色是错的。
+///
+/// ffmpeg 的 `-pix_fmt rgba` 吐的是 R,G,B,A 顺序的字节，而 WPF 的
+/// <c>PixelFormats.Bgra32</c>（<see cref="SpritePlayer"/> 贴图用的就是它）内存里是
+/// **B,G,R,A** —— 把 rgba 的字节直接丢进去，等于把红蓝两条通道对调。
+///
+/// 症状很唬人：深蓝紫的头发会变成栗棕红，看着"像反色了"，而**所有帧都一样错**、
+/// 不花屏、不抖动、像素数一个不差，所以任何"帧数对不对""字节数对不对"的断言都拦不住。
+/// 1.4.0 / 1.4.1 / 1.4.2 三个包都是这个颜色。
+///
+/// 正确做法是让 ffmpeg 直接吐 <c>bgra</c>（swscale 内部顺手就换了，不额外花时间），
+/// 这样字节序和 WPF 天然对齐，C# 侧一个像素都不用动。
+/// 自检里的「透明通道」那节会在纯红素材上断言红值确实落在 R 通道，防止再被改回去。
 ///
 /// 线程模型
 /// --------
@@ -62,6 +78,25 @@ public sealed class VideoFrameStream : IDisposable
     /// <summary>格子边长的允许区间。超出这个范围的帧表是坏的，不该拿它去开进程。</summary>
     public const int MinCellSide = 16;
     public const int MaxCellSide = 2048;
+
+    /// <summary>
+    /// 解码输出的像素格式（就是 ffmpeg 的 -pix_fmt 值）。
+    ///
+    /// **必须是 bgra**，因为 <see cref="SpritePlayer"/> 把它直接写进
+    /// <c>PixelFormats.Bgra32</c>（内存序 B,G,R,A）。改成 rgba 会让红蓝互换 ——
+    /// 不报错、不花屏，只是颜色全错，见类头注释。
+    /// 由此字节偏移固定是：0=B、1=G、2=R、3=A。
+    /// </summary>
+    public const string PixelFormat = "bgra";
+
+    /// <summary>字节偏移：蓝。</summary>
+    public const int OffsetB = 0;
+    /// <summary>字节偏移：绿。</summary>
+    public const int OffsetG = 1;
+    /// <summary>字节偏移：红。</summary>
+    public const int OffsetR = 2;
+    /// <summary>字节偏移：透明度。</summary>
+    public const int OffsetA = 3;
 
     private readonly Process _process;
     private readonly Thread _reader;
@@ -187,7 +222,9 @@ public sealed class VideoFrameStream : IDisposable
 
         // -nostdin：ffmpeg 默认会去读标准输入，在 GUI 程序里这是找死。
         // -an/-sn/-dn：素材里万一混了音轨/字幕轨，别让它干扰帧的对应关系。
-        // rawvideo + rgba：直接给像素，不带任何容器头 —— 每帧定长，按字节数切就行。
+        // rawvideo + bgra：直接给像素，不带任何容器头 —— 每帧定长，按字节数切就行。
+        //   bgra 而不是 rgba：WPF 的 PixelFormats.Bgra32 内存序就是 B,G,R,A，
+        //   吐 rgba 的话红蓝会互换（深蓝头发变栗棕，见类头注释）。
         psi.ArgumentList.Add("-hide_banner");
         psi.ArgumentList.Add("-nostdin");
         psi.ArgumentList.Add("-v");
@@ -216,7 +253,7 @@ public sealed class VideoFrameStream : IDisposable
         psi.ArgumentList.Add("-f");
         psi.ArgumentList.Add("rawvideo");
         psi.ArgumentList.Add("-pix_fmt");
-        psi.ArgumentList.Add("rgba");
+        psi.ArgumentList.Add(PixelFormat);
         psi.ArgumentList.Add("-");
 
         try

@@ -1336,18 +1336,21 @@ internal static class Program
     }
 
     /// <summary>
-    /// 透明素材的 alpha 必须真的解出来。
+    /// 透明素材解出来的像素**内容**必须是对的：alpha 在、红蓝没反。
     ///
-    /// 这一段是补的账：形象动画一直顶着黑底显示，因为 ffmpeg 默认挑的 native vp9
-    /// 解码器会把 VP9 的 alpha（存在「附加数据」里）整条丢掉 —— 解出来照样是
-    /// 一帧帧 RGBA、帧数也对、一个错都不报，只有 alpha 位全成了 255。
-    /// 当时的测试只数了帧数和字节数，所以一路绿灯发了出去。
+    /// 这两段都是补的账，而且是同一类错：
+    ///   · alpha —— 形象动画一直顶着黑底，因为 ffmpeg 默认挑的 native vp9 解码器
+    ///     会把 VP9 的 alpha（存在「附加数据」里）整条丢掉，解出来照样一帧帧像素、
+    ///     帧数全对、一个错都不报，只有 alpha 位全成了 255；
+    ///   · 通道序 —— 解码器吐的是 rgba，而界面按 Bgra32（内存序 B,G,R,A）贴图，
+    ///     红蓝整个对调，深蓝紫头发显示成栗棕红。
     ///
-    /// 现在改成直接数像素里的透明值。
+    /// 两次的测试都只数了帧数和字节数，所以两次都一路绿灯发了出去。
+    /// 现在改成直接验像素：透明值有多少、红值落在哪条通道。
     /// </summary>
     private static void TestVideoAlpha(string ffmpeg, string workspace)
     {
-        Section("透明视频：alpha 通道");
+        Section("透明视频：alpha 与通道顺序");
 
         var dir = Path.Combine(workspace, "video-alpha");
         Directory.CreateDirectory(dir);
@@ -1427,6 +1430,43 @@ internal static class Program
 
             Check(leftOpaque == leftTotal, $"左半边确实是不透明的：{leftOpaque}/{leftTotal}");
             Check(rightClear == rightTotal, $"右半边确实是透明的：{rightClear}/{rightTotal}");
+
+            // 通道顺序：左半边是**纯红**，红值必须落在 R 通道上。
+            //
+            // 这一条是补第二次账：解码器以前吐 rgba，界面那边按 Bgra32 解读，
+            // 红蓝整个对调 —— 深蓝紫的头发显示成栗棕红，用户的原话是"像反色了"。
+            // 而上面那几条（有没有透明像素、左右半边对不对、帧数对不对）在互换时
+            // **全部通过**，所以这个错连着发了三个版本。
+            Check(VideoFrameStream.PixelFormat == "bgra",
+                $"解码输出格式是 bgra（当前 {VideoFrameStream.PixelFormat}）");
+
+            long sumB = 0, sumG = 0, sumR = 0;
+            int sampled = 0;
+            for (int y = 0; y < side; y++)
+            {
+                for (int x = 6; x < side / 2 - 6; x++)
+                {
+                    int i = (y * side + x) * 4;
+                    if (frame[i + VideoFrameStream.OffsetA] != 255) continue;
+                    sumB += frame[i + VideoFrameStream.OffsetB];
+                    sumG += frame[i + VideoFrameStream.OffsetG];
+                    sumR += frame[i + VideoFrameStream.OffsetR];
+                    sampled++;
+                }
+            }
+
+            if (sampled == 0)
+            {
+                Check(false, "左半采不到实心像素来验通道顺序");
+            }
+            else
+            {
+                int avgB = (int)(sumB / sampled);
+                int avgG = (int)(sumG / sampled);
+                int avgR = (int)(sumR / sampled);
+                Check(avgR > avgB + 60 && avgR > avgG + 60,
+                    $"纯红素材解出来还是红的（R={avgR} G={avgG} B={avgB}，红蓝没互换）");
+            }
         }
         catch (Exception ex)
         {
