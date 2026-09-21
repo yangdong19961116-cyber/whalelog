@@ -2142,7 +2142,8 @@ public static class DiagnosticsService
                 VideoFrameStream.FfmpegSupportsVp9Alpha(ffmpeg),
                 "缺这个解码器时透明会丢，角色会带黑底");
 
-            using var stream = new VideoFrameStream(ffmpeg, clip, filter: "", cellSide: side, loop: false);
+            using var stream = new VideoFrameStream(ffmpeg, clip, filter: "",
+                frameWidth: side, frameHeight: side, loop: false);
 
             check("透明素材点名了 libvpx 解码器", stream.UsingLibvpx,
                 stream.UsingLibvpx ? "已点名" : "退回了 native —— 透明会丢");

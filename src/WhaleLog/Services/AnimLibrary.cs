@@ -136,22 +136,35 @@ public sealed class AnimLibrary
     }
 
     /// <summary>
-    /// 所有动作里最大的那个显示框高度（设计像素）。
+    /// 所有动作里最大的那个显示框（设计像素），**宽和高各取各的最大值**。
     ///
-    /// 取最大值而不是第一个：悬浮窗只有一个鲸鱼框，几个动作的帧表万一写得不一样，
+    /// 取最大值而不是第一个：悬浮窗只有一块鲸鱼框，几个动作的帧表万一写得不一样，
     /// 按小的那个算就会把大的那个裁掉 —— 宁可留白，不可裁切。
+    ///
+    /// 注意它**只反映动作素材**，不含静态形象（静态本体不是动作、没有帧表）。
+    /// 图像的完整显示框要拿它和形象包自己声明的几何一起取最大，见
+    /// <c>FloatingWindow.ReloadAnimations</c>。
+    ///
     /// 全部动作都没写 characterHeight 时返回 null（由调用方退回静态尺寸）。
     /// </summary>
-    public double? DisplayBoxHeight(double designCharacterHeight)
+    public (double Width, double Height)? DisplayBox(double designCharacterHeight)
     {
-        double? max = null;
+        (double W, double H)? max = null;
         foreach (var name in ActionNames)
         {
-            var h = _actions[name].DisplayBoxHeight(designCharacterHeight);
-            if (h.HasValue) max = max.HasValue ? Math.Max(max.Value, h.Value) : h.Value;
+            var box = _actions[name].DisplayBox(designCharacterHeight);
+            if (!box.HasValue) continue;
+
+            max = max.HasValue
+                ? (Math.Max(max.Value.W, box.Value.Width), Math.Max(max.Value.H, box.Value.Height))
+                : (box.Value.Width, box.Value.Height);
         }
         return max;
     }
+
+    /// <summary>只要高度时的便捷入口（诊断报告、老断言用）。</summary>
+    public double? DisplayBoxHeight(double designCharacterHeight)
+        => DisplayBox(designCharacterHeight)?.Height;
 
     // ==================================================================
     // 扫描
@@ -325,10 +338,11 @@ public sealed class AnimLibrary
             if (custom > 0)
                 lines.Add($"{custom} 个动作认不出角色（前缀不在已知角色里，界面不会主动播它们）");
 
-            var box = DisplayBoxHeight(FloatingCharacterDesignHeight);
+            var box = DisplayBox(FloatingCharacterDesignHeight);
             lines.Add(box.HasValue
-                ? $"鲸鱼框按帧表算得 {box.Value:0.#}px（静态形象是 {StaticWhaleBoxHeight:0}px）"
-                : "帧表都没写 characterHeight，鲸鱼框保持静态尺寸");
+                ? $"动作素材要的显示框 {box.Value.Width:0.#}×{box.Value.Height:0.#}（原版静态形象是 " +
+                  $"{StaticWhaleBoxHeight:0.#}×{StaticWhaleBoxHeight:0.#}）"
+                : "帧表都没写 characterHeight，显示框保持静态尺寸");
 
             lines.Add(BaseImagePath != null
                 ? $"静态本体：{Path.GetFileName(BaseImagePath)}（与精灵图同画布）"

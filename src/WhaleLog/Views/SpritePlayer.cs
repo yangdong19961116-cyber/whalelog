@@ -350,6 +350,7 @@ public sealed class SpritePlayer : IDisposable
                     entry.MediaPath,
                     entry.Sheet.Filter,
                     entry.Sheet.FrameWidth,
+                    entry.Sheet.FrameHeight,
                     entry.Sheet.Loop);
             }
             catch (Exception ex)
@@ -404,6 +405,7 @@ public sealed class SpritePlayer : IDisposable
                 entry.MediaPath,
                 entry.Sheet.Filter,
                 entry.Sheet.FrameWidth,
+                entry.Sheet.FrameHeight,
                 entry.Sheet.Loop);
 
             _warm = entry;
@@ -526,14 +528,18 @@ public sealed class SpritePlayer : IDisposable
 
     private void PresentVideoFrame(VideoPlay video, byte[] pixels)
     {
-        int side = video.Entry.Sheet.FrameWidth;
+        // 宽高各取各的：画布不再假定是方的（dsh 那套是 640×360）。
+        // 用一个 side 算行距的话，640 宽的帧会被按 640 步长读成 360 步长 ——
+        // 画面会斜着撕开，而字节数一个不差、不报任何错。
+        int w = video.Entry.Sheet.FrameWidth;
+        int h = video.Entry.Sheet.FrameHeight;
 
-        // 复用同一张位图：每帧新建一张 576 KB 的会把 GC 压垮（24fps = 每秒 13 MB 垃圾）
+        // 复用同一张位图：每帧新建一张的会把 GC 压垮（640×360 一帧 900 KB，24fps = 每秒 21 MB 垃圾）
         // ⚠️ Bgra32 的内存序是 B,G,R,A，所以解码器必须吐 bgra
         //    （VideoFrameStream.PixelFormat）。这两处是一对，改一边就必须改另一边 ——
         //    对不上时的表现是红蓝互换、不报任何错。
-        video.Bitmap ??= new WriteableBitmap(side, side, 96, 96, PixelFormats.Bgra32, null);
-        video.Bitmap.WritePixels(new System.Windows.Int32Rect(0, 0, side, side), pixels, side * 4, 0);
+        video.Bitmap ??= new WriteableBitmap(w, h, 96, 96, PixelFormats.Bgra32, null);
+        video.Bitmap.WritePixels(new System.Windows.Int32Rect(0, 0, w, h), pixels, w * 4, 0);
 
         if (!ReferenceEquals(_target.Source, video.Bitmap)) _target.Source = video.Bitmap;
     }

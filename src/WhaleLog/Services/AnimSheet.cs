@@ -297,7 +297,7 @@ public sealed class AnimSheet
     public (int Width, int Height) ExpectedSheetSize => (FrameWidth * Cols, FrameHeight * Rows);
 
     /// <summary>
-    /// 这块画布在界面上该显示成多高（设计像素）。
+    /// 这块画布在界面上该显示成多大（设计像素）—— **宽和高各算各的**。
     ///
     /// 换素材最容易出的问题就是"换成精灵图之后鲸鱼变小了/被裁了"：
     /// 静态形象是 168px 的框显示 610 画布（角色占 600），
@@ -305,17 +305,30 @@ public sealed class AnimSheet
     /// 凭空小了 15%。
     ///
     /// 所以框必须跟着画布一起放大：
-    ///     框高 = 角色的设计屏幕高度 × 帧高 ÷ 角色像素高
-    /// 对样例（帧高 720、角色 600、设计高度 165）正好是 198，
+    ///     框 = 角色的设计屏幕高度 × 帧尺寸 ÷ 角色像素高
+    /// 对样例（720×720 帧、角色 600、设计高度 165）正好是 198×198，
     /// 屏幕上角色还是 165px，和静态形象严丝合缝。
     ///
+    /// ## 为什么宽度也要算（2026-09-21）
+    ///
+    /// 原来只有高度、宽度靠 Image 的等比缩放从高度推出来 —— 那等于**假定画布是正方形**。
+    /// dsh 那套视频素材的原画布是 16:9（640×360），角色只占宽度的 42%，
+    /// 硬塞进正方形画布就必须先 `crop` 成方的，于是**道具和特效被裁**
+    /// （实测 106 个动作里 25 个有内容被切，最狠的一个左右各切掉 120px）。
+    ///
+    /// 现在两轴都从帧表算：画布多宽，显示框就多宽，不再把非方形画布挤成方的。
     /// 帧表没写 characterHeight 时返回 null —— 由调用方决定退回哪种策略。
     /// </summary>
-    public double? DisplayBoxHeight(double designCharacterHeight)
+    public (double Width, double Height)? DisplayBox(double designCharacterHeight)
     {
         if (!HasCharacterHeight) return null;
-        return designCharacterHeight * FrameHeight / CharacterHeight;
+        return (designCharacterHeight * FrameWidth / CharacterHeight,
+                designCharacterHeight * FrameHeight / CharacterHeight);
     }
+
+    /// <summary>只要高度时的便捷入口（诊断报告、老断言用）。</summary>
+    public double? DisplayBoxHeight(double designCharacterHeight)
+        => DisplayBox(designCharacterHeight)?.Height;
 
     // ==================================================================
     // 视频滤镜的校验

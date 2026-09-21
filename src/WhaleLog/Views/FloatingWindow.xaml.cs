@@ -23,22 +23,25 @@ public partial class FloatingWindow : Window
 {
     private enum Edge { None, Left, Right, Top, Bottom }
 
-    private const double ExpandedWidth = 236;
-    private const double ExpandedHeight = 296;
+    /// <summary>
+    /// 展开态的**基准**窗口尺寸（设计像素）。真正的尺寸由
+    /// <see cref="CharacterGeometry.LayoutFor"/> 按当前形象算 —— 原版正好落在这两个数上，
+    /// 别的形象（比如 dsh 那套 16:9 画布）该宽就宽、该高就高。
+    /// XAML 里 Width/Height 也写的这两个数，只用于设计器预览。
+    /// </summary>
+    private const double ExpandedWidth = CharacterGeometry.ExpandedWidth;
+    private const double ExpandedHeight = CharacterGeometry.ExpandedHeight;
     private const double CollapsedSize = 60;
     private const double SnapThreshold = 40;
 
-    /// <summary>静态形象时鲸鱼图的高度（设计像素）。XAML 里 WhaleImage 的 Height 也是这个数。</summary>
-    private const double StaticWhaleHeight = AnimLibrary.StaticWhaleBoxHeight;
-
     /// <summary>
-    /// 鲸鱼框高度的允许区间。
+    /// 形象显示框的允许区间。
     ///
-    /// 正常情况下它由帧表算出来（样例是 198），这里只是兜住手写坏的帧表：
-    /// 太小看不清，太大能把窗口撑成一块占半个屏幕的空白。
+    /// 正常情况下它由形象包的几何算出来（原版 167.75、dsh 391×220、精灵图样例 198），
+    /// 这里只是兜住手写坏的几何/帧表：太小看不清，太大能把窗口撑成一块占半个屏幕的空白。
     /// </summary>
-    private const double MinWhaleHeight = 120;
-    private const double MaxWhaleHeight = 280;
+    private const double MinWhaleBox = 120;
+    private const double MaxWhaleBox = 512;
 
     private readonly DispatcherTimer _collapseTimer;
 
@@ -97,10 +100,20 @@ public partial class FloatingWindow : Window
     private static readonly Random BlinkRng = new();
 
     /// <summary>
-    /// 当前鲸鱼图的高度（设计像素）。动态素材的画布比静态的大，
-    /// 这个值要跟着变大，否则角色会凭空缩小 —— 见 AnimSheet.DisplayBoxHeight。
+    /// 当前形象包的画布几何。显示框、窗口尺寸都由它算 —— 见 <see cref="CharacterGeometry"/>。
+    /// **每个形象包各有一份**，这是"两套模板不要统一高度"的落点。
     /// </summary>
-    private double _whaleHeight = StaticWhaleHeight;
+    private CharacterGeometry _geometry = CharacterGeometry.Default;
+
+    /// <summary>
+    /// 当前形象的显示框（设计像素），宽高各算各的。
+    ///
+    /// 动态素材的画布比静态的大，这个框要跟着变大，否则角色会凭空缩小；
+    /// 而宽和高必须分开算 —— 16:9 的画布塞进方形框就得先裁，道具会被切掉。
+    /// 见 <see cref="CharacterGeometry.DisplayBox"/>。
+    /// </summary>
+    private (double W, double H) _whaleBox =
+        (CharacterGeometry.ClassicBoxSide, CharacterGeometry.ClassicBoxSide);
 
     /// <summary>此刻是否启用了动态素材。</summary>
     private bool _animationsOn;
@@ -136,12 +149,22 @@ public partial class FloatingWindow : Window
         => _hovering && _hoverImage != null ? _hoverImage : _stillImage;
 
     /// <summary>
-    /// 展开态的设计高度。
+    /// 展开态的设计尺寸。
     ///
-    /// 鲸鱼框高一点，窗口就高一点 —— 两者必须出自同一个量。只把图放大而不动窗口，
+    /// 显示框大一点，窗口就大一点 —— 两者必须出自同一个量。只把图放大而不动窗口，
     /// 多出来的部分会顶掉气泡的位置；只把窗口放大而不动图，鲸鱼下方会多一条空白。
+    ///
+    /// 原版（静态 167.75）算出来正好是 236×296，和改动前一个像素不差；
+    /// dsh（框 391.1×220）算出来是 391.1×348.25 —— 画布宽，窗口就宽。
     /// </summary>
-    private double ExpandedDesignHeight => ExpandedHeight + (_whaleHeight - StaticWhaleHeight);
+    private (double W, double H) ExpandedDesignSize
+        => CharacterGeometry.LayoutFor(_whaleBox.W, _whaleBox.H);
+
+    /// <summary>展开态的设计高度。</summary>
+    private double ExpandedDesignHeight => ExpandedDesignSize.H;
+
+    /// <summary>展开态的设计宽度。</summary>
+    private double ExpandedDesignWidth => ExpandedDesignSize.W;
 
     // 按下时的屏幕坐标与窗口位置，用来判断这次到底是"拖拽"还是"点击"。
     // 都是屏幕坐标 / 绝对位置，不含任何随窗口移动而变的量。
@@ -318,7 +341,7 @@ public partial class FloatingWindow : Window
             ? Math.Clamp(scaleOverride ?? s.FloatingScale, 0.8, 1.2)
             : Math.Clamp(scaleOverride ?? s.FloatingScale, AppSettings.MinFloatingScale, AppSettings.MaxFloatingScale);
 
-        double designW = collapsed ? CollapsedSize : ExpandedWidth;
+        double designW = collapsed ? CollapsedSize : ExpandedDesignWidth;
         double designH = collapsed ? CollapsedSize : ExpandedDesignHeight;
 
         double w = Math.Round(designW * factor);
@@ -986,6 +1009,9 @@ public partial class FloatingWindow : Window
         _characterId = CharacterPacks.Resolve(_characterSettingApplied);
         _characterRoot = CharacterPacks.DirOf(_characterId);
 
+        // 形象包自己的画布几何。**必须在算显示框之前读** —— 它就是"这套模板该显示多大"的答案。
+        _geometry = CharacterGeometry.Resolve(_characterRoot);
+
         try
         {
             _blinkTimer?.Stop();
@@ -1012,19 +1038,14 @@ public partial class FloatingWindow : Window
 
             _animationsOn = wanted && _anim.HasAny;
 
-            if (!_animationsOn)
-            {
-                _whaleHeight = StaticWhaleHeight;
-            }
-            else
-            {
-                // 画布比静态的大之后，框还留 168 的话角色会凭空缩小。
-                // 帧表没写 characterHeight 时算不出来，就老实保持静态尺寸。
-                var box = _anim.DisplayBoxHeight(AnimLibrary.FloatingCharacterDesignHeight);
-                _whaleHeight = box.HasValue
-                    ? Math.Clamp(box.Value, MinWhaleHeight, MaxWhaleHeight)
-                    : StaticWhaleHeight;
+            // 显示框：静止用形象包声明的几何，动起来再和动作素材要的框取大者。
+            // 两者出自同一套换算（角色 165px 高），所以"静止 ↔ 播放"不会跳大小 ——
+            // 2026-09-20 之前是"静态用写死的 168、动画用帧表算的 234.7"，
+            // dsh 每播一次动作就放大一倍再缩回去。
+            RecomputeWhaleBox();
 
+            if (_animationsOn)
+            {
                 _player = new SpritePlayer(WhaleImage) { BaseImage = resting };
 
                 foreach (var action in _anim.ActionNames)
@@ -1043,7 +1064,7 @@ public partial class FloatingWindow : Window
                 _dragActions = _anim.ActionsWithRole(AnimActions.Drag);
             }
 
-            WhaleImage.Height = _whaleHeight;
+            ApplyWhaleBox();
 
             // 只有位置已经摆过才能重排尺寸 —— 首次 Loaded 时 Left/Top 还是 NaN，
             // 这时候走 ResizeAnchored 会把窗口摆到 NaN 上去。
@@ -1058,11 +1079,52 @@ public partial class FloatingWindow : Window
             CrashLog.Note($"[动画] 初始化失败，退回静态形象：{ex}");
 
             _animationsOn = false;
-            _whaleHeight = StaticWhaleHeight;
-            WhaleImage.Height = _whaleHeight;
+            RecomputeWhaleBox();
+            ApplyWhaleBox();
             DetachPlayer();
             ResetRoleLists();
         }
+    }
+
+    /// <summary>
+    /// 重算显示框。**两套形象各算各的**（"不要统一高度"就落在这儿）：
+    ///
+    ///     框 = 形象包声明的几何 ⊕ 动作素材帧表要的框   （逐轴取大者）
+    ///
+    /// 取大者而不是"用后一个"：静止时看的是形象包几何，动起来看的是帧表，
+    /// 谁大用谁 —— 按小的那个算，大的那个就会在播放时被裁。
+    ///
+    /// 帧表没写 characterHeight 时它算不出框，此时就老实按形象包几何显示
+    /// （老行为是"退回静态尺寸"，那会把 dsh 那套挤回 168，正是故障本身）。
+    /// </summary>
+    private void RecomputeWhaleBox()
+    {
+        var (w, h) = _geometry.IsValid
+            ? _geometry.DisplayBox()
+            : CharacterGeometry.Classic.DisplayBox();
+
+        if (_animationsOn && _anim != null)
+        {
+            var wanted = _anim.DisplayBox(CharacterGeometry.DesignCharacterHeight);
+            if (wanted.HasValue)
+            {
+                w = Math.Max(w, wanted.Value.Width);
+                h = Math.Max(h, wanted.Value.Height);
+            }
+        }
+
+        _whaleBox = (Math.Clamp(w, MinWhaleBox, MaxWhaleBox),
+                     Math.Clamp(h, MinWhaleBox, MaxWhaleBox));
+    }
+
+    /// <summary>把显示框贴到鲸鱼图上。</summary>
+    private void ApplyWhaleBox()
+    {
+        // 只设高度：宽度由 WPF 按图片自身的比例算（Stretch=Uniform），
+        // 而画布比例就是框的比例，所以算出来正好等于框宽 —— 视频和静态图都一样。
+        // 设死宽度反而会出事：两者比例一旦对不上就会被 Uniform 加上黑边。
+        WhaleImage.Height = _whaleBox.H;
+        WhaleImage.Width = double.NaN;
     }
 
     private void ResetRoleLists()
@@ -1298,8 +1360,9 @@ public partial class FloatingWindow : Window
             if (_anim == null) return "（动态素材尚未扫描）";
 
             var head = _animationsOn
-                ? $"已启用：形象「{CharacterPacks.TitleOf(_characterId)}」，鲸鱼框 {_whaleHeight:0.#}px，" +
-                  $"窗口设计高 {ExpandedDesignHeight:0.#}px，登记动作 {_player?.RegisteredCount ?? 0} 个" +
+                ? $"已启用：形象「{CharacterPacks.TitleOf(_characterId)}」，显示框 {_whaleBox.W:0.#}×{_whaleBox.H:0.#}，" +
+                  $"窗口设计 {ExpandedDesignWidth:0.#}×{ExpandedDesignHeight:0.#}，" +
+                  $"登记动作 {_player?.RegisteredCount ?? 0} 个" +
                   (_player is { VideoCount: > 0 } ? $"（其中透明视频 {_player.VideoCount} 个）" : "")
                 : $"未启用（开关={App.Settings.Settings.FloatingAnimations}，" +
                   $"扫到动作 {_anim.ActionNames.Count} 个）";
@@ -1308,7 +1371,12 @@ public partial class FloatingWindow : Window
                         $"闲置小动作 {_ambientActions.Count}、拖拽 {_dragActions.Count}" +
                         (_loopingIdle != null ? $"，当前待机 = {_loopingIdle}" : "");
 
-            return head + Environment.NewLine + roles + Environment.NewLine + _anim.Describe();
+            // 几何单独列一行：用户在报"形象被裁了/大小不对"时，第一个要看的就是它 ——
+            // 框是从哪个画布算出来的、算出来多大，一眼能对上。
+            var geo = $"形象几何：{_geometry.Describe()}";
+
+            return head + Environment.NewLine + geo + Environment.NewLine + roles +
+                   Environment.NewLine + _anim.Describe();
         }
     }
 
@@ -1318,8 +1386,14 @@ public partial class FloatingWindow : Window
     /// <summary>自检用：此刻是否启用了动态素材。</summary>
     public bool AnimationsOn => _animationsOn;
 
-    /// <summary>自检用：鲸鱼框的当前高度（设计像素）。</summary>
-    public double WhaleHeight => _whaleHeight;
+    /// <summary>自检用：显示框的当前高度（设计像素）。</summary>
+    public double WhaleHeight => _whaleBox.H;
+
+    /// <summary>自检用：显示框的当前宽度（设计像素）。16:9 的素材靠它才能验"没被挤成方的"。</summary>
+    public double WhaleWidth => _whaleBox.W;
+
+    /// <summary>自检用：当前形象包的画布几何。</summary>
+    public CharacterGeometry Geometry => _geometry;
 
     // ---- 形象包 ----
 

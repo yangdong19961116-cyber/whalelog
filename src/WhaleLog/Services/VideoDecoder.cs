@@ -60,6 +60,16 @@ namespace WhaleLog.Services;
 /// 这样字节序和 WPF 天然对齐，C# 侧一个像素都不用动。
 /// 自检里的「透明通道」那节会在纯红素材上断言红值确实落在 R 通道，防止再被改回去。
 ///
+/// ⚠️ 画布不再是"方的"（2026-09-21）
+/// --------------------------------
+/// 早期只有原版那套 610×610 素材，于是帧缓冲、行距、位图全按**单边**算。
+/// dsh 的视频原画布是 640×360（16:9），为了塞进方形格子只能 `crop` 成 384×384 ——
+/// 逐帧量过：106 个动作里 25 个有内容被切（蝴蝶/烟花/气球这类带道具的最狠，
+/// 左右各切掉 120px）。用户看到的就是"新形象显示被裁掉"。
+///
+/// 现在宽高分开算（<see cref="FrameWidth"/> / <see cref="FrameHeight"/>），
+/// 源多大画布就多大，不再有"为了变方而裁"这一步。
+///
 /// 线程模型
 /// --------
 ///   · 读帧线程：从 ffmpeg 的 stdout 读满一帧 → 放进 ready 队列；
@@ -116,8 +126,21 @@ public sealed class VideoFrameStream : IDisposable
     private string _error = "";
     private readonly StringBuilder _stderrTail = new();
 
-    /// <summary>格子边长（解码后的方形边长）。</summary>
-    public int CellSide { get; }
+    /// <summary>画布宽（解码后一帧的像素宽）。</summary>
+    public int FrameWidth { get; }
+
+    /// <summary>画布高（解码后一帧的像素高）。</summary>
+    public int FrameHeight { get; }
+
+    /// <summary>
+    /// 画布是方的（宽=高）。
+    ///
+    /// 留着它是因为"方的"曾经是硬假设：早期只有原版那一套 610×610 的素材，
+    /// 帧缓冲、行距、位图全按单边算。dsh 那套视频的原画布是 16:9，
+    /// 当年为了塞进方形格子只能 crop 成方的 —— 代价是道具被裁（见类头）。
+    /// 现在两轴分开算了，这个属性只用于诊断报告里说一句"这是方形画布"。
+    /// </summary>
+    public bool IsSquare => FrameWidth == FrameHeight;
 
     /// <summary>素材是 VP9（webm）—— 也就是"透明藏在附加数据里、必须点名 libvpx"的那一类。</summary>
     public bool IsVp9Source { get; }
@@ -185,25 +208,35 @@ public sealed class VideoFrameStream : IDisposable
     /// </summary>
     /// <param name="ffmpegExe">ffmpeg 完整路径。</param>
     /// <param name="videoPath">透明 webm 的完整路径。</param>
-    /// <param name="filter">把源画布裁进格子的滤镜串（来自帧表，已校验过）。</param>
-    /// <param name="cellSide">格子边长，必须和滤镜的输出尺寸一致。</param>
+    /// <param name="filter">把源画布裁进画布的滤镜串（来自帧表，已校验过）。留空表示原样用源分辨率。</param>
+    /// <param name="frameWidth">画布宽，必须和滤镜的输出尺寸一致。</param>
+    /// <param name="frameHeight">画布高，必须和滤镜的输出尺寸一致。</param>
     /// <param name="loop">true 时用 -stream_loop -1 让输入无缝循环（待机、拖拽这类要一直播的）。</param>
     /// <param name="bufferCount">环形缓冲槽数。</param>
     public VideoFrameStream(
-        string ffmpegExe, string videoPath, string filter, int cellSide, bool loop,
+        string ffmpegExe, string videoPath, string filter,
+        int frameWidth, int frameHeight, bool loop,
         int bufferCount = DefaultBufferCount)
     {
         if (string.IsNullOrWhiteSpace(ffmpegExe)) throw new ArgumentException("ffmpeg 路径为空", nameof(ffmpegExe));
         if (string.IsNullOrWhiteSpace(videoPath)) throw new ArgumentException("视频路径为空", nameof(videoPath));
-        if (cellSide < MinCellSide || cellSide > MaxCellSide)
-            throw new ArgumentOutOfRangeException(nameof(cellSide), $"格子边长 {cellSide} 超出 {MinCellSide}–{MaxCellSide}");
+
+        // 两轴各自校验。以前只校验单边（因为只支持方形），
+        // 现在 16:9 的画布也走得通，宽高就得分别看。
+        if (frameWidth < MinCellSide || frameWidth > MaxCellSide)
+            throw new ArgumentOutOfRangeException(nameof(frameWidth),
+                $"画布宽 {frameWidth} 超出 {MinCellSide}–{MaxCellSide}");
+        if (frameHeight < MinCellSide || frameHeight > MaxCellSide)
+            throw new ArgumentOutOfRangeException(nameof(frameHeight),
+                $"画布高 {frameHeight} 超出 {MinCellSide}–{MaxCellSide}");
 
         if (!File.Exists(ffmpegExe)) throw new FileNotFoundException("找不到 ffmpeg", ffmpegExe);
         if (!File.Exists(videoPath)) throw new FileNotFoundException("找不到视频素材", videoPath);
 
         BufferCount = Math.Clamp(bufferCount, 2, 32);
-        CellSide = cellSide;
-        FrameBytes = cellSide * cellSide * 4;
+        FrameWidth = frameWidth;
+        FrameHeight = frameHeight;
+        FrameBytes = frameWidth * frameHeight * 4;
         VideoPath = videoPath;
 
         // 透明 webm 的 alpha 得点名要 libvpx 才给（原因见类头注释）
@@ -428,7 +461,7 @@ public sealed class VideoFrameStream : IDisposable
                   : "⚠ 透明丢了（这台 ffmpeg 没有 libvpx-vp9 解码器）";
 
         var text = $"{Path.GetFileName(Path.GetDirectoryName(VideoPath))}：" +
-                   $"格子 {CellSide}×{CellSide}、每帧 {FrameBytes / 1024.0:0.#} KB、{alpha}、{state}";
+                   $"画布 {FrameWidth}×{FrameHeight}、每帧 {FrameBytes / 1024.0:0.#} KB、{alpha}、{state}";
 
         var err = Error;
         if (err.Length > 0) text += Environment.NewLine + "      " + err.Replace("\n", "\n      ");
