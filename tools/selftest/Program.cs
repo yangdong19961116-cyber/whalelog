@@ -683,8 +683,8 @@ internal static class Program
         Check(!unchangedOnly.Contains("新增"), $"只读的状态不该冒出「新增」：实际「{unchangedOnly}」");
 
         // ---- "真收下了几个" ----
-        // 悬浮窗靠这个数决定"要不要演一段庆祝"（见 FloatingWindow.CelebrateArchived）。
-        // 数错的表现是"拖一份重复文件它也蹦起来庆祝"—— 用户会以为程序没在干活。
+        // 悬浮窗靠这个数决定"要不要演清点归档"（见 FloatingWindow.PlayArchiveCheck）。
+        // 数错的表现是"拖一份重复文件它也蹦起来演"—— 用户会以为程序没在干活。
         CheckEq(FileIntakeService.AcceptedCount(mixed).ToString(), "3",
             "真收下的 = 新增 + 新版本（重复和失败不算）");
 
@@ -1145,8 +1145,15 @@ internal static class Program
         CheckEq(AnimActions.RoleOf("move-左转奔跑"), AnimActions.Move, "move-* → 滑动");
         CheckEq(AnimActions.RoleOf("turn-东张西望"), AnimActions.Turn, "turn-* → 转向");
         CheckEq(AnimActions.RoleOf("blink"), AnimActions.Blink, "blink 单独一个目录也是角色");
-        CheckEq(AnimActions.RoleOf("celebrate-1-清点归档"), AnimActions.Celebrate,
-            "celebrate-* → 成套的归档表演（前缀决定角色，序号在名字里）");
+        CheckEq(AnimActions.RoleOf("archive-清点归档"), AnimActions.Archive,
+            "archive-* → 归档成功后的清点");
+        CheckEq(AnimActions.RoleOf("cheer-雀跃庆祝"), AnimActions.Cheer,
+            "cheer-* → 完工庆祝（下班 / 今天最后一条收尾）");
+        // 老素材的前缀：这两个动画以前是连播成一套的（celebrate-1-清点 → celebrate-2-庆祝），
+        // 拆成两个角色之后，旧前缀归到语义最接近的 cheer —— 不认的话它们会掉成
+        // "认不出角色"，界面上再也演不出来，而且不报任何错。
+        CheckEq(AnimActions.RoleOf("celebrate-2-雀跃庆祝"), AnimActions.Cheer,
+            "旧的 celebrate-* 前缀仍归到完工庆祝（不能掉成认不出）");
         CheckEq(AnimActions.RoleOf("随手动"), "", "认不出角色 → 空串（用户自制动作不会被主动播）");
 
         // 这一条是那次踩过的坑：目录名 idle 归一化之后动作键变成 blink，
@@ -1158,10 +1165,9 @@ internal static class Program
             "待机与拖拽是一直循环的角色");
         Check(!AnimActions.IsLoopingRole(AnimActions.Click) && !AnimActions.IsLoopingRole(AnimActions.Ambient),
             "点击与闲置小动作是一次性的（播完要回到待机）");
-        // 表演更不能循环：循环就永远播不完，接力永远等不到 Finished，
-        // 表现是"只演第一段、后面几段永远不出现"。
-        Check(!AnimActions.IsLoopingRole(AnimActions.Celebrate),
-            "归档表演是一次性的（循环的话接力永远等不到「播完了」）");
+        // 归档和完工这两个都不能循环：循环就永远播不完，表现是"蹦起来之后再也不回待机"。
+        Check(!AnimActions.IsLoopingRole(AnimActions.Archive) && !AnimActions.IsLoopingRole(AnimActions.Cheer),
+            "清点归档和完工庆祝都是一次性的（循环的话永远回不到待机）");
 
         // ------------------------------------------------------------------
         Section("动态素材：目录扫描");
@@ -1229,21 +1235,28 @@ internal static class Program
         Check(!lib.IsEmpty && lib.Find(AnimActions.Alert) == null,
             "没放的 alert 动作就是没有（不会凭空多出来）");
 
-        // ---- 成套动作的顺序 ----
-        // 归档表演（celebrate）靠目录名定序：先清点、再庆祝。写反了界面上只是
-        // "看着别扭"，一个字都不会报错 —— 所以在这里钉住。
-        // 刻意先放 2- 再放 1-：顺序必须由名字决定，不能靠"谁先被扫到"。
-        AddAction(animDir, $"{AnimActions.Celebrate}-2-雀跃庆祝", SampleSheetJson, withSheetPng: true);
-        AddAction(animDir, $"{AnimActions.Celebrate}-1-清点归档", SampleSheetJson, withSheetPng: true);
+        // ---- 两个"演一段"的角色要各归各的 ----
+        // 归档 → archive（清点归档）、完工 → cheer（雀跃庆祝）。这两个以前是连播的一套
+        // （celebrate-1- / celebrate-2-），拆开之后最容易犯的错是**串了**：
+        // 归档完跳起来庆祝、下班时低头清点 —— 界面上只是"看着别扭"，一个字都不报。
+        AddAction(animDir, $"{AnimActions.Archive}-清点归档", SampleSheetJson, withSheetPng: true);
+        AddAction(animDir, $"{AnimActions.Archive}-再点一遍", SampleSheetJson, withSheetPng: true);
+        AddAction(animDir, $"{AnimActions.Cheer}-雀跃庆祝", SampleSheetJson, withSheetPng: true);
 
         var ordered = AnimLibrary.Scan(assetDir);
 
-        CheckEq(string.Join(" → ", ordered.ActionsWithRole(AnimActions.Celebrate)),
-            $"{AnimActions.Celebrate}-1-清点归档 → {AnimActions.Celebrate}-2-雀跃庆祝",
-            "成套动作按目录名定序（1- 在前，与放进去的先后无关）");
+        CheckEq(ordered.ActionsWithRole(AnimActions.Archive).Count.ToString(), "2",
+            "同角色的多个清点动作都归到一组（界面据此随机挑一个）");
+        CheckEq(string.Join("、", ordered.ActionsWithRole(AnimActions.Cheer)),
+            $"{AnimActions.Cheer}-雀跃庆祝", "完工角色里只有庆祝，没有把清点捎带进来");
+        Check(!ordered.ActionsWithRole(AnimActions.Archive).Contains($"{AnimActions.Cheer}-雀跃庆祝") &&
+              !ordered.ActionsWithRole(AnimActions.Cheer).Contains($"{AnimActions.Archive}-清点归档"),
+            "两个角色互不重叠（串了就会归档时庆祝、下班时清点）");
         CheckEq(ordered.ActionsWithRole(AnimActions.Ambient).Count.ToString(), "0",
-            "成套动作不会被算成普通闲置小动作（否则平时也会随机蹦出来演半套）");
-        CheckEq(ordered.RoleOf($"{AnimActions.Celebrate}-1-清点归档"), AnimActions.Celebrate,
+            "这两个角色不会被算成普通闲置小动作（否则平时也会随机蹦出来演）");
+        CheckEq(ordered.RoleOf($"{AnimActions.Archive}-清点归档"), AnimActions.Archive,
+            "角色从目录名认出来了");
+        CheckEq(ordered.RoleOf($"{AnimActions.Cheer}-雀跃庆祝"), AnimActions.Cheer,
             "角色从目录名认出来了");
     }
 

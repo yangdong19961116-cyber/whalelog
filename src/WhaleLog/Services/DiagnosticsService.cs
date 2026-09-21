@@ -433,12 +433,13 @@ public static class DiagnosticsService
         Section("状态条的数字角标");
         ProbeFloatingBadges(Check, sb);
 
-        // 上面那节验的是"文件进没进归档"，这节验的是"归档之后小鲸鱼怎么回应"：
-        // 演一段「清点归档 → 雀跃庆祝」。失效方式全是安静的 —— 前缀写错 = 一套素材
-        // 被当成普通闲置动作、顺序搞反 = 先庆祝再清点、中断判断漏了 = 用户点了它一下
-        // 之后突然接演后半截。三种都只是"看着别扭"，日志里一个字都没有。
-        Section("归档后的互动（归档表演）");
-        ProbeArchiveCelebration(Check, sb);
+        // 上面那节验的是"文件进没进归档"，这节验的是"归档之后、以及一天干完之后
+        // 小鲸鱼怎么回应"：归档 → 清点归档（角色 archive），到点下班 / 今天最后一条
+        // 收尾 → 雀跃庆祝（角色 cheer）。失效方式全是安静的 —— 前缀写错 = 素材被当成
+        // 普通闲置动作、两个角色串了 = 归档完跳起来庆祝、完工判定漏了基准判断 =
+        // 启动瞬间或半夜零点蹦一下。三种都只是"看着别扭"，日志里一个字都没有。
+        Section("归档与完工的互动");
+        ProbeArchiveAndCheer(Check, sb);
 
         // ---- 透明视频 ----
         // 这条链路跨进程（ffmpeg 是外部程序），断了的表现是"点下去什么都不发生"。
@@ -1992,13 +1993,14 @@ public static class DiagnosticsService
             check("结果被报成了人话（含日期口径 + 数量）",
                 summary.Contains("已记入今天") && summary.Contains("新增"), $"「{summary}」");
 
-            // 归档成功后小鲸鱼要演一段「清点归档 → 雀跃庆祝」（见 AnimActions.Celebrate）。
+            // 归档成功后小鲸鱼要演一段"清点归档"（见 AnimActions.Archive）。
             // 形象包里没有这个角色时（原版那套就没有）"不演"才是对的 ——
-            // 所以先看这个包里有没有表演段落，有就必须已经起演了第 1 段。
-            // 素材齐全时的完整接力由【归档后的互动】那节用最小素材验。
-            check("归档成功后演了归档表演（这个形象包有表演素材时）",
-                floating.CelebrateActionCount == 0 || floating.CurrentAnimation == floating.FirstCelebrateAction,
-                $"表演段落 {floating.CelebrateActionCount} 段，" +
+            // 所以先看这个包里有没有清点素材，有就必须已经在播它。
+            // 素材齐全时的完整判定（含"重复文件不演""完工才庆祝"）由【归档与完工的互动】
+            // 那节用最小素材验。
+            check("归档成功后演了清点归档（这个形象包有素材时）",
+                floating.ArchiveActionCount == 0 || floating.CurrentAnimation == floating.FirstArchiveAction,
+                $"清点归档素材 {floating.ArchiveActionCount} 个，" +
                 $"此刻在播 {floating.CurrentAnimation ?? "（无）"}");
 
             // ---- 另一半：关掉「自动打开主面板」之后，应该安静地收下 ----
@@ -2226,30 +2228,35 @@ public static class DiagnosticsService
     }
 
     /// <summary>
-    /// 归档表演：文件归档成功后演一段「清点归档 → 雀跃庆祝」。
+    /// 归档 → 演"清点归档"（角色 archive）；完工 → 演"雀跃庆祝"（角色 cheer）。
     ///
-    /// 这里是自己造一份**最小素材**（两个 celebrate 动作 + 一个点击动作）跑真实代码路径：
-    /// 扫描 → 按角色归类（顺序）→ 起演 → 接力 → 收尾 → 被打断不接力。
+    /// 这里自己造一份**最小素材**（archive + cheer + 一个点击动作）跑真实代码路径：
+    /// 扫描 → 按角色归类 → 归档后起演 → 重复文件不演 → 最后一条收尾起演 →
+    /// 跨零点／首刷／清空都不许演 → 空白天到点下班照演。
     /// 用精灵图而不是真视频，是因为要**确定性地推进时间轴**
     /// （<see cref="SpritePlayer.AdvanceBy"/>），不等显示器刷新率 —— 断言才不会时灵时不灵。
     ///
-    /// 为什么必须真的走一遍：这一套的四个失效方式没有一个是会报错的 ——
-    /// 前缀写错（素材被当成普通闲置动作）、顺序搞反、接力漏了（永远只演第一段）、
-    /// 中断判断漏了（用户点了它一下，等那次点击播完突然接演庆祝的后半截）。
+    /// 为什么必须真的走一遍：这些失效方式没有一个是会报错的 ——
+    /// 前缀写错（素材被当成普通闲置动作，归档和下班时都什么都不演）、
+    /// 两个角色串了（归档完跳起来庆祝、下班时低头清点）、
+    /// 完工判定漏了基准判断（启动瞬间蹦一下，或者半夜零点"换天"时未收尾从 3 掉到 0 又蹦一下）。
     /// </summary>
-    private static void ProbeArchiveCelebration(CheckFn check, StringBuilder sb)
+    private static void ProbeArchiveAndCheer(CheckFn check, StringBuilder sb)
     {
-        var probeRoot = Path.Combine(AppPaths.LogDir, "celebrate-probe");
+        var probeRoot = Path.Combine(AppPaths.LogDir, "archive-cheer-probe");
         var assetDir = Path.Combine(probeRoot, "Assets");
 
-        // 10fps × 2 帧 → 推 500ms 必定播完，而且两段的名字刻意按 1-/2- 排
+        // 10fps × 2 帧 → 推 500ms 必定播完
         const int frameSize = 720;
-        var first = AnimActions.Celebrate + "-1-探针清点";
-        var second = AnimActions.Celebrate + "-2-探针庆祝";
+        var archiveAction = AnimActions.Archive + "-探针清点";
+        var cheerAction = AnimActions.Cheer + "-探针庆祝";
 
         string? previousAssetDir = null;
         FloatingWindow? window = null;
         var settings = App.Settings.Settings;
+        var dayWasThere = App.Store.Book.FindDay(DateTime.Today) != null;
+        DayNote? day = null;
+        List<NoteEntry>? originalEntries = null;
 
         try
         {
@@ -2262,23 +2269,24 @@ public static class DiagnosticsService
             settings.FloatingLeft = Offscreen;
             settings.FloatingTop = Offscreen;
 
-            WriteProbeAnimation(assetDir, first, frameSize, 2, 2);
-            WriteProbeAnimation(assetDir, second, frameSize, 2, 2);
+            WriteProbeAnimation(assetDir, archiveAction, frameSize, 2, 2);
+            WriteProbeAnimation(assetDir, cheerAction, frameSize, 2, 2);
             WriteProbeAnimation(assetDir, AnimActions.Click, frameSize, 2, 2);
 
-            // ---- 扫描层：角色归类和顺序 ----
-            // 顺序就是这个角色唯一的约定（目录名即动作名，1- 在前、2- 在后）。
-            // 归错的话表现是"平时闲下来随机蹦出清点归档"，而归档成功时什么都不演。
+            // ---- 扫描层：两个角色各归各的 ----
+            // 归错的表现是"闲下来随机蹦出清点归档"，而归档和下班时什么都不演。
             var lib = AnimLibrary.Scan(assetDir);
-            var steps = lib.ActionsWithRole(AnimActions.Celebrate);
+            var archive = lib.ActionsWithRole(AnimActions.Archive);
+            var cheer = lib.ActionsWithRole(AnimActions.Cheer);
+            var ambient = lib.ActionsWithRole(AnimActions.Ambient);
 
-            check("成套动作被认成 celebrate 角色（不是普通闲置小动作）",
-                steps.Count == 2,
-                $"认到 {steps.Count} 段；闲置小动作 {lib.ActionsWithRole(AnimActions.Ambient).Count} 个");
+            check("清点归档被认成 archive 角色（不是普通闲置小动作）",
+                archive.Count == 1 && archive[0] == archiveAction,
+                $"认到 {archive.Count} 个；闲置小动作 {ambient.Count} 个");
 
-            check("成套动作按目录名定序（1- 清点 → 2- 庆祝）",
-                steps.Count == 2 && steps[0] == first && steps[1] == second,
-                steps.Count == 0 ? "一段都没扫到" : string.Join(" → ", steps));
+            check("雀跃庆祝被认成 cheer 角色（和清点归档是两个角色）",
+                cheer.Count == 1 && cheer[0] == cheerAction && !archive.Contains(cheerAction),
+                $"认到 {cheer.Count} 个：{string.Join("、", cheer)}");
 
             // ---- 界面层 ----
             Environment.SetEnvironmentVariable("WHALELOG_ASSET_DIR", assetDir);
@@ -2295,9 +2303,10 @@ public static class DiagnosticsService
             window.Show();
             window.UpdateLayout();
 
-            check("悬浮窗把这套素材记成了 2 段表演",
-                window.CelebrateActionCount == 2,
-                $"第一段={window.FirstCelebrateAction ?? "（无）"}，第二段={window.SecondCelebrateAction ?? "（无）"}");
+            check("悬浮窗把两个角色分开记下来了",
+                window.ArchiveActionCount == 1 && window.CheerActionCount == 1,
+                $"清点归档 {window.ArchiveActionCount} 个（{window.FirstArchiveAction ?? "（无）"}）、" +
+                $"完工庆祝 {window.CheerActionCount} 个（{window.FirstCheerAction ?? "（无）"}）");
 
             var player = window.AnimPlayer;
             if (player == null)
@@ -2306,53 +2315,136 @@ public static class DiagnosticsService
                 return;
             }
 
-            // ---- 起演 + 接力 ----
-            check("归档表演能演起来（起演的是第 1 段）",
-                window.PlayCelebrationForProbe() && window.CurrentAnimation == first,
+            // ---- 归档成功 → 演清点归档，且只有清点归档 ----
+            check("归档成功后演的是清点归档",
+                window.PlayArchiveCheckForProbe(accepted: 1) && window.CurrentAnimation == archiveAction,
                 $"在播={window.CurrentAnimation ?? "（无）"}");
-
-            check("起演时把后面的段落排进了队列",
-                window.CelebrationQueueCount == 1,
-                $"队列里还剩 {window.CelebrationQueueCount} 段");
 
             player.AdvanceBy(TimeSpan.FromMilliseconds(500));
 
-            check("第 1 段播完自动接上第 2 段（这才是「成套」）",
-                window.CurrentAnimation == second,
-                $"在播={window.CurrentAnimation ?? "（无）"}，队列里还剩 {window.CelebrationQueueCount} 段");
+            check("清点归档演完就收手，不会自己接上雀跃庆祝",
+                !window.IsAnimationPlaying && window.CurrentAnimation != cheerAction,
+                $"在播={window.CurrentAnimation ?? "（无）"}");
+
+            check("同一份文件再拖一次（没有新增）不演清点归档",
+                !window.PlayArchiveCheckForProbe(accepted: 0) && !window.IsAnimationPlaying,
+                $"在播={window.CurrentAnimation ?? "（无）"}");
+
+            // ---- 今天最后一条未收尾被标掉 → 演雀跃庆祝 ----
+            // 走真实的 RefreshStatus：造 2 条、其中 1 条没收尾，先刷一次量基准，
+            // 标掉最后那条后再刷 —— 这正是用户在主面板勾完那一瞬间发生的事。
+            day = App.Store.GetOrCreateDay(DateTime.Today);
+            originalEntries = day.Entries;
+            day.Entries = new List<NoteEntry>
+            {
+                new() { Text = "自检造的收尾记录", CreatedAt = DateTime.Today.AddHours(9), Done = true },
+                new() { Text = "自检造的未收尾记录", CreatedAt = DateTime.Today.AddHours(10), Done = false },
+            };
+
+            window.ResetWorkFinishedBaselineForProbe();
+            window.RefreshStatusForProbe();          // 量基准：还有 1 条没收尾
+
+            var baseline = window.WorkFinishedBaselineForProbe;
+            sb.AppendLine($"  造 2 条记录（1 条未收尾）→ 基准 = {baseline.Day}／未收尾 {baseline.Open}");
+
+            check("刷新时把「今天／未收尾」记成了基准（不然判断不了「刚做完」）",
+                baseline.Open == 1 && baseline.Day == DateTime.Today.ToString("yyyy-MM-dd"),
+                $"基准 = 未收尾 {baseline.Open}、日期「{baseline.Day}」");
+
+            check("还差一条没收尾时什么都不演",
+                !window.IsAnimationPlaying,
+                $"在播={window.CurrentAnimation ?? "（无）"}");
+
+            day.Entries[1].Done = true;
+            window.RefreshStatusForProbe();          // 最后一条收尾的那一刻
+
+            check("最后一条收尾的那一刻演雀跃庆祝",
+                window.CurrentAnimation == cheerAction,
+                $"在播={window.CurrentAnimation ?? "（无）"}");
+
+            player.AdvanceBy(TimeSpan.FromMilliseconds(500));
+            window.RefreshStatusForProbe();
+
+            check("再刷一次不会重复演（基准跟着数据走）",
+                !window.IsAnimationPlaying,
+                $"在播={window.CurrentAnimation ?? "（无）"}");
+
+            // ---- 完工判定不该误演的三种情况 ----
+            // 造得出假日期才验得了"跨零点"（真等跨零点没法测），所以直接喂判定。
+            // 三种都只是"小鲸鱼莫名蹦一下"，日志里一个字都没有。
+            window.ResetWorkFinishedBaselineForProbe();
+            window.NoteWorkFinishedForProbe(DateTime.Today.AddDays(-1), entries: 3, open: 3);
+
+            check("跨零点不演（昨天剩 3 条、今天 0 条 —— 那是日历翻页，不是你干完了）",
+                !window.NoteWorkFinishedForProbe(DateTime.Today, entries: 0, open: 0) &&
+                !window.IsAnimationPlaying,
+                $"在播={window.CurrentAnimation ?? "（无）"}");
+
+            window.ResetWorkFinishedBaselineForProbe();
+
+            check("启动后第一次刷新不演（开机时本来就 0 条未收尾，不该蹦）",
+                !window.NoteWorkFinishedForProbe(DateTime.Today, entries: 5, open: 0) &&
+                !window.IsAnimationPlaying,
+                $"在播={window.CurrentAnimation ?? "（无）"}");
+
+            window.ResetWorkFinishedBaselineForProbe();
+            window.NoteWorkFinishedForProbe(DateTime.Today, entries: 2, open: 2);
+
+            check("把记录全删了不算完工（不是「做完了」，是「删了」）",
+                !window.NoteWorkFinishedForProbe(DateTime.Today, entries: 0, open: 0) &&
+                !window.IsAnimationPlaying,
+                $"在播={window.CurrentAnimation ?? "（无）"}");
+
+            // ---- 空白天到点下班照演 ----
+            // 下班是"仪式感"，不是"今天干得不错"的评分，所以刻意不看当天的数据。
+            day.Entries.Clear();
+            window.RefreshStatusForProbe();
+
+            check("一条记录都没有时，到点下班照演雀跃庆祝",
+                window.PlayForReminderForProbe(ReminderKind.OffWork) &&
+                window.CurrentAnimation == cheerAction,
+                $"当天 {day.Entries.Count} 条记录，此刻在播 {window.CurrentAnimation ?? "（无）"}");
 
             player.AdvanceBy(TimeSpan.FromMilliseconds(500));
 
-            check("演完自己收尾（不会卡在最后一段或停在半途）",
-                !window.IsAnimationPlaying && window.CurrentAnimation == null,
+            check("雀跃庆祝演完就收手",
+                !window.IsAnimationPlaying,
                 $"在播={window.CurrentAnimation ?? "（无）"}");
 
-            // ---- 被打断就不再接力 ----
-            // 用户点了一下小鲸鱼：这次点击会**静默打断**表演（打断不抛 Finished），
-            // 于是"刚播完的那一段"和队列对不上 —— 表演必须就此作罢。
-            check("能重新演一遍（连着拖两批文件时从头再演）",
-                window.PlayCelebrationForProbe() && window.CurrentAnimation == first,
+            // ---- 别的提醒不该庆祝 ----
+            // 下班前那条是"催你交活儿"，过了点还在催是"你还有事没做完" ——
+            // 对着催办通知跳一段庆祝，是这套互动里最容易闹笑话的失效方式。
+            check("下班前提醒不庆祝（那是催活儿，不是庆祝）",
+                !window.PlayForReminderForProbe(ReminderKind.BeforeOffWork) &&
+                !window.IsAnimationPlaying,
                 $"在播={window.CurrentAnimation ?? "（无）"}");
 
-            bool clicked = window.PlayRoleOnce(AnimActions.Click);
-            check("点击把播放器抢了过去", clicked && window.CurrentAnimation != first,
+            check("过了点还在催也不庆祝",
+                !window.PlayForReminderForProbe(ReminderKind.OvertimeNudge) &&
+                !window.IsAnimationPlaying,
                 $"在播={window.CurrentAnimation ?? "（无）"}");
 
-            if (clicked) player.AdvanceBy(TimeSpan.FromMilliseconds(500));
-
-            check("被打断的表演就此作罢（不会在用户那次点击结束后突然接演第 2 段）",
-                window.CurrentAnimation != second && window.CelebrationQueueCount == 0,
-                $"在播={window.CurrentAnimation ?? "（无）"}，队列里还剩 {window.CelebrationQueueCount} 段");
-
-            sb.AppendLine($"  素材：2 段 celebrate + 1 个点击动作（{Path.GetFileName(assetDir)}）");
+            sb.AppendLine($"  素材：1 个 archive + 1 个 cheer + 1 个点击动作（{Path.GetFileName(assetDir)}）");
         }
         catch (Exception ex)
         {
-            check("归档后的互动（归档表演）", false, ex.Message);
+            check("归档与完工的互动", false, ex.Message);
             sb.AppendLine("      " + ex);
         }
         finally
         {
+            // 数据一定要还原：这份 store 是内存里的真身，探针留下的条目会被后面的
+            // 自检当成真数据看，还可能被下一次 Save 写进用户的书里。
+            try
+            {
+                if (day != null)
+                {
+                    day.Entries = originalEntries ?? new List<NoteEntry>();
+                    if (!dayWasThere) App.Store.Book.Days.Remove(day);
+                }
+            }
+            catch { /* 还原不了也只能继续 */ }
+
             try { window?.Close(); }
             catch { /* 关不掉不影响结论 */ }
 

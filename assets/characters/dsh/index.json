@@ -103,8 +103,8 @@
     "ambient-轻快记录",
     "ambient-骑木马",
     "ambient-鲸鱼吐泡泡特效",
-    "celebrate-1-清点归档",
-    "celebrate-2-雀跃庆祝",
+    "archive-清点归档",
+    "cheer-雀跃庆祝",
     "clickBounce-傲娇生气",
     "clickBounce-元气挥手",
     "clickBounce-害羞惊讶",
@@ -213,9 +213,11 @@
       "ambient-骑木马",
       "ambient-鲸鱼吐泡泡特效"
     ],
-    "celebrate": [
-      "celebrate-1-清点归档",
-      "celebrate-2-雀跃庆祝"
+    "archive": [
+      "archive-清点归档"
+    ],
+    "cheer": [
+      "cheer-雀跃庆祝"
     ],
     "clickBounce": [
       "clickBounce-傲娇生气",

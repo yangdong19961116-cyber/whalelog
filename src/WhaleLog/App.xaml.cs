@@ -337,6 +337,13 @@ public partial class App : Application
         try { _floatingWindow?.ShowBubble(e.Title, e.Message, e.Urgency); }
         catch { /* 悬浮窗可能已被关闭 */ }
 
+        // 到点下班是小鲸鱼会主动庆祝的两个时刻之一（另一个是"今天最后一条收尾"，
+        // 悬浮窗自己盯着状态刷新，见 FloatingWindow.NoteWorkFinished）。
+        // "哪几种提醒值得演一段"这条判断在悬浮窗里（FloatingWindow.PlayForReminder），
+        // 这里只负责把 Kind 递过去 —— 那个方法不带副作用，自检验得了。
+        try { _floatingWindow?.PlayForReminder(e.Kind); }
+        catch { /* 同上 */ }
+
         if (Settings.Settings.ReminderSoundEnabled)
         {
             try { System.Media.SystemSounds.Exclamation.Play(); }
