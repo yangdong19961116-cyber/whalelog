@@ -2087,7 +2087,12 @@ public static class DiagnosticsService
         var previousCharacter = settings.FloatingCharacter;
         var previousAnimations = settings.FloatingAnimations;
 
-        const int cell = 384;
+        // ⚠️ 画布刻意做成**矩形**（16:9），不是方形。
+        // 方形是 2026-09-21 之前的硬假设：帧缓冲、行距、位图全按单边算，
+        // 于是 16:9 的素材只能先 crop 成方的，道具被切成平口。
+        // 探针走矩形这一条，才测得到"宽高分开算"这段新代码。
+        const int cellW = 384;
+        const int cellH = 216;
         var probeActions = new[] { "clickBounce-探针点击跃动", "ambient-探针闲置小动作" };
 
         try
@@ -2109,12 +2114,13 @@ public static class DiagnosticsService
                 return;
             }
 
-            // 源素材只有 192×192，靠帧表里的滤镜放成 384 的格子 ——
-            // 顺便验证「运行时真的按帧表的滤镜解码」（滤镜写错/没生效时格子尺寸会不对）
+            // 源素材只有 192×192，靠帧表里的滤镜放成 384×216 的画布 ——
+            // 顺便验证「运行时真的按帧表的滤镜解码」（滤镜写错/没生效时画布尺寸会不对）
             foreach (var action in probeActions)
-                WriteProbeVideoAction(assetDir, action, clip, cell);
+                WriteProbeVideoAction(assetDir, action, clip, cellW, cellH);
 
-            WriteProbeSolid(Path.Combine(assetDir, "whale.png"), cell, cell, 0, 0, 255);
+            // 静态本体也得是同一块画布，否则静止↔播放会看到角色跳一下
+            WriteProbeSolid(Path.Combine(assetDir, "whale.png"), cellW, cellH, 0, 0, 255);
 
             Environment.SetEnvironmentVariable("WHALELOG_ASSET_DIR", assetDir);
 
@@ -2161,9 +2167,13 @@ public static class DiagnosticsService
             var whale = Descendants(window).OfType<Image>().FirstOrDefault(i => i.Name == "WhaleImage");
             var frameBitmap = whale?.Source as System.Windows.Media.Imaging.WriteableBitmap;
 
-            check("解出来的帧尺寸和帧表的格子一致（滤镜真按帧表生效了）",
-                frameBitmap != null && frameBitmap.PixelWidth == cell && frameBitmap.PixelHeight == cell,
-                frameBitmap == null ? "没拿到帧位图" : $"{frameBitmap.PixelWidth}×{frameBitmap.PixelHeight}，期望 {cell}×{cell}");
+            // 宽高分开断言：贴图那一侧最容易犯的错就是"行距按单边算"，
+            // 640 宽的帧被按 360 步长读 —— 画面斜着撕开，而字节数一个不差、不报任何错。
+            check("解出来的帧尺寸和帧表的画布一致（滤镜真按帧表生效了）",
+                frameBitmap != null && frameBitmap.PixelWidth == cellW && frameBitmap.PixelHeight == cellH,
+                frameBitmap == null
+                    ? "没拿到帧位图"
+                    : $"{frameBitmap.PixelWidth}×{frameBitmap.PixelHeight}，期望 {cellW}×{cellH}");
 
             // ---- 非循环动作播完要自己收手 ----
             var waited = window.PumpUntilStopped(20000);
@@ -2388,23 +2398,29 @@ public static class DiagnosticsService
     }
 
     /// <summary>造一个视频动作目录（帧表里用滤镜把源素材放成格子大小）。</summary>
-    private static void WriteProbeVideoAction(string assetDir, string action, string clipFile, int cell)
+    private static void WriteProbeVideoAction(string assetDir, string action, string clipFile,
+                                              int cellW, int cellH)
     {
         var dir = Path.Combine(assetDir, AnimLibrary.FolderName, action);
         Directory.CreateDirectory(dir);
 
         File.Copy(clipFile, Path.Combine(dir, "video.webm"), overwrite: true);
 
+        // 角色高按"占画布高的 600/720"给 —— 和规范画布同一个比例，
+        // 于是矩形画布算出来的**框高**和方形的样例一样是 198（框宽才是 352）。
+        // 高度断言因此不用改，而宽度那一条正好验"两轴各算各的"。
+        var charH = cellH * 600 / 720;
+
         File.WriteAllText(Path.Combine(dir, "anim.json"), $$"""
         {
           "name": "{{action}}", "version": 1, "type": "video",
           "video": "video.webm",
-          "filter": "scale={{cell}}:{{cell}}",
-          "frameWidth": {{cell}}, "frameHeight": {{cell}},
+          "filter": "scale={{cellW}}:{{cellH}}",
+          "frameWidth": {{cellW}}, "frameHeight": {{cellH}},
           "cols": 1, "rows": 1, "count": 24, "fps": 24,
           "loop": false,
-          "anchor": { "x": {{cell / 2}}, "y": {{cell}} },
-          "characterHeight": {{cell * 600 / 720}},
+          "anchor": { "x": {{cellW / 2}}, "y": {{cellH}} },
+          "characterHeight": {{charH}},
           "returnTo": "base", "sound": ""
         }
         """);
