@@ -1395,6 +1395,15 @@ public partial class FloatingWindow : Window
     /// <summary>自检用：当前形象包的画布几何。</summary>
     public CharacterGeometry Geometry => _geometry;
 
+    /// <summary>
+    /// 自检用：展开态的设计宽高（不含"大小"设置的缩放）。
+    ///
+    /// 自检断言窗口尺寸时必须拿它当期望值，**不能写死 236** ——
+    /// 236 是原版静态形象那一档的版式宽；dsh 那套 16:9 的画布要 391 才装得下，
+    /// 写死的话一换形象就叫"窗口尺寸没跟着变"（2026-09-21 改显示框时真踩了）。
+    /// </summary>
+    public (double W, double H) DesignSize => ExpandedDesignSize;
+
     // ---- 形象包 ----
 
     /// <summary>自检用：当前生效的形象 ID。</summary>

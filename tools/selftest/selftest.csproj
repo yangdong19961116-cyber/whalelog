@@ -34,6 +34,7 @@
     <Compile Include="..\..\src\WhaleLog\Services\AnimSheet.cs" />
     <Compile Include="..\..\src\WhaleLog\Services\AnimLibrary.cs" />
     <Compile Include="..\..\src\WhaleLog\Services\CharacterPacks.cs" />
+    <Compile Include="..\..\src\WhaleLog\Services\CharacterGeometry.cs" />
     <Compile Include="..\..\src\WhaleLog\Services\FfmpegLocator.cs" />
     <Compile Include="..\..\src\WhaleLog\Services\VideoDecoder.cs" />
   </ItemGroup>

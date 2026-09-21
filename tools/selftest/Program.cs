@@ -48,6 +48,7 @@ internal static class Program
             TestCommandLine();
             TestAnimAssets(workspace);
             TestVideoAssets(workspace);
+            TestCharacterGeometry();
             TestCharacterPacks(workspace);
             await TestEndToEndIntakeAsync(workDir);
             await TestDataDirSiblingNotSkippedAsync();
@@ -1204,6 +1205,86 @@ internal static class Program
             "没放的 alert 动作就是没有（不会凭空多出来）");
     }
 
+    // ==================================================================
+    // 形象显示几何
+    // ==================================================================
+
+    /// <summary>
+    /// 两套形象**各按自己画布**算显示框。
+    ///
+    /// 这里钉的是 2026-09-20 那个故障：显示框高写死 168，两套画布共用一把尺子 ——
+    /// dsh（384 画布、角色 270）静态被显示成 116.8px，一开动画跳回 165px，
+    /// 每播一次动作形象放大一倍再缩回去。用户的原话是"两套模板冲突"。
+    ///
+    /// 同类错误还有一条更要命：宽度只能由高度推 = 假定画布是方的。
+    /// 16:9 的素材要显示就只能先 crop 成方格 —— 道具被切成平口，
+    /// 这就是用户说的"新版显示被裁"。所以宽高比那一条必须钉死。
+    /// </summary>
+    private static void TestCharacterGeometry()
+    {
+        Section("形象显示几何：两套画布各算各的");
+
+        var classic = CharacterGeometry.Classic;
+        var (cw, ch) = classic.DisplayBox();
+        Check(Math.Abs(cw - 167.75) < 0.01 && Math.Abs(ch - 167.75) < 0.01,
+            $"原版：610 画布、角色 600 → 框 167.75×167.75（实际 {cw:0.##}×{ch:0.##}）");
+
+        var (lw, lh) = classic.LayoutSize();
+        Check(Math.Abs(lw - 236) < 0.01 && Math.Abs(lh - 296) < 0.01,
+            $"原版版式仍是 236×296（实际 {lw:0.##}×{lh:0.##}）");
+
+        // 16:9 那套：画布 640×360、角色 270
+        var dsh = CharacterGeometry.Parse(
+            """{"geometry":{"canvasWidth":640,"canvasHeight":360,"characterHeight":270}}""");
+        var (bw, bh) = dsh.DisplayBox();
+        Check(Math.Abs(bw - 391.1) < 0.5 && Math.Abs(bh - 220) < 0.5,
+            $"dsh：640×360 画布、角色 270 → 框 391.1×220（实际 {bw:0.#}×{bh:0.#}）");
+
+        // ★ 核心不变量：框和画布同比例。挤成方的就必然要裁掉两侧。
+        Check(Math.Abs(bw / bh - 640.0 / 360.0) < 0.001,
+            $"显示框与画布同比例（{bw / bh:0.####} vs {640.0 / 360.0:0.####}）" +
+            " —— 16:9 不会被挤成方的");
+
+        // 两个形象在屏幕上的角色高度必须是同一个数（换形象不该改变大小）
+        double onClassic = cw * classic.CharacterHeight / classic.CanvasWidth;
+        double onDsh = bh * dsh.CharacterHeight / dsh.CanvasHeight;
+        Check(Math.Abs(onClassic - onDsh) < 0.5,
+            $"换形象后角色仍是同样大：原版 {onClassic:0.#}px、dsh {onDsh:0.#}px");
+
+        var (dw, dh) = dsh.LayoutSize();
+        Check(dw >= bw - 0.01 && dh >= bh + CharacterGeometry.VerticalPadding - 0.01,
+            $"窗口装得下 dsh 的框：窗口 {dw:0.#}×{dh:0.#}、框 {bw:0.#}×{bh:0.#}");
+
+        // 版本之间不能互相"借"尺寸：1360 高之类的手写值不该把窗口撑炸
+        var huge = CharacterGeometry.Parse(
+            """{"geometry":{"canvasWidth":99999,"canvasHeight":360,"characterHeight":270}}""");
+        Check(ReferenceEquals(huge, CharacterGeometry.Classic), "画布大得离谱 → 退回原版");
+
+        var bad = new[]
+        {
+            "",
+            "{",
+            "{}",
+            """{"geometry":{}}""",
+            """{"geometry":{"canvasWidth":0,"canvasHeight":360,"characterHeight":270}}""",
+            """{"geometry":{"cell":0}}""",
+            """{"geometry":{"canvasWidth":99999,"canvasHeight":360,"characterHeight":270}}""",
+        };
+        int fell = bad.Count(j => ReferenceEquals(CharacterGeometry.Parse(j, "用例"), CharacterGeometry.Classic));
+        Check(fell == bad.Length, $"坏几何一律退回原版，不抛：{fell}/{bad.Length}");
+
+        // 老包的 cell 字段要认 —— 否则升级一次就得让所有人重新生成素材
+        var legacy = CharacterGeometry.Parse("""{"geometry":{"cell":384,"characterHeight":270}}""");
+        Check(legacy.CanvasWidth == 384 && legacy.CanvasHeight == 384 && legacy.CharacterHeight == 270,
+            $"老写法 cell 仍被接受（{legacy.CanvasWidth}×{legacy.CanvasHeight}、角色 {legacy.CharacterHeight}）");
+
+        // CharacterHeight 比画布还高是坏数据，按画布高处理（至少不被裁）
+        var clamped = CharacterGeometry.Parse(
+            """{"geometry":{"canvasWidth":640,"canvasHeight":360,"characterHeight":900}}""");
+        Check(!ReferenceEquals(clamped, CharacterGeometry.Classic) && clamped.CharacterHeight == 360,
+            $"角色比画布高 → 按画布高处理（{clamped.CharacterHeight}）");
+    }
+
     /// <summary>在扫描测试里造一个动作目录。</summary>
     private static void AddAction(string animDir, string name, string manifest, bool withSheetPng)
     {
@@ -1378,7 +1459,7 @@ internal static class Program
         // ---- 一次性（非循环）----
         try
         {
-            using var stream = new VideoFrameStream(ffmpeg, clip, filter: "", cellSide: side, loop: false);
+            using var stream = new VideoFrameStream(ffmpeg, clip, filter: "", frameWidth: side, frameHeight: side, loop: false);
 
             Check(stream.FrameBytes == side * side * 4,
                 $"一帧的字节数按格子算：{stream.FrameBytes}");
@@ -1421,7 +1502,7 @@ internal static class Program
         // ---- 循环（待机、拖拽这类要一直播的）----
         try
         {
-            using var stream = new VideoFrameStream(ffmpeg, clip, filter: "", cellSide: side, loop: true);
+            using var stream = new VideoFrameStream(ffmpeg, clip, filter: "", frameWidth: side, frameHeight: side, loop: true);
 
             // 循环素材必须能解出比源帧数更多的帧 —— 解到源帧数就 EOF 的话，
             // 待机动画每 10 秒会停一次，而那种"偶尔卡一下"极难归因
@@ -1445,16 +1526,45 @@ internal static class Program
         // ---- 参数不合法要立刻拒绝，而不是起一个必死的进程 ----
         try
         {
-            using var bad = new VideoFrameStream(ffmpeg, clip, "", cellSide: 4, loop: false);
-            Check(false, "格子边长过小应该被拒（4px）");
+            using var bad = new VideoFrameStream(ffmpeg, clip, "",
+                frameWidth: 4, frameHeight: 4, loop: false);
+            Check(false, "画布边长过小应该被拒（4px）");
         }
         catch (ArgumentOutOfRangeException)
         {
-            Check(true, "格子边长过小会当场被拒（不会去起一个必死的进程）");
+            Check(true, "画布边长过小会当场被拒（不会去起一个必死的进程）");
         }
         catch (Exception ex)
         {
-            Check(false, "格子边长过小时抛的不是预期异常：" + ex.GetType().Name);
+            Check(false, "画布边长过小时抛的不是预期异常：" + ex.GetType().Name);
+        }
+
+        // ---- 非方形画布（2026-09-21 新增的能力）----
+        //
+        // 以前这一类只支持方形：帧缓冲、每帧字节数、贴图行距全按"单边"算。
+        // dsh 那套源素材是 640×360，为了塞进方形格子只能先 crop 成方的 ——
+        // 106 个动作里 25 个的道具被切成平口，用户看到的就是"新形象显示被裁"。
+        //
+        // 所以这条断言验的是"非方形真的能解"：字节数按 宽×高×4，
+        // 而且解出来的帧长就是这个数（错的话 TryTake 一辈子取不到帧）。
+        try
+        {
+            int w, h = side / 2;
+            w = side;
+            using var wide = new VideoFrameStream(ffmpeg, clip,
+                filter: $"crop={w}:{h}:0:0",
+                frameWidth: w, frameHeight: h, loop: false);
+
+            Check(wide.FrameBytes == w * h * 4,
+                $"非方形画布的一帧字节数 = 宽×高×4：{wide.FrameBytes}（{w}×{h}×4）");
+
+            var got = wide.TryTake(out var frame, 10000) && frame != null && frame.Length == w * h * 4;
+            Check(got, got ? $"非方形画布解出了一帧（{w}×{h}）"
+                           : $"非方形画布解不出帧：{wide.Error}");
+        }
+        catch (Exception ex)
+        {
+            Check(false, "非方形画布解码抛异常：" + ex.Message);
         }
     }
 
@@ -1509,7 +1619,7 @@ internal static class Program
 
         try
         {
-            using var stream = new VideoFrameStream(ffmpeg, clip, filter: "", cellSide: side, loop: false);
+            using var stream = new VideoFrameStream(ffmpeg, clip, filter: "", frameWidth: side, frameHeight: side, loop: false);
 
             Check(stream.UsingLibvpx, "透明素材点名了 libvpx 解码器");
             Check(stream.HasAlpha, "素材被判定为带透明");

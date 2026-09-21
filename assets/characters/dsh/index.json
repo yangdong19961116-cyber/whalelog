@@ -1,12 +1,13 @@
 {
   "emit": "video",
   "geometry": {
-    "cell": 384,
+    "canvasWidth": 640,
+    "canvasHeight": 360,
     "characterHeight": 270,
-    "anchorX": 192.0,
-    "anchorY": 336.0,
+    "anchorX": 320.0,
+    "anchorY": 330.0,
     "scaleFromSource": 1.0,
-    "floatFilter": "crop=384:360:128:0,pad=384:384:0:6:color=black@0,crop=384:384:0:0"
+    "floatFilter": "crop=640:360:0:0"
   },
   "actions": [
     "ambient-三球抛接",

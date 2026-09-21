@@ -2,9 +2,9 @@
   "name": "ambient-偷吃零食被抓住",
   "type": "video",
   "video": "video.webm",
-  "filter": "crop=384:360:128:0,pad=384:384:0:6:color=black@0,crop=384:384:0:0",
-  "frameWidth": 384,
-  "frameHeight": 384,
+  "filter": "crop=640:360:0:0",
+  "frameWidth": 640,
+  "frameHeight": 360,
   "cols": 1,
   "rows": 241,
   "count": 241,
@@ -12,8 +12,8 @@
   "loop": false,
   "characterHeight": 270,
   "anchor": {
-    "x": 192.0,
-    "y": 336.0
+    "x": 320.0,
+    "y": 330.0
   },
   "returnTo": "base",
   "sound": "",

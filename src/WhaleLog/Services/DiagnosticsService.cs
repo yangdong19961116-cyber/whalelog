@@ -409,6 +409,12 @@ public static class DiagnosticsService
         Section("形象包（新版 / 原版切换）");
         ProbeCharacterPacks(Check, sb);
 
+        // 上面那节测"能不能切过去"，这节测"切过去之后显示得对不对"。
+        // 两回事：切换链路全通、形象也真的换了，但显示框算错 —— 那就变成
+        // "新形象被裁了/大小不对"，也就是 2026-09-20 用户报的那个。
+        Section("形象显示几何");
+        ProbeCharacterGeometry(Check, sb);
+
         // 上面那节测的是"解析函数对不对"，这节测的是"设置页上那一排按钮点下去有没有用"。
         // 两回事：解析全对但按钮是灰的，用户看到的仍然是"点新形象没反应"。
         ProbeCharacterChipsPage(Check, sb);
@@ -911,9 +917,14 @@ public static class DiagnosticsService
 
                 var (whaleTop, contentBottom, windowHeight) = window.MeasureLayout();
 
+                // 期望值取窗口自己声明的设计宽 —— 它随形象包变（原版 236、dsh 391），
+                // 写死 236 的话换个形象就误报"窗口尺寸没跟着变"。
+                double designW = window.DesignSize.W;
+
                 check($"缩放 {scale:0.0} 时窗口尺寸跟着变",
-                    Math.Abs(window.Width - Math.Round(ExpandedW * scale)) < 1.5,
-                    $"窗口宽 {window.Width:0}，期望 {Math.Round(ExpandedW * scale):0}");
+                    Math.Abs(window.Width - Math.Round(designW * scale)) < 1.5,
+                    $"窗口宽 {window.Width:0}，期望 {Math.Round(designW * scale):0}" +
+                    $"（版式宽 {designW:0.#}，显示框 {window.WhaleWidth:0.#}×{window.WhaleHeight:0.#}）");
 
                 check($"缩放 {scale:0.0} 时内容不被裁切",
                     contentBottom <= windowHeight + 0.5 && whaleTop >= -0.5,
@@ -949,8 +960,8 @@ public static class DiagnosticsService
             window.UpdateLayout();
 
             check("拖动预览立刻改变窗口尺寸",
-                Math.Abs(window.Width - Math.Round(ExpandedW * 1.4)) < 1.5,
-                $"窗口宽 {window.Width:0}，期望 {Math.Round(ExpandedW * 1.4):0}");
+                Math.Abs(window.Width - Math.Round(window.DesignSize.W * 1.4)) < 1.5,
+                $"窗口宽 {window.Width:0}，期望 {Math.Round(window.DesignSize.W * 1.4):0}");
 
             check("拖动预览同时改透明度",
                 Math.Abs(window.Opacity - 0.8) < 1e-6, $"实际 {window.Opacity:0.##}");
@@ -1177,7 +1188,7 @@ public static class DiagnosticsService
             // 否则角色在屏幕上凭空小 15%（界面上只表现为"好像小了点"）
             check("鲸鱼框按帧表放大到约 198px",
                 Math.Abs(window.WhaleHeight - 198) < 1.5,
-                $"实际 {window.WhaleHeight:0.#}px（静态形象是 168px）");
+                $"实际 {window.WhaleHeight:0.#}px（原版静态形象是 167.8px）");
 
             check("窗口高度跟着鲸鱼框一起变（两者必须出自同一个系数）",
                 Math.Abs(window.Height - 326) < 1.5,
@@ -1414,6 +1425,110 @@ public static class DiagnosticsService
     /// 在临时素材目录里造一份最小可用的动画素材（真 PNG + 真帧表 + 同画布静态本体）。
     /// 「小鲸鱼动画」和「悬浮态形象」两段探针共用它。
     /// </summary>
+    /// <summary>
+    /// 形象显示几何：**两套形象各按自己的画布算显示框**。
+    ///
+    /// 这是 2026-09-20 用户报的「两套动画模板冲突、新版显示会被裁」的回归断言。
+    /// 当时是两个毛病叠在一起，两个都要钉住：
+    ///
+    /// 1. **共用一把尺子**：显示框高写死 168，两套画布共用。
+    ///    dsh（384 画布、角色 270）被显示成 116.8px，一开动画又跳回 165px ——
+    ///    每播一次动作形象放大一倍再缩回去。这条钉在"显示框由各自画布算出"。
+    /// 2. **把 16:9 挤成方的**：宽度只能由高度推，等于假定画布是方的。
+    ///    16:9 的素材要显示就只能先 crop 成方格，道具被切成平口。
+    ///    这条钉在"显示框的宽高比 == 画布的宽高比"—— 挤扁了就对不上。
+    ///
+    /// 顺带把兜底也钉一遍：几何文件读不出来只该"显示得和原版一样大"，
+    /// 不该让悬浮窗起不来，更不该抛。
+    /// </summary>
+    private static void ProbeCharacterGeometry(CheckFn check, StringBuilder sb)
+    {
+        // ---- 原版：一个像素都不许动 ----
+        var classic = CharacterGeometry.Classic;
+        var (cw, ch) = classic.DisplayBox();
+        check("原版几何：610 画布、角色 600 → 显示框 167.75",
+            Math.Abs(cw - 167.75) < 0.01 && Math.Abs(ch - 167.75) < 0.01,
+            $"实际 {cw:0.##}×{ch:0.##}");
+
+        var (lw, lh) = classic.LayoutSize();
+        check("原版版式还是 236×296（换算法不许动到它）",
+            Math.Abs(lw - 236) < 0.01 && Math.Abs(lh - 296) < 0.01,
+            $"实际 {lw:0.##}×{lh:0.##}");
+
+        // ---- 真实素材：16:9 那套 ----
+        var dshRoot = CharacterPacks.DirOf(CharacterPacks.DshId);
+        if (CharacterPacks.IsAvailable(CharacterPacks.DshId))
+        {
+            var dsh = CharacterGeometry.Resolve(dshRoot);
+            sb.AppendLine("  " + dsh.Describe());
+
+            var (bw, bh) = dsh.DisplayBox();
+            check("dsh 的显示框按它自己的画布算（不再套原版的 168）",
+                Math.Abs(bh - 220) < 1.5 && Math.Abs(bw - 391.1) < 2.0,
+                $"实际 {bw:0.#}×{bh:0.#}，期望 391.1×220");
+
+            // ★ 这条就是"新版被裁"的根：显示框必须和画布同比例。
+            //   宽度只能从高度推的话，16:9 会被显示成方的，多的部分就得裁掉。
+            double canvasAspect = (double)dsh.CanvasWidth / dsh.CanvasHeight;
+            double boxAspect = bw / bh;
+            check("显示框和画布同比例（16:9 不会被挤成方的 → 道具不被裁）",
+                Math.Abs(boxAspect - canvasAspect) < 0.01,
+                $"画布 {dsh.CanvasWidth}×{dsh.CanvasHeight}（比 {canvasAspect:0.###}），" +
+                $"显示框 {bw:0.#}×{bh:0.#}（比 {boxAspect:0.###}）");
+
+            var (dw, dh) = dsh.LayoutSize();
+            check("窗口装得下 dsh 的显示框（装不下就会被裁）",
+                dw >= bw - 0.01 && dh >= bh + CharacterGeometry.VerticalPadding - 0.01,
+                $"窗口 {dw:0.#}×{dh:0.#}，显示框 {bw:0.#}×{bh:0.#}");
+
+            // ---- 帧表的画布必须和 index.json 一致 ----
+            // 两处对不上的表现是"静止一张大小、播起来另一张大小"，
+            // 也就是用户最早说的"两套模板冲突"。素材换过一轮之后最容易忘掉一处。
+            var lib = AnimLibrary.Scan(dshRoot);
+            var fromSheets = lib.DisplayBox(CharacterGeometry.DesignCharacterHeight);
+            if (fromSheets.HasValue)
+            {
+                check("帧表算出的显示框和 index.json 的一致（静止↔播放不跳大小）",
+                    Math.Abs(fromSheets.Value.Width - bw) < 0.5 &&
+                    Math.Abs(fromSheets.Value.Height - bh) < 0.5,
+                    $"帧表 {fromSheets.Value.Width:0.#}×{fromSheets.Value.Height:0.#} " +
+                    $"vs 几何 {bw:0.#}×{bh:0.#}");
+            }
+        }
+        else
+        {
+            sb.AppendLine("  （没装新版形象包，跳过它的几何断言）");
+        }
+
+        // ---- 兜底：坏几何一律退回原版，绝不抛 ----
+        var bad = new (string Json, string Why)[]
+        {
+            ("", "空文件"),
+            ("{", "不是合法 JSON"),
+            ("{}", "没有 geometry 段"),
+            ("{\"geometry\":{}}", "geometry 是空的"),
+            ("{\"geometry\":{\"canvasWidth\":0,\"canvasHeight\":360,\"characterHeight\":270}}", "画布宽为 0"),
+            ("{\"geometry\":{\"cell\":0}}", "老写法的 cell 也是 0"),
+            ("{\"geometry\":{\"canvasWidth\":99999,\"canvasHeight\":360,\"characterHeight\":270}}", "画布大得离谱"),
+        };
+
+        int fellBack = 0;
+        foreach (var (json, why) in bad)
+        {
+            var g = CharacterGeometry.Parse(json, why);
+            if (ReferenceEquals(g, CharacterGeometry.Classic)) fellBack++;
+        }
+        check("坏几何一律退回原版（不抛、也不是空白）",
+            fellBack == bad.Length, $"{fellBack}/{bad.Length} 项退了回去");
+
+        // 老包的 cell 字段也得认 —— 否则升级一次就得让所有人重新生成素材
+        var legacy = CharacterGeometry.Parse(
+            "{\"geometry\":{\"cell\":384,\"characterHeight\":270}}", "老写法");
+        check("老包的 cell 字段仍被接受（当成方形画布）",
+            legacy.CanvasWidth == 384 && legacy.CanvasHeight == 384 && legacy.CharacterHeight == 270,
+            $"实际 {legacy.CanvasWidth}×{legacy.CanvasHeight}、角色 {legacy.CharacterHeight}");
+    }
+
     /// <summary>
     /// 形象包：新版溟月与原版鲸鱼娘并存、能一键切换。
     ///
@@ -2025,7 +2140,7 @@ public static class DiagnosticsService
 
             check("鲸鱼框按视频帧表算出了正确高度",
                 Math.Abs(window.WhaleHeight - 198) < 1.5,
-                $"实际 {window.WhaleHeight:0.#}px（静态形象是 168px）");
+                $"实际 {window.WhaleHeight:0.#}px（原版静态形象是 167.8px）");
 
             // ---- 真的播一段 ----
             check("能起播视频动作", window.PlayRoleOnce(AnimActions.Click),
@@ -2441,10 +2556,6 @@ public static class DiagnosticsService
     /// <summary>多行文本在报告里统一往右缩进，读起来才不像掉进了另一份文件。</summary>
     private static string Indent(string text)
         => "  " + text.Replace(Environment.NewLine, Environment.NewLine + "  ");
-
-    /// <summary>悬浮窗展开态的设计宽高，和 FloatingWindow 里的常量保持一致。</summary>
-    private const double ExpandedW = 236;
-    private const double ExpandedH = 296;
 
     /// <summary>可视树里的所有后代。用来确认界面真的渲染出了分组栏头。</summary>
     private static IEnumerable<DependencyObject> Descendants(DependencyObject? root)

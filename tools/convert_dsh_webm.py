@@ -30,18 +30,30 @@
    凭空多出 4.6 倍的像素和体积，画质还更糊。
 2. **画布太大反而显示不了**。悬浮窗宽 236（设计像素），720 的画布塞不进去。
 
-所以这里用**原生分辨率**：角色高就是源素材的 270px，画布 384×384。
+所以这里用**原生分辨率**：角色高就是源素材的 270px，画布 = 源画布本身 640×360。
 
 帧表里的 `characterHeight` 字段就是为这件事存在的 ——
-`AnimSheet.DisplayBoxHeight()` 按 `165 × 帧高 ÷ 角色高` 反算显示框，
+悬浮窗按 `角色设计高度 165 × 画布尺寸 ÷ 角色高` 反算显示框，
 只要这个比值不变，**角色在屏幕上的大小和 720 方案完全一样**，
 但像素少 4.6 倍、且全程零插值。
 
-    384 ÷ 270 = 1.4222 = 720 ÷ 506…（同一比值，屏幕尺寸一致）
+## 画布是矩形，不是方格（2026-09-21 改）
+
+原来是方形画布（`cell=384`），代价是把 640×360 的源画布 `crop` 成方的 ——
+逐帧量过：**106 个动作里 25 个有内容被切**（蝴蝶、烟花、气球这类带道具的最狠，
+左右各切掉 120px）。用户看到的就是"新形象显示被裁掉"。
+
+改矩形之后不裁了，代价是窗口变宽：源画布 640 宽装上 270 高的角色，
+显示成 165px 高就是 391 宽（旧的是 236）—— 多出来的是一整片透明区，
+肉眼看不见，但确实多占一块桌面。
+
+为什么不硬凑成方的：640×360 撑成 640×640 之后，显示框就是 391×391，
+窗口高 519，而画面内容只占中间 220 高 —— 角色会悬在窗口上半部，
+底下 300px 全是空的。方画布是给方形素材用的，不是给 16:9 用的。
 
 ## 几何：整段用一个固定变换，不逐帧对齐
 
-账号锚点取自源素材的 `manifest.json`：`body_box = [212, 60, 428, 330]`
+锚点取自源素材的 `manifest.json`：`body_box = [212, 60, 428, 330]`
 → 横向中心 x=320（正好画布中心）、脚底 y=330、角色高 270。
 
 **整段动画共用这一个变换**（缩放 + 平移），逐帧只换像素：
@@ -50,6 +62,10 @@
 
 不能逐帧按 alpha 包围盒对齐 —— 那样跳跃、伸展会被压平，动感全没了。
 这是《动态素材规格.md》里特别强调过的一条。
+
+画布默认取**源画布全幅**（`--viewport` 可收小，但**绝不能切到内容**：
+所有动作所有帧的内容并集包围盒是 `x 4..630  y 10..359`，
+实测数据见 docs/动态素材规格.md）。
 """
 
 from __future__ import annotations
@@ -84,7 +100,19 @@ DEFAULT_OUT = ROOT / "assets" / "characters" / "dsh"
 #: 源素材的锚点（来自 manifest.json，写死一份作为缺省）
 DEFAULT_BODY_BOX = (212, 60, 428, 330)
 
-#: 画布边长（正方形）。384 = 角色高 270 × 1.4222，与 720/600 同比例。
+#: 画布尺寸（宽, 高）。0 表示"跟随源画布"（推荐，见 `--viewport`）。
+#: 视频路线用源画布全幅 640×360 —— 不裁任何东西。
+DEFAULT_CANVAS = (0, 0)
+
+#: 画布在源坐标系里取哪一块矩形 (x, y, w, h)。None = 全幅。
+#:
+#: ⚠️ 这个矩形**必须盖住所有动作所有帧的内容**。它比源画布小 = 又有东西被裁，
+#: 而且这次是静默的（解码尺寸、帧数、alpha 全都正常）。
+#: 要收小的话，先跑 `.tmp-diag/measure_source.py` 量出并集包围盒，再留足余量。
+DEFAULT_VIEWPORT = None
+
+#: 精灵图路线（--emit sheet）的画布边长（正方形，网格排版要求）。
+#: 384 = 角色高 270 × 1.4222，与 720/600 同比例。
 DEFAULT_CELL = 384
 
 #: 角色在画布里的高度。0 表示 = 源素材里 body_box 的高度（即 1:1 不缩放）。
@@ -204,17 +232,27 @@ def iter_frames(path: pathlib.Path, width: int, height: int, out_fps: float = 0)
 # ======================================================================
 
 class Geometry:
-    """把源画布映射到目标格子的一套固定变换。
+    """把源画布映射到目标画布的一套固定变换。
 
     整段动画共用一个实例 —— 这是"跳跃不会被压平"的保证。
+
+    画布**不是方的**：视频路线用源画布全幅 640×360，`scale=1`、零偏移，
+    出来的滤镜就是一句 `crop=640:360:0:0`（恒等），一像素都不裁也不缩。
     """
 
     def __init__(self, cell: int, char_h: int, body_box: tuple[int, int, int, int],
-                 src_w: int = 640, src_h: int = 360, top_pad: int = 6):
-        self.cell = cell
+                 src_w: int = 640, src_h: int = 360, top_pad: int = 6,
+                 canvas: tuple[int, int] | None = None):
         self.src_w = src_w
         self.src_h = src_h
         self.top_pad = top_pad
+
+        # 画布尺寸：给了 canvas 就用它，否则用方形的 cell（精灵图路线要正方网格）
+        cw, ch = canvas if canvas and canvas[0] > 0 and canvas[1] > 0 else (cell, cell)
+        self.canvas_w = cw
+        self.canvas_h = ch
+        #: 兼容老调用点：方形时它就是边长
+        self.cell = cw if cw == ch else max(cw, ch)
 
         x1, y1, x2, y2 = body_box
         self.body_w = x2 - x1
@@ -227,59 +265,70 @@ class Geometry:
         self.scale = self.char_h / self.body_h
 
         # 锚点：横向居中；纵向让**源画布顶部**落在 top_pad 处 ——
-        # 不是让角色在格子里居中。原因是实测源素材里有动作会顶到画布最上沿
-        # （纵向最大 330px），按"居中"算会正好差 3px 把头发裁掉。
-        # 按源画布对齐则一眼可验证：源 y=0 → 格子 y=top_pad。
-        self.anchor_x = cell / 2.0
+        # 不是让角色在画布里居中。原因是实测源素材里有动作会顶到画布最上沿
+        # （25423 帧全扫下来，纵向并集是 y 0..359，即整幅都用满了），
+        # 按"居中"算会正好差几像素把头发裁掉。
+        # 按源画布对齐则一眼可验证：源 y=0 → 画布 y=top_pad。
+        self.anchor_x = cw / 2.0
         self.src_anchor_x = (x1 + x2) / 2.0
         self.src_anchor_y = float(y2)
         self.anchor_y = top_pad + self.src_anchor_y * self.scale
 
-        # 缩放后的源画布尺寸，以及它左上角该落在格子的哪里
+        # 缩放后的源画布尺寸，以及它左上角该落在画布的哪里
         self.scaled_w = int(round(src_w * self.scale))
         self.scaled_h = int(round(src_h * self.scale))
         self.offset_x = int(round(self.anchor_x - self.src_anchor_x * self.scale))
         self.offset_y = int(round(self.anchor_y - self.src_anchor_y * self.scale))
 
-        if self.scaled_h + top_pad > cell:
+        if self.scaled_h + top_pad > ch or self.scaled_w > cw:
             raise ValueError(
-                f"格子高 {cell} 装不下源画布高 {self.scaled_h} + 顶部留白 {top_pad}；"
-                f"把 --cell 调大，或把 --top-pad 调小")
+                f"画布 {cw}×{ch} 装不下源画布 {self.scaled_w}×{self.scaled_h}"
+                f"（顶部留白 {top_pad}）；画布要 ≥ 源画布 × {self.scale:.4f}")
+
+        if self.scale == 1.0 and top_pad == 0 and (cw, ch) != (src_w, src_h):
+            raise ValueError(
+                f"1:1 不缩放时画布必须正好等于源画布 {src_w}×{src_h}，"
+                f"给的是 {cw}×{ch} —— 多出来的边无处可补（会变成一块对角错位的画面）")
 
     def describe(self) -> str:
-        return (f"格子 {self.cell}×{self.cell}  角色高 {self.char_h}px  "
+        return (f"画布 {self.canvas_w}×{self.canvas_h}  角色高 {self.char_h}px  "
                 f"缩放 {self.scale:.4f}  锚点 ({self.anchor_x:g}, {self.anchor_y:g})  "
                 f"源画布偏移 ({self.offset_x}, {self.offset_y})")
 
-    def cell_size(self) -> int:
-        return self.cell
+    def size(self) -> tuple[int, int]:
+        return (self.canvas_w, self.canvas_h)
 
     def ffmpeg_filter(self) -> str:
-        """算出把源素材裁成 cell×cell 的 ffmpeg 滤镜串。
+        """算出把源素材映射到画布上的 ffmpeg 滤镜串。
 
-        **这是转码链里唯一把"源坐标 ↔ 格子坐标"写死的地方**，而且它同时被
+        **这是转码链里唯一把"源坐标 ↔ 画布坐标"写死的地方**，而且它同时被
         离线转码（PNG 路线）和运行时解码（视频路线）共用 —— 两边必须一模一样，
         否则同一套素材换条路线走就会错位。所以它在产物里被原样存进 anim.json，
         运行时直接拿来用，不做第二份实现。
 
-        步骤：裁出与源画布相交的那一块 →（需要时）缩放 → 补透明边到满格。
+        步骤：裁出与源画布相交的那一块 →（需要时）缩放 →（需要时）补透明边到满画布。
         交出来的矩形一定落在源画布内，所以 crop 不会报越界。
+
+        ⚠️ "需要时"三个字是 2026-09-21 补的：恒等变换（1:1、不补边）时，
+        老代码照样会拼出 `pad=W:H:0:0` + 再 crop 回来 —— 而 ffmpeg 会因为
+        "pad 没有产生任何变化"直接报错。省略它们之后，全幅画布得到的正是
+        一句干净的 `crop=640:360:0:0`。
         """
-        cell, s = self.cell, self.scale
+        W, H, s = self.canvas_w, self.canvas_h, self.scale
 
         left = self.src_anchor_x - self.anchor_x / s
         top = self.src_anchor_y - self.anchor_y / s
 
         cx0 = max(0, int(math.ceil(left)))
         cy0 = max(0, int(math.ceil(top)))
-        cx1 = min(self.src_w, int(math.floor(left + cell / s)))
-        cy1 = min(self.src_h, int(math.floor(top + cell / s)))
+        cx1 = min(self.src_w, int(math.floor(left + W / s)))
+        cy1 = min(self.src_h, int(math.floor(top + H / s)))
 
         cw, ch = cx1 - cx0, cy1 - cy0
         if cw <= 0 or ch <= 0:
-            raise ValueError(f"格子 {cell} 与源画布没有交集（anchor_y={self.anchor_y}）")
+            raise ValueError(f"画布 {W}×{H} 与源画布没有交集（anchor={self.anchor_x},{self.anchor_y}）")
 
-        # 裁出来的这块在源里的位置，换算成它在格子里的落点
+        # 裁出来的这块在源里的位置，换算成它在画布里的落点
         pad_x = int(round((cx0 - left) * s))
         pad_y = int(round((cy0 - top) * s))
 
@@ -291,17 +340,17 @@ class Geometry:
         else:
             sw, sh = cw, ch
 
-        # pad 至少要留一格，否则 ffmpeg 会因为"没有变化"而报错
-        pw, ph = max(1, cell - sw), max(1, cell - sh)
-        parts.append(f"pad={cell}:{cell}:{pad_x}:{pad_y}:color=black@0")
-        parts.append(f"crop={cell}:{cell}:0:0")
+        if sw < W or sh < H or pad_x > 0 or pad_y > 0:
+            parts.append(f"pad={W}:{H}:{pad_x}:{pad_y}:color=black@0")
+            # pad 的输出尺寸就是画布，这一句只是把可能多出来的 1px 边界切齐
+            parts.append(f"crop={W}:{H}:0:0")
 
         return ",".join(parts)
 
 
 def place_frame(frame: np.ndarray, geom: Geometry, resize_cache: dict) -> np.ndarray:
-    """把一帧源像素摆进一个 cell×cell 的透明格子。"""
-    cell = geom.cell
+    """把一帧源像素摆进一个 canvas_w×canvas_h 的透明画布。"""
+    W, H = geom.canvas_w, geom.canvas_h
 
     if geom.scale != 1.0:
         key = frame.shape
@@ -313,13 +362,13 @@ def place_frame(frame: np.ndarray, geom: Geometry, resize_cache: dict) -> np.nda
     else:
         src = frame
 
-    out = np.zeros((cell, cell, 4), dtype=np.uint8)
+    out = np.zeros((H, W, 4), dtype=np.uint8)
 
     ox, oy = geom.offset_x, geom.offset_y
     sx0, sy0 = max(0, -ox), max(0, -oy)
     dx0, dy0 = max(0, ox), max(0, oy)
-    w = min(src.shape[1] - sx0, cell - dx0)
-    h = min(src.shape[0] - sy0, cell - dy0)
+    w = min(src.shape[1] - sx0, W - dx0)
+    h = min(src.shape[0] - sy0, H - dy0)
     if w > 0 and h > 0:
         out[dy0:dy0 + h, dx0:dx0 + w] = src[sy0:sy0 + h, sx0:sx0 + w]
 
@@ -663,8 +712,8 @@ def emit_one_video(it: dict, out_root: pathlib.Path, geom: Geometry,
         "type": "video",
         "video": "video.webm",
         "filter": geom.ffmpeg_filter(),
-        "frameWidth": geom.cell,
-        "frameHeight": geom.cell,
+        "frameWidth": geom.canvas_w,
+        "frameHeight": geom.canvas_h,
         "cols": 1,
         "rows": max(1, info.get("frames") or 1),
         "count": info.get("frames") or 0,
@@ -708,8 +757,9 @@ def extract_still(src: pathlib.Path, geom: Geometry, out_png: pathlib.Path) -> t
         raise RuntimeError(f"取静态帧失败：{err}")
 
     im = Image.open(io.BytesIO(p.stdout)).convert("RGBA")
-    if im.size != (geom.cell, geom.cell):
-        raise RuntimeError(f"静态帧尺寸 {im.size} 不等于格子 {geom.cell}×{geom.cell}")
+    if im.size != (geom.canvas_w, geom.canvas_h):
+        raise RuntimeError(
+            f"静态帧尺寸 {im.size} 不等于画布 {geom.canvas_w}×{geom.canvas_h}")
 
     # 压到最小 —— 它只是"不动时的那一张"，没有动画信息
     buf = io.BytesIO()
@@ -720,7 +770,6 @@ def extract_still(src: pathlib.Path, geom: Geometry, out_png: pathlib.Path) -> t
 
 def cmd_emit_video(src_root: pathlib.Path, args) -> int:
     box = load_body_box(src_root)
-    geom = Geometry(args.cell, args.char_h, box, top_pad=args.top_pad)
     out_root = pathlib.Path(args.out).resolve()
 
     items = collect(src_root, args.only)
@@ -728,10 +777,15 @@ def cmd_emit_video(src_root: pathlib.Path, args) -> int:
         print("❌ 没有匹配到任何源素材", file=sys.stderr)
         return 1
 
-    # 源画布尺寸从第一个素材读，用来校验格子装不装得下
+    # 源画布尺寸从第一个素材读；没给 --canvas 就用源画布全幅（**不裁任何东西**）
     first = probe_source(items[0]["src"])
+    canvas = args.canvas or (first["width"], first["height"])
+
+    # ⚠️ 视频路线默认 top_pad=0：画布就是源画布，源 y=0 → 画布 y=0，
+    #    锚点 y 因此正好是脚底的 330。留白是"方画布塞不下源画布"时才需要的东西。
+    top_pad = args.top_pad if args.top_pad is not None else 0
     geom = Geometry(args.cell, args.char_h, box, first["width"], first["height"],
-                    top_pad=args.top_pad)
+                    top_pad=top_pad, canvas=canvas)
 
     print(f"源：{src_root}  （{first['width']}×{first['height']}）")
     print(f"出：{out_root}")
@@ -833,8 +887,11 @@ def _write_index(out_root: pathlib.Path, geom: Geometry, results: list[dict],
 
     data = {
         "emit": emit,
+        # 这段是**运行时真的会读**的：悬浮窗按 canvasWidth/Height/characterHeight
+        # 反算"这套形象该显示多大"（见 CharacterGeometry）。改这里等于改窗口尺寸。
         "geometry": {
-            "cell": geom.cell,
+            "canvasWidth": geom.canvas_w,
+            "canvasHeight": geom.canvas_h,
             "characterHeight": geom.char_h,
             "anchorX": geom.anchor_x,
             "anchorY": geom.anchor_y,
@@ -849,6 +906,45 @@ def _write_index(out_root: pathlib.Path, geom: Geometry, results: list[dict],
     }
     (out_root / "index.json").write_text(
         json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _parse_canvas(text: str | None) -> tuple[int, int] | None:
+    """把 "640x360" / "640×360" 解析成 (640, 360)。不是这个形状就返回 None。"""
+    if not text:
+        return None
+    m = re.fullmatch(r"\s*(\d+)\s*[x×*]\s*(\d+)\s*", text)
+    if not m:
+        raise SystemExit(f"❌ --canvas 要写成 640x360 这样，收到的是「{text}」")
+    w, h = int(m.group(1)), int(m.group(2))
+    if w <= 0 or h <= 0:
+        raise SystemExit(f"❌ --canvas 的宽高必须是正整数，收到的是「{text}」")
+    return (w, h)
+
+
+def _filter_is_full_frame(flt: str, src_w: int, src_h: int) -> bool:
+    """这个滤镜是不是"源画布全幅、不缩不放"的恒等映射。
+
+    判据：只有一个 crop，且它的矩形正好是整幅源画布。带 scale / pad 就说明
+    做了几何变换，那不是全幅；crop 矩形小一圈就更直接 —— 那就是在裁。
+    """
+    segs = [s.strip() for s in flt.split(",") if s.strip()]
+    if len(segs) != 1:
+        return False
+
+    seg = segs[0]
+    if not seg.startswith("crop="):
+        return False
+
+    parts = seg[len("crop="):].split(":")
+    if len(parts) != 4:
+        return False
+
+    try:
+        w, h, x, y = (int(v) for v in parts)
+    except ValueError:
+        return False
+
+    return (w, h, x, y) == (src_w, src_h, 0, 0)
 
 
 def cmd_check(target: pathlib.Path, args) -> int:
@@ -882,7 +978,8 @@ def cmd_check(target: pathlib.Path, args) -> int:
         char_h = man["characterHeight"]
 
         if man["frameHeight"] != cell:
-            warned.append(f"{d.name}：格子不是正方形（{cell}×{man['frameHeight']}）")
+            # 矩形画布是**正常**的（16:9 的素材），只记一句提醒
+            warned.append(f"{d.name}：画布不是方形（{cell}×{man['frameHeight']}）")
 
         if man.get("type") == "video":
             vid = d / man.get("video", "video.webm")
@@ -893,6 +990,17 @@ def cmd_check(target: pathlib.Path, args) -> int:
             if not flt or "crop=" not in flt:
                 problems.append(f"{d.name}：anim.json 里没有可用的 filter")
                 continue
+
+            # ⚠️ 这条是"新版显示被裁"那次的整改检查，别删：
+            # 画布只要不是**源画布全幅**，就有可能把内容切掉 ——
+            # 而全部 25423 帧的内容并集是 x 4..631、y 0..359，源画布已被用满，
+            # 所以任何比它小的矩形都必然在某些帧上切到东西。
+            info = probe_source(vid)
+            if not _filter_is_full_frame(flt, info["width"], info["height"]):
+                problems.append(
+                    f"{d.name}：滤镜不是源画布全幅（{flt}），源是 "
+                    f"{info['width']}×{info['height']} —— 内容可能被裁")
+
             # 真解一帧出来，确认滤镜能跑通、尺寸对得上
             tmp = d / ".check.png"
             try:
@@ -904,8 +1012,9 @@ def cmd_check(target: pathlib.Path, args) -> int:
                     problems.append(f"{d.name}：滤镜跑不通（{p.stderr.strip()[:120]}）")
                     continue
                 im = Image.open(tmp)
-                if im.size != (cell, cell):
-                    problems.append(f"{d.name}：解码出来是 {im.size}，帧表写的是 {cell}×{cell}")
+                want = (cell, man["frameHeight"])
+                if im.size != want:
+                    problems.append(f"{d.name}：解码出来是 {im.size}，帧表写的是 {want[0]}×{want[1]}")
                 else:
                     al = np.asarray(im.convert("RGBA"))[:, :, 3]
                     if (al > 8).sum() == 0:
@@ -970,11 +1079,15 @@ def main() -> int:
         epilog=__doc__.split("## 为什么不是")[0])
     ap.add_argument("--src", default=str(DEFAULT_SRC), help="源素材 videos 目录")
     ap.add_argument("--out", default=str(DEFAULT_OUT), help="输出目录")
-    ap.add_argument("--cell", type=int, default=DEFAULT_CELL, help=f"格子边长（默认 {DEFAULT_CELL}）")
+    ap.add_argument("--cell", type=int, default=DEFAULT_CELL,
+                    help=f"方形画布的边长（只对 --emit sheet 有意义，默认 {DEFAULT_CELL}）")
+    ap.add_argument("--canvas", metavar="WxH",
+                    help="画布尺寸，例如 640x360。不给就跟随源画布（推荐，等于不裁）")
     ap.add_argument("--char-h", type=int, default=DEFAULT_CHAR_H,
                     help="角色在画布里的高度（默认 0 = 源素材原生高度，即不缩放）")
-    ap.add_argument("--top-pad", type=int, default=DEFAULT_TOP_PAD,
-                    help=f"源画布顶部在格子里留多少透明像素（默认 {DEFAULT_TOP_PAD}）")
+    ap.add_argument("--top-pad", type=int, default=None,
+                    help=f"源画布顶部在画布里留多少透明像素"
+                         f"（--emit video 默认 0；--emit sheet 默认 {DEFAULT_TOP_PAD}）")
     ap.add_argument("--fps", type=float, default=DEFAULT_FPS, help="输出帧率（默认 0 = 跟随源）")
     ap.add_argument("--only", nargs="*", help="只处理名字含这些关键词的动作")
     ap.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 4) - 1), help="并发数")
@@ -987,6 +1100,9 @@ def main() -> int:
     ap.add_argument("--check", metavar="目录", help="校验已有产物")
 
     args = ap.parse_args()
+
+    # --canvas 是 "640x360" 这种写法；解析失败就当没给
+    args.canvas = _parse_canvas(args.canvas)
 
     if args.check:
         return cmd_check(pathlib.Path(args.check).resolve(), args)

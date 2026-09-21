@@ -93,9 +93,19 @@
                 </Border>
             </Grid>
 
-            <!-- 状态条 -->
+            <!--
+                状态条。
+
+                MaxWidth 定在 224（= 基准窗口 236 减去左右各 6 的外边距）：
+                它是**版式**，不是形象的一部分 —— 形象包的画布宽了就跟着拉宽，
+                会变成一根横贯整个窗口的长条挂在小小的鲸鱼下面。
+                dsh 那套画布要 391 宽，不封顶的话这根条就会拉到 379。
+                原版（236 宽）封不封都是 224，一个像素不变。
+            -->
             <Border x:Name="StatusBar"
                     Grid.Row="2"
+                    MaxWidth="224"
+                    HorizontalAlignment="Stretch"
                     Margin="6,4,6,6"
                     Padding="10,7"
                     CornerRadius="10"
