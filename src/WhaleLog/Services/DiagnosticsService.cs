@@ -427,6 +427,12 @@ public static class DiagnosticsService
         Section("悬浮窗的文件拖放");
         ProbeFloatingDrop(Check, sb);
 
+        // 状态条右上角那两颗数字角标。失效方式全是安静的：
+        // 数字跟旁边的文字对不上、收起态和展开态各显示一个数、
+        // 角标跑到左半边或者探出窗口被裁掉 —— 都不报错，只是"看着不对"。
+        Section("状态条的数字角标");
+        ProbeFloatingBadges(Check, sb);
+
         // 上面那节验的是"文件进没进归档"，这节验的是"归档之后小鲸鱼怎么回应"：
         // 演一段「清点归档 → 雀跃庆祝」。失效方式全是安静的 —— 前缀写错 = 一套素材
         // 被当成普通闲置动作、顺序搞反 = 先庆祝再清点、中断判断漏了 = 用户点了它一下
@@ -2072,6 +2078,151 @@ public static class DiagnosticsService
             try { App.Settings.Update(s => s.AutoOpenMainWindowOnDrop = previousAutoOpen); } catch { }
             try { Directory.Delete(probeRoot, true); } catch { }
         }
+    }
+
+    /// <summary>
+    /// 状态条右上角的两颗数字角标（记录数 / 未收尾）。
+    ///
+    /// 这里**自己造几条今天的记录**再刷新，因为两颗角标得同时亮着才验得到：
+    /// 造 3 条、其中 2 条收尾 → 记录数角标应是 3、未收尾角标应是 1。
+    /// 两个数刻意取不一样的，"各管各的"才验得出来 —— 都写 3 的话，两个来源串了也看不出来。
+    ///
+    /// 为什么值得单独验：这一套坏掉的方式全是安静的 —— 数字跟旁边的文字对不上、
+    /// 收起态和展开态各显示一个数、角标飘到左半边、探出窗口被裁掉、
+    /// 或者把状态文字挤成省略号。程序一句错都不报，只有看图才发现。
+    /// </summary>
+    private static void ProbeFloatingBadges(CheckFn check, StringBuilder sb)
+    {
+        FloatingWindow? floating = null;
+        var dayWasThere = App.Store.Book.FindDay(DateTime.Today) != null;
+        DayNote? day = null;
+        List<NoteEntry>? originalEntries = null;
+
+        try
+        {
+            // ---- 造数据：今天的 3 条记录，前两条收尾、第三条留着 ----
+            day = App.Store.GetOrCreateDay(DateTime.Today);
+            originalEntries = day.Entries;
+            day.Entries = new List<NoteEntry>();
+            for (int i = 1; i <= 3; i++)
+            {
+                day.Entries.Add(new NoteEntry
+                {
+                    Text = $"自检造的角标记录 {i}",
+                    CreatedAt = DateTime.Today.AddHours(9).AddMinutes(i),
+                    Done = i <= 2,
+                });
+            }
+
+            floating = new FloatingWindow
+            {
+                WindowStartupLocation = WindowStartupLocation.Manual,
+                ShowInTaskbar = false,
+                Left = Offscreen,
+                Top = Offscreen,
+                BackgroundProbeMode = true,      // 待在屏幕外，别打扰用户
+            };
+            floating.Show();
+            floating.RefreshStatusForProbe();
+            floating.UpdateLayout();
+
+            var todayText = floating.TodayTextForProbe;
+            sb.AppendLine($"  造了 3 条记录（其中 1 条未收尾）→ 状态条第一行：「{todayText}」");
+            sb.AppendLine($"  角标：记录数「{floating.TodayBadgeLabelForProbe}」" +
+                          $"（可见={floating.TodayBadgeVisibleForProbe}）、" +
+                          $"未收尾「{floating.OpenBadgeLabelForProbe}」" +
+                          $"（可见={floating.OpenBadgeVisibleForProbe}）");
+
+            check("记录数角标跟着今天的条数走",
+                floating.TodayBadgeVisibleForProbe && floating.TodayBadgeLabelForProbe == "3",
+                $"可见={floating.TodayBadgeVisibleForProbe}，数字={floating.TodayBadgeLabelForProbe}（应为 3）");
+
+            check("未收尾角标跟未收尾条数走（和记录数是两个数）",
+                floating.OpenBadgeVisibleForProbe && floating.OpenBadgeLabelForProbe == "1",
+                $"可见={floating.OpenBadgeVisibleForProbe}，数字={floating.OpenBadgeLabelForProbe}（应为 1）");
+
+            check("记录数角标和状态条文字里那个数是同一个",
+                ParseLeadingCount(todayText) == 3,
+                $"从「{todayText}」里读出来的是 {ParseLeadingCount(todayText)}");
+
+            check("收起态胶囊的角标和展开态那颗一致（同一个数不能有两个值）",
+                floating.CollapsedBadgeVisibleForProbe == floating.OpenBadgeVisibleForProbe &&
+                floating.CollapsedBadgeLabelForProbe == floating.OpenBadgeLabelForProbe,
+                $"展开态「{floating.OpenBadgeLabelForProbe}」(可见={floating.OpenBadgeVisibleForProbe})、" +
+                $"收起态「{floating.CollapsedBadgeLabelForProbe}」(可见={floating.CollapsedBadgeVisibleForProbe})");
+
+            // ---- 位置：两颗角标要骑在状态条的右上角，而且还不能压住左边的文字 ----
+            var geo = floating.BadgeGeometryForProbe;
+            check("状态条与角标的位置量得出来（窗口已经布好版）", geo != null,
+                geo == null ? "量不到" : $"状态条 {geo.Value.Bar}");
+
+            if (geo is { } g && g.Badges is { } badges)
+            {
+                sb.AppendLine($"  状态条 {g.Bar}；文字块 {g.Texts}；角标组 {badges}");
+
+                check("角标落在状态条的右半边（不是飘到左边）",
+                    badges.Left > g.Bar.Left + g.Bar.Width / 2 && badges.Right >= g.Bar.Right - 14,
+                    $"角标 {badges}，状态条 {g.Bar}");
+
+                check("角标没压住左边的状态文字",
+                    g.Texts.Right <= badges.Left + 0.5,
+                    $"文字右沿 {g.Texts.Right:0.#}，角标左沿 {badges.Left:0.#}");
+
+                check("角标没把状态文字挤到打省略号",
+                    g.Texts.Width + 0.5 >= floating.TodayTextNaturalWidthForProbe,
+                    $"文字不打省略号要 {floating.TodayTextNaturalWidthForProbe:0.#}，" +
+                    $"实际只有 {g.Texts.Width:0.#} 可用");
+
+                check("角标整颗都在窗口里（探出去会被窗口裁掉）",
+                    badges.Left >= -0.5 && badges.Top >= -0.5 &&
+                    badges.Right <= floating.ActualWidth + 0.5 &&
+                    badges.Bottom <= floating.ActualHeight + 0.5,
+                    $"角标 {badges}，窗口 {floating.ActualWidth:0.#}×{floating.ActualHeight:0.#}");
+            }
+            else
+            {
+                check("两颗角标都该亮着（造了 3 条、其中 1 条未收尾）", false,
+                    geo == null ? "位置量不到" : "角标组没显示");
+            }
+
+            // ---- 反过来：今天一条都没有时，两颗角标都不该出现 ----
+            day.Entries.Clear();
+            floating.RefreshStatusForProbe();
+            floating.UpdateLayout();
+
+            check("今天一条都没有时角标全收起来（挂个 0 是噪音）",
+                !floating.TodayBadgeVisibleForProbe && !floating.OpenBadgeVisibleForProbe,
+                $"记录数可见={floating.TodayBadgeVisibleForProbe}、" +
+                $"未收尾可见={floating.OpenBadgeVisibleForProbe}，" +
+                $"状态条文字「{floating.TodayTextForProbe}」");
+        }
+        catch (Exception ex)
+        {
+            check("状态条的数字角标", false, ex.Message);
+        }
+        finally
+        {
+            // 数据一定要还原：这份 store 是内存里的真身，探针留下的条目会被后面的
+            // 自检当成真数据看，还可能被下一次 Save 写进用户的书里。
+            try
+            {
+                if (day != null)
+                {
+                    day.Entries = originalEntries ?? new List<NoteEntry>();
+                    if (!dayWasThere) App.Store.Book.Days.Remove(day);
+                }
+            }
+            catch { /* 还原不了也只能继续 */ }
+
+            try { floating?.Close(); } catch { }
+        }
+    }
+
+    /// <summary>从「3 条记录 · 0 个文件」里抠出开头那个数；没有记录时返回 0。</summary>
+    private static int ParseLeadingCount(string text)
+    {
+        var head = text.Split(' ')[0];
+        return int.TryParse(head, out var n) ? n : 0;
     }
 
     /// <summary>

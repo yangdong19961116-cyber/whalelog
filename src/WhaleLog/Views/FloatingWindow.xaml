@@ -74,23 +74,13 @@
                        HorizontalAlignment="Center"
                        RenderOptions.BitmapScalingMode="HighQuality" />
 
-                <!-- 未收尾条目数角标 -->
-                <Border x:Name="CountBadge"
-                        HorizontalAlignment="Right"
-                        VerticalAlignment="Top"
-                        Margin="0,10,26,0"
-                        MinWidth="24"
-                        Height="24"
-                        CornerRadius="12"
-                        Padding="6,0"
-                        Background="{DynamicResource AccentBrush}">
-                    <TextBlock x:Name="CountBadgeText"
-                               VerticalAlignment="Center"
-                               HorizontalAlignment="Center"
-                               FontSize="12"
-                               FontWeight="Medium"
-                               Foreground="{DynamicResource AccentForegroundBrush}" />
-                </Border>
+                <!--
+                    角标**不挂在这里**了。原先"未收尾条目数"是浮在鲸鱼右上角的一颗圆点，
+                    位置随机（鲸鱼居中、形象包宽窄不一，那颗点就飘来飘去），
+                    而且和状态条里那行"今天 N 条记录"分别是两个数，看的人得自己对照。
+                    现在两个数都收进状态条右上角（见下面 StatusBar 里的 BadgeGroup），
+                    鲸鱼身上保持干净。
+                -->
             </Grid>
 
             <!--
@@ -112,18 +102,84 @@
                     Background="{DynamicResource FloatingBackgroundBrush}"
                     BorderBrush="{DynamicResource FloatingBorderBrush}"
                     BorderThickness="1">
-                <StackPanel>
-                    <TextBlock x:Name="TodayText"
-                               FontSize="12"
-                               FontWeight="Medium"
-                               Foreground="{DynamicResource FloatingTextBrush}"
-                               TextTrimming="CharacterEllipsis" />
-                    <TextBlock x:Name="CountdownText"
-                               FontSize="11.5"
-                               Margin="0,2,0,0"
-                               Foreground="{DynamicResource FloatingSubTextBrush}"
-                               TextTrimming="CharacterEllipsis" />
-                </StackPanel>
+                <!--
+                    两列：左边文字、右边角标。角标那一列 Width="Auto"，
+                    Visibility=Collapsed 的元素在 Grid 里不占宽度 ——
+                    所以一颗角标都不显示的时候，文字和改动前的位置一模一样，不会凭空缩进。
+                -->
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                        <TextBlock x:Name="TodayText"
+                                   FontSize="12"
+                                   FontWeight="Medium"
+                                   Foreground="{DynamicResource FloatingTextBrush}"
+                                   TextTrimming="CharacterEllipsis" />
+                        <TextBlock x:Name="CountdownText"
+                                   FontSize="11.5"
+                                   Margin="0,2,0,0"
+                                   Foreground="{DynamicResource FloatingSubTextBrush}"
+                                   TextTrimming="CharacterEllipsis" />
+                    </StackPanel>
+
+                    <!--
+                        两颗数字角标，浮在状态条右上角。
+
+                        负外边距是故意的：要的是"骑在角上"那点飘出去的感觉 ——
+                        往上 9、往右 8，角标顶边探出状态条上边框一点点。
+                        负过头会被窗口裁掉，所以余量是按实际尺寸留的：
+                        StatusBar 距窗口右边 6（自己 Margin="6,4,6,6"）、内边距又缩进 10，
+                        角标最多能往右探 16 还留在窗口里，这里只用了 8。
+
+                        两颗的语义不同，所以颜色分开：
+                          记录数（今天归档了几条）—— AccentBrush，就是那颗蓝紫圆点；
+                          未收尾（还有几条没收尾）—— WarningBrush，语义是"待办"。
+                        两颗都为 0 时整组 collapsed：状态条本来就写着"今天还没有记录"，
+                        再挂个 0 是噪音。
+                    -->
+                    <StackPanel x:Name="BadgeGroup"
+                                Grid.Column="1"
+                                Orientation="Horizontal"
+                                VerticalAlignment="Top"
+                                Margin="6,-9,-8,0">
+                        <Border x:Name="TodayBadge"
+                                MinWidth="21" Height="21"
+                                CornerRadius="10.5"
+                                Padding="6,0"
+                                Background="{DynamicResource AccentBrush}">
+                            <TextBlock x:Name="TodayBadgeText"
+                                       VerticalAlignment="Center"
+                                       HorizontalAlignment="Center"
+                                       FontSize="11"
+                                       FontWeight="Medium"
+                                       Foreground="{DynamicResource AccentForegroundBrush}" />
+                        </Border>
+                        <Border x:Name="OpenBadge"
+                                Margin="4,0,0,0"
+                                MinWidth="21" Height="21"
+                                CornerRadius="10.5"
+                                Padding="6,0"
+                                Background="{DynamicResource WarningBrush}">
+                            <!--
+                                这里的字色是**写死**的深墨，不跟 AccentForegroundBrush 走。
+                                那一只是"在强调色上写字"的通用笔，浅色主题下是纯白 ——
+                                白字压在琥珀底（#C07C22）上只有 3.4:1，11px 的数字读起来发虚。
+                                两种主题的琥珀都是中等亮度的暖色（#C07C22 / #DDA44E），
+                                深墨在两边分别是 6:1 和 8.5:1，所以干脆两边都写深色。
+                            -->
+                            <TextBlock x:Name="OpenBadgeText"
+                                       VerticalAlignment="Center"
+                                       HorizontalAlignment="Center"
+                                       FontSize="11"
+                                       FontWeight="Medium"
+                                       Foreground="#1B1D22" />
+                        </Border>
+                    </StackPanel>
+                </Grid>
             </Border>
         </Grid>
 

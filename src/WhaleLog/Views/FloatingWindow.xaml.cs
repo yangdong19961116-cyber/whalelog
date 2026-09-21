@@ -1728,15 +1728,119 @@ public partial class FloatingWindow : Window
                 ? App.Reminder.RemainingText
                 : "提醒已关闭";
 
-            CountBadge.Visibility = open > 0 ? Visibility.Visible : Visibility.Collapsed;
-            CountBadgeText.Text = open.ToString();
+            // 状态条右上角那两颗角标（见 FloatingWindow.xaml 的 BadgeGroup）。
+            // 记录数跟 entries 走、未收尾跟 open 走，两个数各管各的。
+            //
+            // 收起态的小胶囊没有状态条，所以它身上**还留着一颗**（CollapsedBadge）。
+            // 那颗必须和展开态的 OpenBadge 同数字同显隐 ——
+            // 不然同一个"未收尾"收起／展开会看到两个数，那是纯粹的显示 bug。
+            TodayBadge.Visibility = entries > 0 ? Visibility.Visible : Visibility.Collapsed;
+            TodayBadgeText.Text = entries.ToString();
+            TodayBadge.ToolTip = entries > 0 ? $"今天已归档 {entries} 条记录" : null;
+
+            OpenBadge.Visibility = open > 0 ? Visibility.Visible : Visibility.Collapsed;
+            OpenBadgeText.Text = open.ToString();
+            OpenBadge.ToolTip = open > 0 ? $"还有 {open} 条没收尾" : null;
+
             CollapsedBadge.Visibility = open > 0 ? Visibility.Visible : Visibility.Collapsed;
             CollapsedBadgeText.Text = open.ToString();
+            CollapsedBadge.ToolTip = open > 0 ? $"还有 {open} 条没收尾" : null;
         }
         catch
         {
             // 悬浮窗刷新失败不影响主流程
         }
+    }
+
+    // ------------------------------------------------------------------
+    // 自检：状态条右上角的两颗角标
+    // ------------------------------------------------------------------
+
+    /// <summary>自检用：窗口坐标系里的一个矩形（相对本窗口客户区左上角，设备无关像素）。</summary>
+    public readonly record struct ProbeRect(double Left, double Top, double Right, double Bottom)
+    {
+        public double Width => Right - Left;
+        public double Height => Bottom - Top;
+
+        public override string ToString()
+            => $"({Left:0.#},{Top:0.#})-({Right:0.#},{Bottom:0.#}) 宽{Width:0.#}×高{Height:0.#}";
+    }
+
+    /// <summary>自检用：按当前数据重刷一遍角标，省得为了看角标去等一次真实刷新。</summary>
+    public void RefreshStatusForProbe() => RefreshStatus();
+
+    /// <summary>自检用：状态条第一行的文案。</summary>
+    public string TodayTextForProbe => TodayText.Text;
+
+    /// <summary>自检用：记录数角标的文案。</summary>
+    public string TodayBadgeLabelForProbe => TodayBadgeText.Text;
+
+    /// <summary>自检用：记录数角标是否在显示。</summary>
+    public bool TodayBadgeVisibleForProbe => TodayBadge.Visibility == Visibility.Visible;
+
+    /// <summary>自检用：未收尾角标的文案。</summary>
+    public string OpenBadgeLabelForProbe => OpenBadgeText.Text;
+
+    /// <summary>自检用：未收尾角标是否在显示。</summary>
+    public bool OpenBadgeVisibleForProbe => OpenBadge.Visibility == Visibility.Visible;
+
+    /// <summary>自检用：收起态胶囊上那颗角标的文案（必须和展开态那颗一致）。</summary>
+    public string CollapsedBadgeLabelForProbe => CollapsedBadgeText.Text;
+
+    /// <summary>自检用：收起态胶囊上那颗角标是否在显示。</summary>
+    public bool CollapsedBadgeVisibleForProbe => CollapsedBadge.Visibility == Visibility.Visible;
+
+    /// <summary>
+    /// 自检用：状态条第一行文字**一个省略号都不打**时需要的宽度。
+    ///
+    /// 用它来验"角标没把文字挤没"：文字块在星号列里是拉伸的，
+    /// 光看它的 ActualWidth 永远等于列宽，看不出内容被 TextTrimming 截了。
+    /// </summary>
+    public double TodayTextNaturalWidthForProbe
+    {
+        get
+        {
+            var dpi = VisualTreeHelper.GetDpi(this).PixelsPerDip;
+            var typeface = new Typeface(TodayText.FontFamily, TodayText.FontStyle,
+                TodayText.FontWeight, TodayText.FontStretch);
+            var formatted = new FormattedText(
+                TodayText.Text ?? string.Empty,
+                System.Globalization.CultureInfo.CurrentUICulture,
+                FlowDirection.LeftToRight,
+                typeface,
+                TodayText.FontSize,
+                Brushes.Black,
+                dpi);
+            return formatted.WidthIncludingTrailingWhitespace;
+        }
+    }
+
+    /// <summary>自检用：状态条 / 文字 / 角标组各自的矩形。窗口还没量过布局时为 null。</summary>
+    public (ProbeRect Bar, ProbeRect Texts, ProbeRect? Badges)? BadgeGeometryForProbe
+    {
+        get
+        {
+            try
+            {
+                var bar = RectOf(StatusBar);
+                var texts = RectOf(TodayText);
+                if (bar == null || texts == null) return null;
+                var badges = BadgeGroup.Visibility == Visibility.Visible ? RectOf(BadgeGroup) : null;
+                return (bar.Value, texts.Value, badges);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+    }
+
+    private ProbeRect? RectOf(FrameworkElement element)
+    {
+        if (element.ActualWidth <= 0 || element.ActualHeight <= 0) return null;
+        var origin = element.TransformToAncestor(RootGrid).Transform(new Point(0, 0));
+        return new ProbeRect(origin.X, origin.Y,
+            origin.X + element.ActualWidth, origin.Y + element.ActualHeight);
     }
 
     // ------------------------------------------------------------------
