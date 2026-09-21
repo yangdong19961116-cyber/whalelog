@@ -427,6 +427,13 @@ public static class DiagnosticsService
         Section("悬浮窗的文件拖放");
         ProbeFloatingDrop(Check, sb);
 
+        // 上面那节验的是"文件进没进归档"，这节验的是"归档之后小鲸鱼怎么回应"：
+        // 演一段「清点归档 → 雀跃庆祝」。失效方式全是安静的 —— 前缀写错 = 一套素材
+        // 被当成普通闲置动作、顺序搞反 = 先庆祝再清点、中断判断漏了 = 用户点了它一下
+        // 之后突然接演后半截。三种都只是"看着别扭"，日志里一个字都没有。
+        Section("归档后的互动（归档表演）");
+        ProbeArchiveCelebration(Check, sb);
+
         // ---- 透明视频 ----
         // 这条链路跨进程（ffmpeg 是外部程序），断了的表现是"点下去什么都不发生"。
         Section("透明视频动画");
@@ -1979,6 +1986,15 @@ public static class DiagnosticsService
             check("结果被报成了人话（含日期口径 + 数量）",
                 summary.Contains("已记入今天") && summary.Contains("新增"), $"「{summary}」");
 
+            // 归档成功后小鲸鱼要演一段「清点归档 → 雀跃庆祝」（见 AnimActions.Celebrate）。
+            // 形象包里没有这个角色时（原版那套就没有）"不演"才是对的 ——
+            // 所以先看这个包里有没有表演段落，有就必须已经起演了第 1 段。
+            // 素材齐全时的完整接力由【归档后的互动】那节用最小素材验。
+            check("归档成功后演了归档表演（这个形象包有表演素材时）",
+                floating.CelebrateActionCount == 0 || floating.CurrentAnimation == floating.FirstCelebrateAction,
+                $"表演段落 {floating.CelebrateActionCount} 段，" +
+                $"此刻在播 {floating.CurrentAnimation ?? "（无）"}");
+
             // ---- 另一半：关掉「自动打开主面板」之后，应该安静地收下 ----
             //
             // 这个开关以前只掐掉半个动作（面板照样弹出来、只是没切页），和它的名字对不上。
@@ -2055,6 +2071,149 @@ public static class DiagnosticsService
 
             try { App.Settings.Update(s => s.AutoOpenMainWindowOnDrop = previousAutoOpen); } catch { }
             try { Directory.Delete(probeRoot, true); } catch { }
+        }
+    }
+
+    /// <summary>
+    /// 归档表演：文件归档成功后演一段「清点归档 → 雀跃庆祝」。
+    ///
+    /// 这里是自己造一份**最小素材**（两个 celebrate 动作 + 一个点击动作）跑真实代码路径：
+    /// 扫描 → 按角色归类（顺序）→ 起演 → 接力 → 收尾 → 被打断不接力。
+    /// 用精灵图而不是真视频，是因为要**确定性地推进时间轴**
+    /// （<see cref="SpritePlayer.AdvanceBy"/>），不等显示器刷新率 —— 断言才不会时灵时不灵。
+    ///
+    /// 为什么必须真的走一遍：这一套的四个失效方式没有一个是会报错的 ——
+    /// 前缀写错（素材被当成普通闲置动作）、顺序搞反、接力漏了（永远只演第一段）、
+    /// 中断判断漏了（用户点了它一下，等那次点击播完突然接演庆祝的后半截）。
+    /// </summary>
+    private static void ProbeArchiveCelebration(CheckFn check, StringBuilder sb)
+    {
+        var probeRoot = Path.Combine(AppPaths.LogDir, "celebrate-probe");
+        var assetDir = Path.Combine(probeRoot, "Assets");
+
+        // 10fps × 2 帧 → 推 500ms 必定播完，而且两段的名字刻意按 1-/2- 排
+        const int frameSize = 720;
+        var first = AnimActions.Celebrate + "-1-探针清点";
+        var second = AnimActions.Celebrate + "-2-探针庆祝";
+
+        string? previousAssetDir = null;
+        FloatingWindow? window = null;
+        var settings = App.Settings.Settings;
+
+        try
+        {
+            previousAssetDir = Environment.GetEnvironmentVariable("WHALELOG_ASSET_DIR");
+
+            // 和别的悬浮窗探针同一个道理：位置挪到屏幕外、关掉自动收起
+            // （收起会顺手 SavePosition 把坐标写进设置，外面那层快照兜底）
+            settings.FloatingAnimations = true;
+            settings.FloatingAutoCollapse = false;
+            settings.FloatingLeft = Offscreen;
+            settings.FloatingTop = Offscreen;
+
+            WriteProbeAnimation(assetDir, first, frameSize, 2, 2);
+            WriteProbeAnimation(assetDir, second, frameSize, 2, 2);
+            WriteProbeAnimation(assetDir, AnimActions.Click, frameSize, 2, 2);
+
+            // ---- 扫描层：角色归类和顺序 ----
+            // 顺序就是这个角色唯一的约定（目录名即动作名，1- 在前、2- 在后）。
+            // 归错的话表现是"平时闲下来随机蹦出清点归档"，而归档成功时什么都不演。
+            var lib = AnimLibrary.Scan(assetDir);
+            var steps = lib.ActionsWithRole(AnimActions.Celebrate);
+
+            check("成套动作被认成 celebrate 角色（不是普通闲置小动作）",
+                steps.Count == 2,
+                $"认到 {steps.Count} 段；闲置小动作 {lib.ActionsWithRole(AnimActions.Ambient).Count} 个");
+
+            check("成套动作按目录名定序（1- 清点 → 2- 庆祝）",
+                steps.Count == 2 && steps[0] == first && steps[1] == second,
+                steps.Count == 0 ? "一段都没扫到" : string.Join(" → ", steps));
+
+            // ---- 界面层 ----
+            Environment.SetEnvironmentVariable("WHALELOG_ASSET_DIR", assetDir);
+
+            window = new FloatingWindow
+            {
+                WindowStartupLocation = WindowStartupLocation.Manual,
+                ShowInTaskbar = false,
+                ShowActivated = false,
+                BackgroundProbeMode = true,
+                Left = Offscreen,
+                Top = Offscreen,
+            };
+            window.Show();
+            window.UpdateLayout();
+
+            check("悬浮窗把这套素材记成了 2 段表演",
+                window.CelebrateActionCount == 2,
+                $"第一段={window.FirstCelebrateAction ?? "（无）"}，第二段={window.SecondCelebrateAction ?? "（无）"}");
+
+            var player = window.AnimPlayer;
+            if (player == null)
+            {
+                check("播放器已建立", false, "拿不到播放器");
+                return;
+            }
+
+            // ---- 起演 + 接力 ----
+            check("归档表演能演起来（起演的是第 1 段）",
+                window.PlayCelebrationForProbe() && window.CurrentAnimation == first,
+                $"在播={window.CurrentAnimation ?? "（无）"}");
+
+            check("起演时把后面的段落排进了队列",
+                window.CelebrationQueueCount == 1,
+                $"队列里还剩 {window.CelebrationQueueCount} 段");
+
+            player.AdvanceBy(TimeSpan.FromMilliseconds(500));
+
+            check("第 1 段播完自动接上第 2 段（这才是「成套」）",
+                window.CurrentAnimation == second,
+                $"在播={window.CurrentAnimation ?? "（无）"}，队列里还剩 {window.CelebrationQueueCount} 段");
+
+            player.AdvanceBy(TimeSpan.FromMilliseconds(500));
+
+            check("演完自己收尾（不会卡在最后一段或停在半途）",
+                !window.IsAnimationPlaying && window.CurrentAnimation == null,
+                $"在播={window.CurrentAnimation ?? "（无）"}");
+
+            // ---- 被打断就不再接力 ----
+            // 用户点了一下小鲸鱼：这次点击会**静默打断**表演（打断不抛 Finished），
+            // 于是"刚播完的那一段"和队列对不上 —— 表演必须就此作罢。
+            check("能重新演一遍（连着拖两批文件时从头再演）",
+                window.PlayCelebrationForProbe() && window.CurrentAnimation == first,
+                $"在播={window.CurrentAnimation ?? "（无）"}");
+
+            bool clicked = window.PlayRoleOnce(AnimActions.Click);
+            check("点击把播放器抢了过去", clicked && window.CurrentAnimation != first,
+                $"在播={window.CurrentAnimation ?? "（无）"}");
+
+            if (clicked) player.AdvanceBy(TimeSpan.FromMilliseconds(500));
+
+            check("被打断的表演就此作罢（不会在用户那次点击结束后突然接演第 2 段）",
+                window.CurrentAnimation != second && window.CelebrationQueueCount == 0,
+                $"在播={window.CurrentAnimation ?? "（无）"}，队列里还剩 {window.CelebrationQueueCount} 段");
+
+            sb.AppendLine($"  素材：2 段 celebrate + 1 个点击动作（{Path.GetFileName(assetDir)}）");
+        }
+        catch (Exception ex)
+        {
+            check("归档后的互动（归档表演）", false, ex.Message);
+            sb.AppendLine("      " + ex);
+        }
+        finally
+        {
+            try { window?.Close(); }
+            catch { /* 关不掉不影响结论 */ }
+
+            try
+            {
+                Environment.SetEnvironmentVariable("WHALELOG_ASSET_DIR", previousAssetDir);
+                IconAssets.Reload();
+            }
+            catch { /* 还原失败也只能继续 */ }
+
+            try { Directory.Delete(probeRoot, true); }
+            catch { /* 删不掉不影响结论 */ }
         }
     }
 

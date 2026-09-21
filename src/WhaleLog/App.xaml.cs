@@ -424,9 +424,10 @@ public partial class App : Application
     /// 所以不进主面板也能把文件收下。已经开着的那个主面板（用户自己开的）只让它
     /// 把列表和统计跟上，**不会被叫到前面来**：关掉这个开关的意图就是"别打扰我"。
     ///
-    /// 返回给悬浮窗做气泡提示的一句话。
+    /// 返回给悬浮窗做气泡提示的一句话，以及"真收下了几个文件"——
+    /// 后者是悬浮窗决定"要不要演一段庆祝"的依据（见 FloatingWindow 的归档表演）。
     /// </summary>
-    public async Task<string> ArchiveFromFloatingQuietlyAsync(string[] paths)
+    public async Task<FileIntakeService.IntakeOutcome> ArchiveFromFloatingQuietlyAsync(string[] paths)
     {
         IReadOnlyList<IntakeResult> results;
 
@@ -439,14 +440,15 @@ public partial class App : Application
         catch (Exception ex)
         {
             LogCrash(ex);
-            return "归档出错，详情看日志";
+            return new("归档出错，详情看日志", 0);
         }
 
         _mainWindow?.RefreshAfterExternalIntake();
 
         // 措辞和"会自动打开主面板"那条路保持一致（同样一句 "已记入今天：…"）——
         // 两条路只差"要不要弹面板"，用户看到的话不该有两种说法。
-        return "已记入今天：" + FileIntakeService.Summarize(results);
+        return new("已记入今天：" + FileIntakeService.Summarize(results),
+            FileIntakeService.AcceptedCount(results));
     }
 
     // ------------------------------------------------------------------

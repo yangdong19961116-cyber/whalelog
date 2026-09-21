@@ -681,6 +681,25 @@ internal static class Program
 
         var unchangedOnly = FileIntakeService.Summarize(new[] { R(IntakeStatus.Unchanged) });
         Check(!unchangedOnly.Contains("新增"), $"只读的状态不该冒出「新增」：实际「{unchangedOnly}」");
+
+        // ---- "真收下了几个" ----
+        // 悬浮窗靠这个数决定"要不要演一段庆祝"（见 FloatingWindow.CelebrateArchived）。
+        // 数错的表现是"拖一份重复文件它也蹦起来庆祝"—— 用户会以为程序没在干活。
+        CheckEq(FileIntakeService.AcceptedCount(mixed).ToString(), "3",
+            "真收下的 = 新增 + 新版本（重复和失败不算）");
+
+        CheckEq(FileIntakeService.AcceptedCount(new[]
+        {
+            R(IntakeStatus.Duplicate), R(IntakeStatus.Unchanged), R(IntakeStatus.Failed),
+        }).ToString(), "0", "全是重复 / 内容未变 / 失败时一个都没收下");
+
+        CheckEq(FileIntakeService.AcceptedCount(Array.Empty<IntakeResult>()).ToString(), "0",
+            "一条结果都没有时也是 0（不庆祝）");
+
+        Check(new FileIntakeService.IntakeOutcome("新增 1", 1).HasNews,
+            "有新增 → 值得庆祝");
+        Check(!new FileIntakeService.IntakeOutcome("重复 1", 0).HasNews,
+            "只有重复 → 不庆祝（气泡照旧会说「重复 1」，用户不会觉得没反应）");
     }
 
     /// <summary>
@@ -1126,6 +1145,8 @@ internal static class Program
         CheckEq(AnimActions.RoleOf("move-左转奔跑"), AnimActions.Move, "move-* → 滑动");
         CheckEq(AnimActions.RoleOf("turn-东张西望"), AnimActions.Turn, "turn-* → 转向");
         CheckEq(AnimActions.RoleOf("blink"), AnimActions.Blink, "blink 单独一个目录也是角色");
+        CheckEq(AnimActions.RoleOf("celebrate-1-清点归档"), AnimActions.Celebrate,
+            "celebrate-* → 成套的归档表演（前缀决定角色，序号在名字里）");
         CheckEq(AnimActions.RoleOf("随手动"), "", "认不出角色 → 空串（用户自制动作不会被主动播）");
 
         // 这一条是那次踩过的坑：目录名 idle 归一化之后动作键变成 blink，
@@ -1137,6 +1158,10 @@ internal static class Program
             "待机与拖拽是一直循环的角色");
         Check(!AnimActions.IsLoopingRole(AnimActions.Click) && !AnimActions.IsLoopingRole(AnimActions.Ambient),
             "点击与闲置小动作是一次性的（播完要回到待机）");
+        // 表演更不能循环：循环就永远播不完，接力永远等不到 Finished，
+        // 表现是"只演第一段、后面几段永远不出现"。
+        Check(!AnimActions.IsLoopingRole(AnimActions.Celebrate),
+            "归档表演是一次性的（循环的话接力永远等不到「播完了」）");
 
         // ------------------------------------------------------------------
         Section("动态素材：目录扫描");
@@ -1203,6 +1228,23 @@ internal static class Program
         // 扫描不应该把文件写坏、也不该依赖调用方先建目录
         Check(!lib.IsEmpty && lib.Find(AnimActions.Alert) == null,
             "没放的 alert 动作就是没有（不会凭空多出来）");
+
+        // ---- 成套动作的顺序 ----
+        // 归档表演（celebrate）靠目录名定序：先清点、再庆祝。写反了界面上只是
+        // "看着别扭"，一个字都不会报错 —— 所以在这里钉住。
+        // 刻意先放 2- 再放 1-：顺序必须由名字决定，不能靠"谁先被扫到"。
+        AddAction(animDir, $"{AnimActions.Celebrate}-2-雀跃庆祝", SampleSheetJson, withSheetPng: true);
+        AddAction(animDir, $"{AnimActions.Celebrate}-1-清点归档", SampleSheetJson, withSheetPng: true);
+
+        var ordered = AnimLibrary.Scan(assetDir);
+
+        CheckEq(string.Join(" → ", ordered.ActionsWithRole(AnimActions.Celebrate)),
+            $"{AnimActions.Celebrate}-1-清点归档 → {AnimActions.Celebrate}-2-雀跃庆祝",
+            "成套动作按目录名定序（1- 在前，与放进去的先后无关）");
+        CheckEq(ordered.ActionsWithRole(AnimActions.Ambient).Count.ToString(), "0",
+            "成套动作不会被算成普通闲置小动作（否则平时也会随机蹦出来演半套）");
+        CheckEq(ordered.RoleOf($"{AnimActions.Celebrate}-1-清点归档"), AnimActions.Celebrate,
+            "角色从目录名认出来了");
     }
 
     // ==================================================================

@@ -541,6 +541,20 @@ public static class AnimActions
     /// <summary>闲置时随机冒出来的小动作。</summary>
     public const string Ambient = "ambient";
 
+    /// <summary>
+    /// 成套的"演一段"：**按目录名顺序逐段播**，不是随机挑一个。
+    ///
+    /// 现在只有一个用场 —— 文件归档成功后演一段「清点归档 → 雀跃庆祝」。
+    /// 和 <see cref="Ambient"/> 的区别正是"有序"：闲置小动作是各演各的，
+    /// 而这一套有先后（先低头清点，再高兴地跳起来），顺序错了看着就不对。
+    ///
+    /// 因此同一个角色下的素材用 <c>1-</c>/<c>2-</c> 前缀定序
+    /// （目录名即动作名，也是播放顺序的依据）：<c>celebrate-1-清点归档</c>、
+    /// <c>celebrate-2-雀跃庆祝</c>。素材包里没有这个角色时，
+    /// 归档就只是归档 —— 界面不该为了缺素材而报错（原版那套就没有）。
+    /// </summary>
+    public const string Celebrate = "celebrate";
+
     /// <summary>贴边滑动时播（当前没有自主走动，只在吸附滑行时用）。</summary>
     public const string Move = "move";
 
@@ -550,7 +564,7 @@ public static class AnimActions
     /// <summary>所有角色。顺序即优先级，仅用于诊断报告。</summary>
     public static readonly IReadOnlyList<string> All = new[]
     {
-        Idle, Click, Blink, Ambient, Alert, Drag, Move, Turn,
+        Idle, Click, Blink, Ambient, Alert, Drag, Move, Turn, Celebrate,
     };
 
     /// <summary>这些角色是"一直循环"，播完不会自己结束。</summary>
@@ -608,6 +622,7 @@ public static class AnimActions
             "ambient" or "random" or "act" or "acts" => Ambient,
             "move" or "walk" => Move,
             "turn" => Turn,
+            "celebrate" or "celebration" or "sequence" => Celebrate,
             _ => "",
         };
     }

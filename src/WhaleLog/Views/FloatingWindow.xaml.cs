@@ -94,6 +94,27 @@ public partial class FloatingWindow : Window
     private IReadOnlyList<string> _ambientActions = Array.Empty<string>();
     private IReadOnlyList<string> _dragActions = Array.Empty<string>();
 
+    /// <summary>
+    /// 归档表演的段落，**按顺序**（角色 celebrate，见 <see cref="AnimActions.Celebrate"/>）。
+    ///
+    /// 和上面几个角色不同，这一套不是"随机挑一个"而是"逐段演"：
+    /// 归档成功后先低头清点，再高兴地跳一下 —— 顺序反了就不成样子。
+    /// 素材包没有这个角色时（原版那套）这里是空的，归档就只是归档。
+    /// </summary>
+    private IReadOnlyList<string> _celebrateActions = Array.Empty<string>();
+
+    /// <summary>还要接着演的段落（当前这段播完就轮到它们）。空 = 没有正在进行的表演。</summary>
+    private readonly List<string> _celebrateQueue = new();
+
+    /// <summary>
+    /// 正在演的那一段。
+    ///
+    /// 单独记一份是为了判断"刚播完的到底是不是表演里的这一句"——
+    /// 用户中途点了一下，播放器是**静默打断**的（打断不抛 Finished，见 SpritePlayer.Play），
+    /// 光看队列会出现"等用户那次点击的动画播完后，突然接上庆祝的后半截"。
+    /// </summary>
+    private string? _celebrateCurrent;
+
     /// <summary>当前循环播着的待机动作（素材里可能有好几个，随机挑一个一直播）。</summary>
     private string? _loopingIdle;
 
@@ -646,11 +667,16 @@ public partial class FloatingWindow : Window
         ScheduleAmbient();
     }
 
-    /// <summary>停掉所有动画活动（播放器 + 眨眼排期 + 闲置排期 + 预热）。</summary>
+    /// <summary>停掉所有动画活动（播放器 + 眨眼排期 + 闲置排期 + 预热 + 没演完的表演）。</summary>
     private void StopAnimations()
     {
         _blinkTimer?.Stop();
         _ambientTimer?.Stop();
+
+        // 表演的剩余段落也作废：窗口收起（或不可见）时它已经没法演了，
+        // 留着的话下次展开会莫名其妙地接着演"雀跃庆祝"。
+        CancelCelebration();
+
         _player?.Stop();
         _player?.ReleaseWarm();
     }
@@ -693,6 +719,11 @@ public partial class FloatingWindow : Window
         _widgetTopAtPress = Top;
 
         _dragging = true;
+
+        // 鼠标一按下去，正在演的归档表演就交还控制权 —— 用户要摸它、要拖它，
+        // 表演的剩余段落作废（这一下之后是点击弹跳或拖拽动作，不该再续演庆祝）。
+        CancelCelebration();
+
         ScheduleDragAnimation();
 
         try
@@ -923,6 +954,10 @@ public partial class FloatingWindow : Window
     /// 两条路的**归档行为必须一模一样**（都走 FileIntakeService、都记入今天），
     /// 差别只有"要不要把主面板叫出来" —— 设置项的名字说的正是这件事，
     /// 别让它只掐掉半个动作（那会变成"面板照样弹出来、只是没切页"，与开关的承诺不符）。
+    ///
+    /// 归档成功（真的收下了新东西）之后演一段「清点归档 → 雀跃庆祝」，
+    /// 见 <see cref="AnimActions.Celebrate"/>。两条路都会演 ——
+    /// 用户关掉的是"弹不弹面板"，不是"小鲸鱼别理我"。
     /// </summary>
     public async Task<string> AcceptDropAsync(string[] paths)
     {
@@ -937,8 +972,9 @@ public partial class FloatingWindow : Window
         {
             // 用户关了「自动打开主面板」：安静地收下，只用气泡回报。
             var quiet = await app.ArchiveFromFloatingQuietlyAsync(paths);
-            ShowBubble("已归档", quiet);
-            return quiet;
+            CelebrateArchived(quiet);
+            ShowBubble("已归档", quiet.Text);
+            return quiet.Text;
         }
 
         var main = await app.ShowMainWindowForDropAsync();
@@ -950,9 +986,23 @@ public partial class FloatingWindow : Window
             return failed;
         }
 
-        var summary = await main.IntakeDroppedAsync(paths);
-        ShowBubble("已归档", summary);
-        return summary;
+        var outcome = await main.IntakeDroppedAsync(paths);
+        CelebrateArchived(outcome);
+        ShowBubble("已归档", outcome.Text);
+        return outcome.Text;
+    }
+
+    /// <summary>
+    /// 真的收下了东西才演一段庆祝。
+    ///
+    /// 判据是"新增 + 新版本 > 0"，不是"文件收下了"：把同一份文件再拖一次
+    /// （重复 / 内容未变）时，小鲸鱼不该蹦起来庆祝 —— 那是"没什么值得庆祝的"，
+    /// 看着像在敷衍。气泡照旧会老实说"重复 1"，用户不会觉得没反应。
+    /// </summary>
+    private void CelebrateArchived(FileIntakeService.IntakeOutcome outcome)
+    {
+        if (!outcome.HasNews) return;
+        PlayCelebration();
     }
 
     /// <summary>拖进来时把落点提示亮出来。</summary>
@@ -1062,6 +1112,9 @@ public partial class FloatingWindow : Window
                 _clickActions = _anim.ActionsWithRole(AnimActions.Click);
                 _ambientActions = _anim.ActionsWithRole(AnimActions.Ambient);
                 _dragActions = _anim.ActionsWithRole(AnimActions.Drag);
+                // 成套的表演：按目录名排好的顺序（celebrate-1-… → celebrate-2-…），
+                // 界面逐段播，不随机挑（见 AnimActions.Celebrate）
+                _celebrateActions = _anim.ActionsWithRole(AnimActions.Celebrate);
             }
 
             ApplyWhaleBox();
@@ -1133,7 +1186,13 @@ public partial class FloatingWindow : Window
         _clickActions = Array.Empty<string>();
         _ambientActions = Array.Empty<string>();
         _dragActions = Array.Empty<string>();
+        _celebrateActions = Array.Empty<string>();
         _loopingIdle = null;
+
+        // 换形象 / 关动画时，上一套素材的表演段落不能再留着 ——
+        // 留着的话"演到一半切了形象"，接力会去播新素材里同名的动作
+        // （没有就静默停住），而队列里那几个名字已经作废了。
+        CancelCelebration();
     }
 
     /// <summary>
@@ -1200,6 +1259,83 @@ public partial class FloatingWindow : Window
     {
         if (_player is not { IsPlaying: false }) return;
         StartIdleLoop();
+    }
+
+    // ------------------------------------------------------------------
+    // 归档表演（文件归档成功后演的成套动作）
+    // ------------------------------------------------------------------
+
+    /// <summary>
+    /// 演一段"归档表演"：角色 <see cref="AnimActions.Celebrate"/> 下的动作**按顺序**播，
+    /// 上一段播完由 <see cref="OnAnimationFinished"/> 接着往下接力。
+    ///
+    /// 几个刻意的选择：
+    ///
+    ///   · **只在正经站着的时候演**（<see cref="WantsIdleLoop"/>）：收起态、拖拽中、
+    ///     窗口不可见时都不演。用户正把窗口拖来拖去的时候突然蹦起来，是"失控"而不是"活泼"。
+    ///   · **单段播不了就跳过，不整套哑掉**：素材少一段、某段视频坏了，
+    ///     能演的照演 —— 归档成功的反馈不该因为一段素材坏了就整个消失。
+    ///   · **从头开始**：连着拖两批文件时，第二批会让表演重来一遍
+    ///     （而不是把上一轮的尾巴续上 —— 那两批文件就对不上了）。
+    /// </summary>
+    private bool PlayCelebration()
+    {
+        if (!WantsIdleLoop) return false;
+        if (_celebrateActions.Count == 0) return false;
+
+        for (int i = 0; i < _celebrateActions.Count; i++)
+        {
+            if (!PlayAnimation(_celebrateActions[i])) continue;
+
+            _celebrateCurrent = _celebrateActions[i];
+            _celebrateQueue.Clear();
+            for (int j = i + 1; j < _celebrateActions.Count; j++) _celebrateQueue.Add(_celebrateActions[j]);
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// 归档表演的接力：上一段正常播完就接着演下一段。
+    /// 返回 true 表示"接下来还有得演，别急着回待机"。
+    /// </summary>
+    private bool ContinueCelebration(string finishedAction)
+    {
+        if (_celebrateQueue.Count == 0)
+        {
+            // 演完了（或者压根没在演）。清掉"正在演的那一段"，让下次判断回到干净状态。
+            _celebrateCurrent = null;
+            return false;
+        }
+
+        // 播完的不是表演里的这一段 → 说明中间被打断了（用户点了一下、拖了一下，
+        // 或者别的动作抢了播放器）。表演就此作罢，剩下的段落作废 ——
+        // 否则会在用户那次点击结束时莫名其妙地接上"雀跃庆祝"。
+        if (!string.Equals(finishedAction, _celebrateCurrent, StringComparison.Ordinal))
+        {
+            CancelCelebration();
+            return false;
+        }
+
+        var next = _celebrateQueue[0];
+        _celebrateQueue.RemoveAt(0);
+
+        if (!PlayAnimation(next))
+        {
+            CancelCelebration();
+            return false;
+        }
+
+        _celebrateCurrent = next;
+        return true;
+    }
+
+    /// <summary>把还没演的段落全丢掉（收起窗口、重扫素材、被打断时叫）。</summary>
+    private void CancelCelebration()
+    {
+        _celebrateQueue.Clear();
+        _celebrateCurrent = null;
     }
 
     /// <summary>
@@ -1303,9 +1439,9 @@ public partial class FloatingWindow : Window
         // 播放耗时本身也被算进间隔里，节奏不会越走越密
         if (action == AnimActions.Blink) ScheduleBlink();
 
-        // 一次性动作（点击 / 闲置小动作 / 提醒）播完了，回到待机循环。
-        // 没有 idle 素材时这个调用什么都不做，播放器已经自己落回静态图了。
-        ResumeIdleIfFree();
+        // 归档表演的接力排在最前面：它不演完就不该回待机
+        // （待机是个循环，先起来的话这一段就永远接不上了）。
+        if (!ContinueCelebration(action)) ResumeIdleIfFree();
 
         // 鼠标还停在鲸鱼上就顺手把点击动作重新预热一份：连着点两下时，
         // 第一下用掉了预热好的那条流，第二下才不用等 ffmpeg 启动
@@ -1368,7 +1504,8 @@ public partial class FloatingWindow : Window
                   $"扫到动作 {_anim.ActionNames.Count} 个）";
 
             var roles = $"按角色分：待机 {_idleActions.Count}、点击 {_clickActions.Count}、" +
-                        $"闲置小动作 {_ambientActions.Count}、拖拽 {_dragActions.Count}" +
+                        $"闲置小动作 {_ambientActions.Count}、拖拽 {_dragActions.Count}、" +
+                        $"归档表演 {_celebrateActions.Count}" +
                         (_loopingIdle != null ? $"，当前待机 = {_loopingIdle}" : "");
 
             // 几何单独列一行：用户在报"形象被裁了/大小不对"时，第一个要看的就是它 ——
@@ -1430,6 +1567,24 @@ public partial class FloatingWindow : Window
     public int ClickActionCount => _clickActions.Count;
     public int AmbientActionCount => _ambientActions.Count;
     public int DragActionCount => _dragActions.Count;
+
+    /// <summary>自检用：这个形象包里有几段归档表演（原版是 0）。</summary>
+    public int CelebrateActionCount => _celebrateActions.Count;
+
+    /// <summary>自检用：表演的第一段（没有被表演素材时为 null）。</summary>
+    public string? FirstCelebrateAction => _celebrateActions.Count > 0 ? _celebrateActions[0] : null;
+
+    /// <summary>自检用：表演的第二段（顺序断言用）。</summary>
+    public string? SecondCelebrateAction => _celebrateActions.Count > 1 ? _celebrateActions[1] : null;
+
+    /// <summary>自检用：还要接着演的段落数（0 = 没有正在进行的表演）。</summary>
+    public int CelebrationQueueCount => _celebrateQueue.Count;
+
+    /// <summary>自检用：走真实的 <see cref="PlayCelebration"/> 演一段。</summary>
+    public bool PlayCelebrationForProbe() => PlayCelebration();
+
+    /// <summary>自检用：把表演的队列清掉（模拟"收起窗口"这类打断）。</summary>
+    public void CancelCelebrationForProbe() => CancelCelebration();
 
     /// <summary>自检用：此刻在播哪个动作。</summary>
     public string? CurrentAnimation => _player?.CurrentAction;

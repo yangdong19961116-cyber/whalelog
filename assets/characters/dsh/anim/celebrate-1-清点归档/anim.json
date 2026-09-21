@@ -1,5 +1,5 @@
 {
-  "name": "ambient-工作状态-清点归档",
+  "name": "celebrate-1-清点归档",
   "type": "video",
   "video": "video.webm",
   "filter": "crop=640:360:0:0",
@@ -17,7 +17,7 @@
   },
   "returnTo": "base",
   "sound": "",
-  "role": "ambient",
+  "role": "celebrate",
   "source": "工作状态-清点归档.webm",
   "_comment": "由 tools/convert_dsh_webm.py 生成。frameWidth/Height 是解码后的格子尺寸；filter 是裁进格子的 ffmpeg 滤镜串，运行时按它解码。不要手改。"
 }

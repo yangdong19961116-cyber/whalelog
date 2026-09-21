@@ -1395,16 +1395,17 @@ public partial class MainWindow : Window
 
     /// <summary>
     /// 悬浮窗拖入文件的落点：**一律记入今天**，并按设置切到「文件归档」页。
-    /// 返回给悬浮窗做气泡提示的一句话。
+    /// 返回给悬浮窗做气泡提示的一句话，外加"真收下了几个文件"
+    /// —— 后者决定悬浮窗要不要演一段庆祝（重复拖入不该蹦起来）。
     ///
     /// 为什么不像主面板那样跟着"正在看的那一天"走：那条规则靠拖拽横幅上的字来说明
     /// （见 <see cref="UpdateDropBanner"/>），而悬浮窗上没有地方写这句话 ——
     /// 规则必须不言自明。把文件丢给桌面上的小鲸鱼，意思就是"此刻"；
     /// 想补录过去某天，用主面板自己拖。
     /// </summary>
-    public async Task<string> IntakeDroppedAsync(string[] paths)
+    public async Task<FileIntakeService.IntakeOutcome> IntakeDroppedAsync(string[] paths)
     {
-        if (paths.Length == 0) return "没有可归档的文件";
+        if (paths.Length == 0) return new("没有可归档的文件", 0);
 
         // 先把这个窗口拨到今天再归档：IntakeAsync 记的是 _currentDate，
         // 顺序反了就会记到用户上次翻到的那一天去。
@@ -1415,9 +1416,10 @@ public partial class MainWindow : Window
         SwitchTo(NavPage.Files);
 
         var results = await IntakeAsync(paths);
-        if (results == null) return "归档出错，详情看主面板左下角";
+        if (results == null) return new("归档出错，详情看主面板左下角", 0);
 
-        return "已记入今天：" + FileIntakeService.Summarize(results);
+        return new("已记入今天：" + FileIntakeService.Summarize(results),
+            FileIntakeService.AcceptedCount(results));
     }
 
     /// <summary>

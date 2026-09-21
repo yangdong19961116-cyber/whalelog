@@ -64,8 +64,6 @@
     "ambient-工作状态-垂头叹气冒汗",
     "ambient-工作状态-忙碌点按",
     "ambient-工作状态-思考冒泡",
-    "ambient-工作状态-清点归档",
-    "ambient-工作状态-雀跃庆祝",
     "ambient-悠闲哼歌",
     "ambient-扑克魔术",
     "ambient-打瞌睡被惊醒",
@@ -105,6 +103,8 @@
     "ambient-轻快记录",
     "ambient-骑木马",
     "ambient-鲸鱼吐泡泡特效",
+    "celebrate-1-清点归档",
+    "celebrate-2-雀跃庆祝",
     "clickBounce-傲娇生气",
     "clickBounce-元气挥手",
     "clickBounce-害羞惊讶",
@@ -173,8 +173,6 @@
       "ambient-工作状态-垂头叹气冒汗",
       "ambient-工作状态-忙碌点按",
       "ambient-工作状态-思考冒泡",
-      "ambient-工作状态-清点归档",
-      "ambient-工作状态-雀跃庆祝",
       "ambient-悠闲哼歌",
       "ambient-扑克魔术",
       "ambient-打瞌睡被惊醒",
@@ -214,6 +212,10 @@
       "ambient-轻快记录",
       "ambient-骑木马",
       "ambient-鲸鱼吐泡泡特效"
+    ],
+    "celebrate": [
+      "celebrate-1-清点归档",
+      "celebrate-2-雀跃庆祝"
     ],
     "clickBounce": [
       "clickBounce-傲娇生气",

@@ -36,6 +36,8 @@ from convert_dsh_webm import (  # noqa: E402
 )
 
 #: 目录名前缀 → 角色。和 ROLE_OF_FOLDER 的产物一一对应。
+#: celebrate 是成套的归档表演（目录名里的 1-/2- 就是演出顺序），
+#: 它的名字由 convert_dsh_webm.ACTION_NAME_OVERRIDES 定，这里只负责认出来。
 ROLE_OF_PREFIX = {
     "idle": "idle",
     "clickbounce": "clickBounce",
@@ -44,6 +46,7 @@ ROLE_OF_PREFIX = {
     "ambient": "ambient",
     "move": "move",
     "turn": "turn",
+    "celebrate": "celebrate",
 }
 
 

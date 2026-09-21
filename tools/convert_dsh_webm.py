@@ -129,7 +129,8 @@ STRIP_PREFIXES = ("点击回应 - ", "点击回应-", "点击回应 ", "碎碎�
 
 #: 角色名 → 角色目录名前缀。前缀同时决定了它在程序里扮演的角色：
 #: idle=持续循环的待机、clickBounce=点击回应（多个随机挑）、drag=拖拽中循环、
-#: alert=提醒、ambient=随机小动作、move=贴边移动、turn=转向
+#: alert=提醒、ambient=随机小动作、move=贴边移动、turn=转向、
+#: celebrate=**成套**的归档表演（按目录名顺序逐段播，见下）
 ROLE_OF_FOLDER = {
     "idle": "idle",
     "turn": "turn",
@@ -139,6 +140,21 @@ ROLE_OF_FOLDER = {
     "random": "ambient",
     "events": "ambient",       # 余额事件那 6 个：鲸记没有余额概念，当普通小动作
     "events/balance": "ambient",
+}
+
+#: 源文件名（去掉扩展名）→ 完整动作目录名。
+#:
+#: 只给"角色之外还要有先后顺序"的成套动作用。别的动作的目录名由
+#: `角色-名字` 拼出来，而归档表演必须自己定名 —— 界面上同角色的动作
+#: **按目录名顺序逐段播**，所以名字里的 1-/2- 就是演出顺序：
+#:
+#:     归档成功 → celebrate-1-清点归档 → celebrate-2-雀跃庆祝
+#:
+#: ⚠️ 键是**源素材的文件名**（去掉 .webm）。源仓库改名之后这里要跟着改，
+#:    改漏了表现是"归档后不演了"，不报任何错。
+ACTION_NAME_OVERRIDES = {
+    "工作状态-清点归档": "celebrate-1-清点归档",
+    "工作状态-雀跃庆祝": "celebrate-2-雀跃庆祝",
 }
 
 #: 需要跳过的（源仓库里跟桌宠动画无关的）
@@ -467,6 +483,11 @@ def action_name_for(folder: str, stem: str) -> tuple[str, str]:
         if name.startswith(pre):
             name = name[len(pre):]
             break
+
+    # 成套动作（归档表演）自己定名 —— 名字里的顺序就是演出顺序，见 ACTION_NAME_OVERRIDES
+    override = ACTION_NAME_OVERRIDES.get(stem)
+    if override:
+        return override, override.split("-", 1)[0]
 
     return f"{role}-{name}", role
 

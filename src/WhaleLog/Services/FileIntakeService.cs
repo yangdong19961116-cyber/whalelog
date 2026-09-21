@@ -68,6 +68,28 @@ public sealed class FileIntakeService
         return string.Join("，", parts) + (dateSuffix ?? "");
     }
 
+    /// <summary>
+    /// 真收下的文件数：**新增 + 新版本**。
+    ///
+    /// 重复 / 内容未变 / 失败都不算"收下"—— 悬浮窗拿它决定"要不要演一段庆祝"
+    /// （见 FloatingWindow 的归档表演）。判据必须是结构化的结果，不能去抠那句话里的数字：
+    /// 措辞一改（"新增 2" 变成 "已收下 2 份"）功能就悄悄失效，而且一个字都不报错。
+    /// </summary>
+    public static int AcceptedCount(IReadOnlyList<IntakeResult> results)
+        => results.Count(r => r.Status is IntakeStatus.Added or IntakeStatus.NewVersion);
+
+    /// <summary>
+    /// 一次归档回报给界面的结果：给用户看的那句话 + 到底收下了几个文件。
+    ///
+    /// 两样都要：气泡只认前者，而"要不要庆祝"只能由后者说了算
+    /// （重复拖入同一份文件时不该蹦起来庆祝）。
+    /// </summary>
+    public readonly record struct IntakeOutcome(string Text, int Accepted)
+    {
+        /// <summary>真的收进了归档（有新增或新版本）。</summary>
+        public bool HasNews => Accepted > 0;
+    }
+
     public Task<IReadOnlyList<IntakeResult>> IntakeAsync(
         IEnumerable<string> paths,
         DateTime? forDate = null,
