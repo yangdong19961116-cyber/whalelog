@@ -1532,10 +1532,7 @@ public partial class FloatingWindow : Window
     /// <summary>自检用：完工该演哪个动作（没有素材时为 null）。</summary>
     public string? FirstCheerAction => _cheerActions.Count > 0 ? _cheerActions[0] : null;
 
-    /// <summary>自检用：走真实的 <see cref="PlayCheer"/> 演一段完工庆祝，
-    /// 以及走真实的提醒入口 <see cref="PlayForReminder"/>。</summary>
-    public bool PlayCheerForProbe() => PlayCheer();
-
+    /// <summary>自检用：走真实的提醒入口 <see cref="PlayForReminder"/>。</summary>
     public bool PlayForReminderForProbe(ReminderKind kind) => PlayForReminder(kind);
 
     /// <summary>
