@@ -102,6 +102,7 @@
 | `tools/animprobe/` | 独立 WPF 探针程序，实测「WPF 到底能播什么」。**结论写死在 `Program.cs` 末尾**，结果输出到 `%TEMP%\whalelog-anim-probe\wpf-probe.txt` |
 | `tools/make_anim_sample.py` | 生成样例精灵图 + 帧表（同时是规格的参考实现），规格常量集中在文件头部「规范画布」一节 |
 | `tools/check_anim_assets.py` | **交付前自检工具**，给画师/做素材的人跑。查三类返工原因：横向漂移（>2px 报错）、贴边裁切（余量 <2px 报错）、帧表与实际尺寸矛盾。退出码 0/1/2 |
+| `tools/check_alpha_profile.py` | **透明区剖面**（逐帧全解，106 动作约 40s）。量内容并集包围盒 + alpha 直方图分档，验「声明画布是否真盖住全部内容」和「滤镜裁切有没有切到东西」。`convert_dsh_webm.py --check` 只解首帧，中途才出现的道具被它漏掉，这个补上。跑出 `outputs/素材总览_首中末.png` |
 | `outputs/样例-点击弹跳/sheet.{png,json}` | 8 帧弹跳样例（4×2 网格） |
 | `outputs/样例-眨眼示意/sheet.{png,json}` | 4 帧眨眼样例 |
 | `outputs/动画素材规格/*.png` | 4 张规格说明图（对齐校验-本体与最高帧叠加、样例-8帧弹跳、样例-点击弹跳-8帧、样例-眨眼示意-4帧） |
