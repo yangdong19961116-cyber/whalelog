@@ -270,8 +270,14 @@ public partial class MainWindow : Window
     private void OnDatePopupClosed(object? sender, EventArgs e)
         => _datePopupClosedAt = DateTime.UtcNow;
 
-    /// <summary>哪些日子有内容（手写记录或归档文件），用来在月历上点小圆点。</summary>
-    private IEnumerable<string> CollectMarkedDates()
+    /// <summary>
+    /// 哪些日子有内容（手写记录或归档文件），用来在月历上点小圆点。
+    ///
+    /// 公开且静态：诊断侧要把月历单独渲染成图核销（小圆点的位置只能看图判断），
+    /// 而"哪天算有记录"必须**只有这一处判定** —— 诊断自己再抄一遍的话，
+    /// 哪天改了规则就会出现"图上没有圆点、界面上有"这种最误导人的局面。
+    /// </summary>
+    public static IEnumerable<string> CollectMarkedDates()
     {
         var marked = new HashSet<string>(StringComparer.Ordinal);
 

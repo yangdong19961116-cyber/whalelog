@@ -47,7 +47,9 @@
 诊断 `WhaleLog.exe --selfcheck` → `logs\selfcheck.log`（**222 项 / 22 段**，隔离空数据更少几项、
 有另一个实例在跑时再少 1；同样要 ffmpeg 在旁边；
 **脚本里跑必须带 `--quiet`**，否则弹一个"自检完成"对话框等人点，表现为卡死到超时）；
-截图 `--shot`/`--shot-notes`/`--shot-settings`/`--shot-floating`，均支持 `--x 值` 和 `--x=值`；
+截图 `--shot`/`--shot-notes`/`--shot-settings`/`--shot-floating`/`--shot-calendar`
+（月历挂在 Popup 里是独立 HWND，前面几个拍不到，单独一条出口、放大 4 倍看圆点位置），
+均支持 `--x 值` 和 `--x=值`；
 交互探针 `python tools/drag_probe.py`（合成真实鼠标，会动光标、要求先退出运行实例 → 手动跑）；
 拖放探针 `python tools/drop_probe.py`（合成真实 OLE 拖放，先 `dotnet build tools\dragsource\`；同上要手动跑）。
 素材：程序旁 `Assets\` 同名文件优先于内置（清单 `AssetCatalog`，加载 `IconAssets`）；

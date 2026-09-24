@@ -209,18 +209,33 @@ public partial class MonthCalendarPanel : UserControl
             : "TextPrimaryBrush");
         if (isToday && !isSelected) number.FontWeight = FontWeights.Medium;
 
+        // 数字和圆点上下摞成一坨，整坨在格子里居中。
+        //
+        // 以前是"数字撑满格子、圆点贴格子底"两个独立对齐 —— 那样两者的间距由
+        // 字体行高和格子高度各自决定，谁也算不出来。实测就是这样：数字墨迹落在
+        // 512..548（4 倍图），圆点贴底后顶边只在 542，**圆点整个嵌进"8"的下圈**，
+        // 把数字笔画盖掉一块。而且就算把圆点底距压到 0，顶边也只到 540，
+        // 还是够不着数字底下 —— 36 高的格子里，光移圆点根本走不出去。
+        //
+        // 改成一坨之后，间距是 Margin 上的 2，**与字体无关的绝对量**；
+        // 整坨居中，数字自然上移，两者再也不会撞。
         var dot = new Ellipse
         {
             Width = 5,
             Height = 5,
             HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Bottom,
-            Margin = new Thickness(0, 0, 0, 5),
-            Visibility = hasContent ? Visibility.Visible : Visibility.Collapsed,
+            Margin = new Thickness(0, 1, 0, 0),
+            // 用 Opacity 而不是 Collapsed：Collapsed 不占位，会让数字回到格子正中，
+            // 于是同一行里"有记录"和"没记录"的日子数字高度差 3.5 DIP，一眼就是错位。
+            Opacity = hasContent ? 1 : 0,
         };
         dot.SetResourceReference(Shape.FillProperty, isSelected ? "AccentForegroundBrush" : "AccentBrush");
 
-        var content = new Grid();
+        var content = new StackPanel
+        {
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
         content.Children.Add(number);
         content.Children.Add(dot);
         cell.Content = content;

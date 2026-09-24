@@ -731,6 +731,72 @@ public static class DiagnosticsService
     }
 
     /// <summary>
+    /// 把月历面板单独渲染成 PNG（按整数倍放大，默认 4 倍）。
+    ///
+    /// **为什么它需要一条独立出口**：月历挂在 Popup 里，而 Popup 是独立的 HWND，
+    /// <see cref="WritePageShot"/> 拍主窗口根本抓不到它 —— 在这之前，月历是整个界面里
+    /// 唯一没有看图核销手段的一块。
+    ///
+    /// 而它恰恰是最需要看图的：格子里叠了"日期数字 + 有记录的小圆点 + 今天描边"三层，
+    /// "圆点压住数字"是零点几个像素的事，1:1 渲染出来圆点只有 5px，凭肉眼判不了对错。
+    /// 按整数倍放大再栅格化（矢量重绘，不是位图拉伸），差一个像素也能看出来。
+    ///
+    /// 面板是**新建一个实例**渲染的，不依赖 Popup 开没开、也不会弹到用户面前；
+    /// 但圆点数据取真实数据目录，判定和界面上走的是同一处
+    /// （<see cref="MainWindow.CollectMarkedDates"/>）。
+    /// </summary>
+    public static string WriteCalendarShot(string path, int scale = 4)
+    {
+        if (scale < 1) scale = 1;
+
+        // 固定看今天所在的月份：有记录的日期、今天描边、选中态三种情况都在这一屏里，
+        // 不用为了"看某个月的圆点"去翻月 —— 翻月是交互，不是渲染的事。
+        var today = DateTime.Today;
+
+        var panel = new MonthCalendarPanel();
+        panel.Show(today, today, MainWindow.CollectMarkedDates());
+
+        panel.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        var size = panel.DesiredSize;
+        panel.Arrange(new Rect(new Point(0, 0), size));
+        panel.UpdateLayout();
+
+        int pw = Math.Max(1, (int)Math.Ceiling(size.Width * scale));
+        int ph = Math.Max(1, (int)Math.Ceiling(size.Height * scale));
+        double dpi = 96.0 * scale;
+
+        var panelBitmap = new System.Windows.Media.Imaging.RenderTargetBitmap(
+            pw, ph, dpi, dpi, System.Windows.Media.PixelFormats.Pbgra32);
+        panelBitmap.Render(panel);
+
+        // 面板本身是透明的（圆角卡片外那圈 Margin 是空的），垫一层窗口底色，
+        // 否则看图分不清卡片边界，也没法判断"圆点是不是贴到格子边缘了"。
+        var visual = new System.Windows.Media.DrawingVisual();
+        using (var dc = visual.RenderOpen())
+        {
+            var bg = Application.Current?.TryFindResource("WindowBackgroundBrush")
+                         as System.Windows.Media.Brush
+                     ?? System.Windows.Media.Brushes.White;
+            dc.DrawRectangle(bg, null, new Rect(0, 0, size.Width, size.Height));
+            dc.DrawImage(panelBitmap, new Rect(0, 0, size.Width, size.Height));
+        }
+
+        var composed = new System.Windows.Media.Imaging.RenderTargetBitmap(
+            pw, ph, dpi, dpi, System.Windows.Media.PixelFormats.Pbgra32);
+        composed.Render(visual);
+
+        var encoder = new System.Windows.Media.Imaging.PngBitmapEncoder();
+        encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(composed));
+
+        var dir = Path.GetDirectoryName(path);
+        if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+
+        using var fs2 = File.Create(path);
+        encoder.Save(fs2);
+        return path;
+    }
+
+    /// <summary>
     /// 设置页两个滑杆能不能真的拖。
     ///
     /// Slider 的拖动链路是 Thumb.DragDelta → Slider 按鼠标在 Track 上的位置换算 Value。

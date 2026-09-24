@@ -480,6 +480,12 @@ internal static class Program
         Check(cmd.Has("--shot"), "`--x=值` 也算有这个开关");
         Check(!cmd.Has("--shot-floating"), "不该把名字相近的开关认成同一个");
 
+        // 截图开关是一串"前缀相同、后缀不同"的开关，全靠 Has 的完全匹配分家。
+        // 认错的后果不是崩溃，而是跑完没反应、或者出图出成了另一页 —— 看日志看不出来。
+        var calendar = new CommandLine(new[] { "--shot-calendar", "D:\\tmp\\cal.png" });
+        Check(!calendar.Has("--shot"), "`--shot-calendar` 不该被当成 `--shot`");
+        CheckEq(calendar.Value("--shot-calendar"), @"D:\tmp\cal.png", "月历截图开关应能取到值");
+
         CheckEq(cmd.Value("--shot"), @"D:\tmp\a.png", "`--x=值` 应能取值");
         CheckEq(cmd.Value("--shot-notes"), @"D:\tmp\b.png", "`--x 值` 应能取值");
 

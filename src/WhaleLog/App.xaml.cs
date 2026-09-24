@@ -90,7 +90,7 @@ public partial class App : Application
         // 用户只能看到一个莫名其妙的提示、日志却没有任何更新。
         bool oneShot = HasFlag("--selfcheck") || HasFlag("--create-shortcut")
                     || HasFlag("--shot") || HasFlag("--shot-notes") || HasFlag("--shot-settings")
-                    || HasFlag("--shot-floating")
+                    || HasFlag("--shot-floating") || HasFlag("--shot-calendar")
                     || HasFlag("--export-assets");
 
         if (!oneShot)
@@ -176,6 +176,32 @@ public partial class App : Application
                 LogCrash(ex);
                 if (!HasFlag("--quiet"))
                     MessageBox.Show(ex.Message, "鲸记 · 悬浮窗截图失败",
+                        MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+
+            Shutdown();
+            return;
+        }
+
+        // 截图模式：把月历面板单独放大渲染成 PNG。
+        // 月历挂在 Popup 里（独立 HWND），上面的 --shot 系列拍不到它，只能单独开一条；
+        // 格子里"数字 + 小圆点 + 今天描边"三层叠着，差一个像素只能靠放大看图判断。
+        if (HasFlag("--shot-calendar"))
+        {
+            var target = ArgValue("--shot-calendar")
+                         ?? Path.Combine(AppPaths.LogDir, "calendar.png");
+            try
+            {
+                DiagnosticsService.WriteCalendarShot(target);
+                if (!HasFlag("--quiet"))
+                    MessageBox.Show($"已保存到：\n{target}", "鲸记 · 月历截图",
+                        MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            catch (Exception ex)
+            {
+                LogCrash(ex);
+                if (!HasFlag("--quiet"))
+                    MessageBox.Show(ex.Message, "鲸记 · 月历截图失败",
                         MessageBoxButton.OK, MessageBoxImage.Warning);
             }
 

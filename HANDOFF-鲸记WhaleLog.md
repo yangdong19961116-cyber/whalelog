@@ -75,7 +75,7 @@
 
 **配套机制**：外部素材目录（`Assets\` 同名文件优先于内置，`{v:AssetImage}` 扩展引用，托盘可「重新加载素材」）、
 诊断自检（快捷键/图标/快捷方式/窗口/页签互斥/文件筛选/日期分组/日期解析/滑杆/悬浮窗缩放/小鲸鱼动画/悬浮态形象/悬浮窗的文件拖放，且**探针零副作用**）、
-离屏截图（`--shot` / `--shot-notes` / `--shot-floating` / `--shot-settings`）、合成真实鼠标的交互探针（`tools/drag_probe.py`）、
+离屏截图（`--shot` / `--shot-notes` / `--shot-floating` / `--shot-settings` / `--shot-calendar`）、合成真实鼠标的交互探针（`tools/drag_probe.py`）、
 合成真实 OLE 拖放的探针（`tools/drop_probe.py` + `tools/dragsource/`）、
 差分图对齐工具（`tools/prepare_expression.py`）。
 
@@ -325,6 +325,9 @@ WhaleLog.exe --shot D:\tmp\files-page.png
 WhaleLog.exe --shot-notes D:\tmp\notes-page.png
 WhaleLog.exe --shot-settings D:\tmp\settings-page.png   :: 开关/滑杆/形象按钮那一页
 WhaleLog.exe --shot-floating D:\tmp\floating-scales.png
+WhaleLog.exe --shot-calendar D:\tmp\calendar.png        :: 月历面板，放大 4 倍
+::  ↑ 月历挂在 Popup 里（独立 HWND），上面那几个 --shot 都拍不到它，只能单独开一条。
+::    放大是为了看"数字和小圆点压住没有"这种零点几个像素的事，1:1 的 5px 圆点用肉眼判不了。
 WhaleLog.exe --export-assets D:\tmp\Assets
 
 :: 打包自包含 zip（不带参数就输出到 E:\jingji\鲸记 WhaleLog <版本>.zip，版本号从 csproj 读）
