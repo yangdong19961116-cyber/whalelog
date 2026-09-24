@@ -793,7 +793,52 @@ public static class DiagnosticsService
 
         using var fs2 = File.Create(path);
         encoder.Save(fs2);
+
+        DumpCalendarGeometry(panel);
         return path;
+    }
+
+    /// <summary>
+    /// 把月历的布局几何打到 stdout。
+    ///
+    /// 存在的理由：月历"格子被裁"这种缺陷**不报任何错、也不影响任何断言**，
+    /// 只有选中格（有实心背景）才看得出来，而 1:1 下就是几个像素的直角。
+    /// 2026-09-24 用户报的"当天日期圆角残缺"就是这么来的 ——
+    /// 面板宽度算错 → 列宽 34.57 装不下 36+2×1 的格子 → WPF 给 Button 套了
+    /// 矩形 layout clip，右侧 3.43 DIP 连圆角一起切平。
+    /// 所以截图的同时把几何念出来，"图上看不对"和"数字印证"就在同一条输出里。
+    /// </summary>
+    private static void DumpCalendarGeometry(MonthCalendarPanel panel)
+    {
+        if (panel.FindName("DayGrid") is not UniformGrid grid)
+        {
+            Console.WriteLine("[geom] 找不到 DayGrid");
+            return;
+        }
+
+        double colWidth = grid.ActualWidth / grid.Columns;
+        int clipped = 0;
+        double firstClipWidth = 0, cellSide = 0;
+
+        foreach (var child in grid.Children)
+        {
+            if (child is not FrameworkElement el) continue;
+            if (cellSide == 0) cellSide = el.ActualWidth;
+            var clip = System.Windows.Media.VisualTreeHelper.GetClip(el);
+            if (clip == null) continue;
+            if (clipped++ == 0) firstClipWidth = clip.Bounds.Width;
+        }
+
+        Console.WriteLine($"[geom] 面板 {panel.ActualWidth:F1}×{panel.ActualHeight:F1} · "
+                          + $"DayGrid {grid.ActualWidth:F1}×{grid.ActualHeight:F1} · "
+                          + $"列宽 {colWidth:F2} · 格子 {cellSide:F1}×{cellSide:F1} "
+                          + $"(布局占 {cellSide + 2:F1})");
+
+        Console.WriteLine(clipped == 0
+            ? "[geom] 无裁剪：列宽装得下格子"
+            : $"[geom] ⚠ {clipped}/{grid.Children.Count} 格被布局裁剪，"
+              + $"可见宽 {firstClipWidth:F2}（需要 {cellSide + 2:F1}）"
+              + " —— 圆角会被切平成直角，加宽面板或缩小格子");
     }
 
     /// <summary>
@@ -3314,6 +3359,41 @@ public static class DiagnosticsService
                 "9 月 30 天");
 
             check("有记录的日期被标记", panel.MarkedCount == 2, $"{panel.MarkedCount} 天");
+
+            // 布局几何：格子有没有被容器裁掉。
+            //
+            // 来历是 2026-09-24 用户报的"当天日期的圆角是残缺的"。根因不在圆角，
+            // 而在宽度算术：格子要 36 + 左右 Margin 各 1 = 38 DIP，七列 266；
+            // 而面板当时宽 288，扣掉卡片 Margin(20)/Border(2)/Padding(24) 只剩 242 内容区，
+            // 列宽 242/7 = 34.57 —— 装不下。WPF 在 Arrange 时发现子元素超出了分到的槽位，
+            // 会给它套一个**矩形 layout clip**，右侧 3.43 DIP 连圆角一起切平成直角。
+            //
+            // 这种缺陷不报错、不违反任何数据断言，而且只有选中/悬停那种有实心背景的格子
+            // 才看得出来，所以必须单独量。
+            var laid = new MonthCalendarPanel();
+            laid.Show(month, new DateTime(2026, 9, 11), marked);
+            laid.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+            laid.Arrange(new Rect(new Point(0, 0), laid.DesiredSize));
+            laid.UpdateLayout();
+
+            if (laid.FindName("DayGrid") is UniformGrid dayGrid && dayGrid.Children.Count == 42)
+            {
+                double colWidth = dayGrid.ActualWidth / dayGrid.Columns;
+                double side = (dayGrid.Children[0] as FrameworkElement)?.ActualWidth ?? 0;
+                int clipped = dayGrid.Children.OfType<FrameworkElement>()
+                    .Count(el => System.Windows.Media.VisualTreeHelper.GetClip(el) != null);
+
+                check("日期格没被布局裁掉（列宽装得下 格宽 + 2×1 Margin）",
+                    clipped == 0 && colWidth >= side + 2,
+                    clipped == 0
+                        ? $"列宽 {colWidth:F2} ≥ 格宽 {side:F1}+2"
+                        : $"{clipped}/42 格被裁：列宽只有 {colWidth:F2}，需要 {side + 2:F1}");
+            }
+            else
+            {
+                check("日期格没被布局裁掉（列宽装得下 格宽 + 2×1 Margin）", false,
+                    "找不到 DayGrid 或格数不是 42，量不了");
+            }
 
             // 翻月
             panel.GoMonth(-1);

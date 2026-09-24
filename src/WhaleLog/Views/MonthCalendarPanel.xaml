@@ -1,7 +1,29 @@
+<!--
+    宽度 314 是算出来的，不是随手定的（原来是 288）：
+
+        日期格 36 + 左右 Margin 各 1        = 38   ← 一列的**最小**需求
+        38 × 7                            = 266   ← 七列
+        + 大卡片 Margin 20（左右各 10）      = 286
+        + BorderThickness 2（左右各 1）      = 288
+        + Padding 24（左右各 12）           = 312
+        + 浮点余量 2（每列宽 0.29）          = 314
+
+    旧的 288 只给到内容区 242，列宽 242/7 = 34.571 —— 比格子窄 3.43 DIP。
+    WPF 在 Arrange 时发现子元素（显式 Width=36 加 Margin）超出分到的槽位，
+    会给它套一个**矩形裁剪**（FrameworkElement 的 layout clip），右侧 3.43 DIP
+    连圆角一起切平：右上、右下变成直角。而只有选中/悬停这种有实心背景的格子
+    才看得见，所以表现为"今天那格的圆角是残缺的"。
+
+    改小格子或去掉 Margin 也能消掉裁剪，但格子 36 是和 5 DIP 圆点、
+    12.5 号字配套的设计值，动的应该是容器。
+    这条约束现在有断言守着：自检的【月历】一节会逐格查 layout clip，
+    离屏截图开关 shot-calendar 出的图也是核销手段
+    （圆角缺陷在 1:1 下只有几个像素，肉眼判不了）。
+-->
 <UserControl x:Class="WhaleLog.Views.MonthCalendarPanel"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             Width="288"
+             Width="314"
              FontFamily="Microsoft YaHei UI, Segoe UI, sans-serif">
 
     <UserControl.Resources>

@@ -328,6 +328,16 @@ WhaleLog.exe --shot-floating D:\tmp\floating-scales.png
 WhaleLog.exe --shot-calendar D:\tmp\calendar.png        :: 月历面板，放大 4 倍
 ::  ↑ 月历挂在 Popup 里（独立 HWND），上面那几个 --shot 都拍不到它，只能单独开一条。
 ::    放大是为了看"数字和小圆点压住没有"这种零点几个像素的事，1:1 的 5px 圆点用肉眼判不了。
+::    ⚠ 同样要带 --quiet（不带也会弹「已保存到…」）
+::    它会在 stdout 多打两行布局几何，例如：
+::      [geom] 面板 314.0×387.2 · DayGrid 268.0×228.0 · 列宽 38.29 · 格子 36.0×36.0 (布局占 38.0)
+::      [geom] 无裁剪：列宽装得下格子
+::    这两行是给"格子被容器裁掉"这类缺陷准备的 —— 它不报错、不动数据，只有选中格
+::    （有实心背景）才看得出来，而画面上就是几个像素的直角。有裁剪时会打成
+::    "⚠ 42/42 格被布局裁剪，可见宽 32.57（需要 38.0）"。
+::    ⚠ 面板宽度（MonthCalendarPanel.xaml 的 Width）不是随手定的：格子 36 + 左右 Margin 各 1
+::      = 38，七列要 266，再加卡片 Margin/Border/Padding 才是总宽。改窄了就会复现上面那个裁剪，
+::      自检的【月历】一节有一条断言盯着它。
 WhaleLog.exe --export-assets D:\tmp\Assets
 
 :: 打包自包含 zip（不带参数就输出到 E:\jingji\鲸记 WhaleLog <版本>.zip，版本号从 csproj 读）
