@@ -59,7 +59,6 @@ public static class DayIndex
         var entries = new Dictionary<string, int>(StringComparer.Ordinal);
         var open = new Dictionary<string, int>(StringComparer.Ordinal);
         var entryTexts = new Dictionary<string, List<string>>(StringComparer.Ordinal);
-        var fileCounts = new Dictionary<string, int>(StringComparer.Ordinal);
         var fileNames = new Dictionary<string, List<string>>(StringComparer.Ordinal);
 
         foreach (var day in days ?? Enumerable.Empty<DayNote>())
@@ -77,13 +76,16 @@ public static class DayIndex
             }
         }
 
+        // 归档计数直接取 ArchiveCounts：归档日历上那个小数字和这里的 Files 必须是同一份结果，
+        // 各算一份的话会出现"日历说 3 个、清单说 4 个"这种谁都不信的场面。
+        var fileCounts = ArchiveCounts(files);
+
         foreach (var file in files ?? Enumerable.Empty<FileRecord>())
         {
             // 没有归属日期的记录不进索引：它在月历上也没有落点。
             // 「哪天有记录」必须和月历小圆点用同一套判据（见 MainWindow.CollectMarkedDates）。
             if (string.IsNullOrEmpty(file.AddedDate)) continue;
 
-            Bump(fileCounts, file.AddedDate);
             if (!string.IsNullOrWhiteSpace(file.FileName)) Append(fileNames, file.AddedDate, file.FileName);
         }
 
@@ -104,6 +106,35 @@ public static class DayIndex
             .OrderByDescending(d => d.Date, StringComparer.Ordinal)
             .ToList();
     }
+
+    /// <summary>
+    /// 每个归档日期各有几个文件（键 yyyy-MM-dd），从新到旧排序。
+    ///
+    /// 归档日历上那个小数字就是从这里来的：**「哪天有几个文件」只有这一处判定**。
+    /// 没标日期的记录不进字典 —— 它在日历上没有落点，只能从「未标注日期」那个入口进。
+    /// 日历自己的格子会和日期字符串比对，所以键必须是定长零填充的 yyyy-MM-dd
+    /// （AddDate 本身就是这个格式，这里只是不再格式化一遍）。
+    /// </summary>
+    public static Dictionary<string, int> ArchiveCounts(IEnumerable<FileRecord>? files)
+    {
+        var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+
+        foreach (var file in files ?? Enumerable.Empty<FileRecord>())
+        {
+            if (string.IsNullOrEmpty(file.AddedDate)) continue;
+            Bump(counts, file.AddedDate);
+        }
+
+        return counts;
+    }
+
+    /// <summary>
+    /// 归档数量的角标文案。超过两位就截成「99+」——
+    /// 格子只有 36 宽，三位数会把整坨内容挤到被布局裁剪（那种缺陷不报错，只是圆角被切平）。
+    /// 真实数字在格子的 ToolTip 里，一个都不少。
+    /// </summary>
+    public static string CountBadge(int count)
+        => count <= 0 ? "" : count > 99 ? "99+" : count.ToString();
 
     /// <summary>这一天里有没有包含关键字的内容。空关键字（或纯空白）算全部命中。</summary>
     public static bool Matches(DayDigest day, string? keyword)

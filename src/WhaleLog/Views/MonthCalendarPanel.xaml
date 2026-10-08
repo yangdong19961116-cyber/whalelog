@@ -119,7 +119,7 @@
                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                     <Border Width="5" Height="5" CornerRadius="2.5" VerticalAlignment="Center"
                             Background="{DynamicResource AccentBrush}" />
-                    <TextBlock Text="有记录的日期" FontSize="11" Margin="6,0,0,0"
+                    <TextBlock x:Name="LegendText" Text="有记录的日期" FontSize="11" Margin="6,0,0,0"
                                Foreground="{DynamicResource TextMutedBrush}" />
                 </StackPanel>
                 <TextBlock x:Name="StatsText" HorizontalAlignment="Right" VerticalAlignment="Center"

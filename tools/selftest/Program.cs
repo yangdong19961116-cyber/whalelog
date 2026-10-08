@@ -488,6 +488,11 @@ internal static class Program
         Check(!calendar.Has("--shot"), "`--shot-calendar` 不该被当成 `--shot`");
         CheckEq(calendar.Value("--shot-calendar"), @"D:\tmp\cal.png", "月历截图开关应能取到值");
 
+        var fileCalendar = new CommandLine(new[] { "--shot-file-calendar", "D:\\tmp\\fcal.png" });
+        Check(!fileCalendar.Has("--shot"), "`--shot-file-calendar` 不该被当成 `--shot`");
+        Check(!fileCalendar.Has("--shot-calendar"), "`--shot-file-calendar` 也不该被当成 `--shot-calendar`");
+        CheckEq(fileCalendar.Value("--shot-file-calendar"), @"D:\tmp\fcal.png", "归档日历截图开关应能取到值");
+
         CheckEq(cmd.Value("--shot"), @"D:\tmp\a.png", "`--x=值` 应能取值");
         CheckEq(cmd.Value("--shot-notes"), @"D:\tmp\b.png", "`--x 值` 应能取值");
 
@@ -677,6 +682,31 @@ internal static class Program
             $"实际「{DayIndex.SummaryText(digests)}」");
         Check(DayIndex.SummaryText(new List<DayDigest>()) == "还没有可回溯的记录",
             $"空索引要给一句人话，实际「{DayIndex.SummaryText(new List<DayDigest>())}」");
+
+        // ---- 归档计数（文件归档页日历上的蓝点 + 小数字） ----
+        var counts = DayIndex.ArchiveCounts(files);
+
+        Check(counts.Count == 2, $"只有标了日期的文件进计数，实际 {counts.Count} 天");
+        Check(counts["2026-09-24"] == 2 && counts["2026-09-23"] == 1,
+            $"每天的数量要对，实际 09-24={counts.GetValueOrDefault("2026-09-24")}、"
+            + $"09-23={counts.GetValueOrDefault("2026-09-23")}");
+        Check(!counts.ContainsKey(""),
+            "没标日期的文件不给空字符串键 —— 日历上没有它的落点，硬塞进去会多出一格永远点不动的数字");
+
+        Check(counts["2026-09-24"] == first.Files,
+            $"归档计数必须和索引里的文件数同源（{counts["2026-09-24"]} vs {first.Files}）—— "
+            + "各算一份就会出现「日历说 3 个、清单说 4 个」");
+
+        Check(DayIndex.ArchiveCounts(null).Count == 0 && DayIndex.ArchiveCounts(new List<FileRecord>()).Count == 0,
+            "没有文件时给空表，不能抛");
+
+        Check(DayIndex.CountBadge(0) == "" && DayIndex.CountBadge(-1) == "",
+            "没有归档的日子不写数字（空串），而不是写个 0");
+        Check(DayIndex.CountBadge(1) == "1" && DayIndex.CountBadge(42) == "42" && DayIndex.CountBadge(99) == "99",
+            "一两位原样写");
+        Check(DayIndex.CountBadge(100) == "99+" && DayIndex.CountBadge(4321) == "99+",
+            $"三位数截成 99+（格子只有 36 宽，撑出去会被布局套一个矩形 clip 把圆角切平），"
+            + $"实际「{DayIndex.CountBadge(100)}」");
 
         // ---- 归档页的搜索 ----
         Check(FileSearch.Filter(files, "").Count == files.Count, "空关键字不筛");

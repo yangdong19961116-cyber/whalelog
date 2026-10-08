@@ -14,7 +14,13 @@ namespace WhaleLog.Views;
 /// 三个信息维度叠在一个格子里：
 ///   · 月份归属 —— 非本月的日子变淡，但仍可点（省掉"先翻月再选"的一步）
 ///   · 今天     —— 加一圈强调色描边
-///   · 有记录   —— 数字下面点一个小圆点，翻回上周能一眼看出哪天写过东西
+///   · 有东西   —— 数字下面点一个小圆点；传了 counts 就在点旁边再写一个当天数量
+///
+/// **两种口径共用这一个面板**：
+///   · 「有记录」—— 今日记录页用，圆点表示这天有手写记录或归档（<see cref="MainWindow.CollectMarkedDates"/>）
+///   · 「有归档」—— 文件归档页用，圆点 + 小数字（那天的归档文件数），见 Show 的 counts 参数
+/// 之所以不复制一份出来，是因为格子的几何（36 格宽、圆点 5 DIP、数字+圆点摞成一坨居中）
+/// 是被像素核销过的，复制出来的那一份会慢慢走样。
 ///
 /// 固定 6 行 × 7 列共 42 格。有的月份 5 行就够，但保持 6 行可以让面板高度恒定，
 /// 翻月时不会上下跳。
@@ -29,6 +35,15 @@ public partial class MonthCalendarPanel : UserControl
     private DateTime _displayMonth = new(DateTime.Today.Year, DateTime.Today.Month, 1);
     private DateTime _selected = DateTime.Today;
     private HashSet<string> _marked = new(StringComparer.Ordinal);
+
+    // 非 null = 归档模式。存的是"那天有几个归档文件"，圆点旁边的小数字从这里取。
+    private Dictionary<string, int>? _counts;
+
+    // 真正写进格子里那串角标文字（日期 → 文字），每渲染一次重记一次。
+    // 诊断断言必须读**这个**，不能回头去调 CountBadge 重算一遍 ——
+    // 重算等于拿同一个函数验它自己，改坏了也照样"通过"（实测反验过：把小数字整体 +1，
+    // 读数据的断言一声不响，读控件的当场就报）。
+    private readonly Dictionary<string, string> _renderedBadges = new(StringComparer.Ordinal);
 
     public MonthCalendarPanel()
     {
@@ -56,17 +71,54 @@ public partial class MonthCalendarPanel : UserControl
     /// <summary>是否还能往后翻月（不允许翻到未来的月份）。</summary>
     public bool CanGoNextMonth => NextMonthButton.IsEnabled;
 
+    /// <summary>当天有几个归档文件；非归档模式下返回"有 / 没有"的 1 / 0。诊断自检用。</summary>
+    public int CountOf(DateTime date)
+        => _counts != null
+            ? (_counts.TryGetValue(DateKey(date), out var n) ? n : 0)
+            : HasMark(date) ? 1 : 0;
+
+    /// <summary>
+    /// 格子上真正写出来的角标文字（空串 = 这天没有东西，或这一格没被渲染）。
+    ///
+    /// 读的是**渲染时记录下来的那串字**，不是拿 CountOf 重算一遍 ——
+    /// 重算的话，"小数字整体 +1"这种改动会让断言的期望值和实际值用同一个函数算出来，
+    /// 一起错、一起"通过"。自检反验过这一条：读数据的那个版本对 +1 毫无反应。
+    /// 归档模式以外恒为空串。
+    /// </summary>
+    public string BadgeOf(DateTime date) => _renderedBadges.GetValueOrDefault(DateKey(date), "");
+
+    /// <summary>归档模式下的"日期 → 文件数"表；非归档模式为 null。诊断自检用。</summary>
+    public IReadOnlyDictionary<string, int>? Counts => _counts;
+
+    /// <summary>图例那行字（「有记录的日期」/「有归档的日期」）。诊断自检用。</summary>
+    public string LegendTextValue => LegendText.Text;
+
+    /// <summary>底部统计那行字。诊断自检用。</summary>
+    public string StatsTextValue => StatsText.Text;
+
     /// <summary>
     /// 打开面板并渲染指定月份。
+    ///
     /// markedDates 传"有内容"的日期集合（yyyy-MM-dd），用来画小圆点。
+    /// counts 传"日期 → 归档文件数"就是归档模式：圆点旁边多一个小数字，
+    /// 图例、统计和 ToolTip 全部换成归档口径（传了 counts 就**不看** markedDates 了，
+    /// 两者同时传只会让"圆点在、数字不在"这种不一致有机可乘）。
     /// </summary>
-    public void Show(DateTime displayMonth, DateTime selected, IEnumerable<string>? markedDates)
+    public void Show(DateTime displayMonth, DateTime selected, IEnumerable<string>? markedDates,
+                     IReadOnlyDictionary<string, int>? counts = null)
     {
         _displayMonth = new DateTime(displayMonth.Year, displayMonth.Month, 1);
         _selected = selected.Date;
-        _marked = markedDates == null
-            ? new HashSet<string>(StringComparer.Ordinal)
-            : new HashSet<string>(markedDates, StringComparer.Ordinal);
+
+        _counts = counts == null
+            ? null
+            : new Dictionary<string, int>(counts, StringComparer.Ordinal);
+
+        _marked = _counts != null
+            ? new HashSet<string>(_counts.Keys, StringComparer.Ordinal)
+            : markedDates == null
+                ? new HashSet<string>(StringComparer.Ordinal)
+                : new HashSet<string>(markedDates, StringComparer.Ordinal);
 
         JumpInput.Clear();   // 上次输入不该留到下一次
         Rebuild();
@@ -82,8 +134,8 @@ public partial class MonthCalendarPanel : UserControl
         }), System.Windows.Threading.DispatcherPriority.Input);
     }
 
-    /// <summary>翻月。delta 为 -1 / +1。</summary>
-    public void GoMonth(int delta) => Show(_displayMonth.AddMonths(delta), _selected, _marked);
+    /// <summary>翻月。delta 为 -1 / +1。口径（归档 / 记录）跟着面板一起翻过去。</summary>
+    public void GoMonth(int delta) => Show(_displayMonth.AddMonths(delta), _selected, _marked, _counts);
 
     /// <summary>
     /// 选中某一天：更新选中态并抛出 DateChosen。
@@ -137,6 +189,7 @@ public partial class MonthCalendarPanel : UserControl
         NextMonthButton.IsEnabled = _displayMonth < new DateTime(DateTime.Today.Year, DateTime.Today.Month, 1);
 
         DayGrid.Children.Clear();
+        _renderedBadges.Clear();
 
         var start = GridStart();
         int marked = 0;
@@ -148,12 +201,22 @@ public partial class MonthCalendarPanel : UserControl
             DayGrid.Children.Add(CreateDayCell(date));
         }
 
+        // 图例和统计都得跟着口径走：归档页里写"有记录的日期"是错的 ——
+        // 那一天可能一条记录都没有，只有几个文件。
+        LegendText.Text = IsArchiveMode ? "有归档的日期" : "有记录的日期";
+
         StatsText.Text = marked == 0
             ? $"今天 {DateTime.Today:M/d}"
-            : $"今天 {DateTime.Today:M/d} · {marked} 天有记录";
+            : $"今天 {DateTime.Today:M/d} · {marked} 天{(IsArchiveMode ? "有归档" : "有记录")}";
 
         RefreshJumpHint();
     }
+
+    /// <summary>当前是不是"归档计数"口径（圆点旁边还有数字）。</summary>
+    private bool IsArchiveMode => _counts != null;
+
+    /// <summary>这一天算不算"有东西"（两个口径通用）。</summary>
+    private bool HasMark(DateTime date) => _marked.Contains(DateKey(date));
 
     /// <summary>日期的字符串键，用来和「有记录」集合比对。</summary>
     private static string DateKey(DateTime date) => date.ToString("yyyy-MM-dd");
@@ -165,7 +228,7 @@ public partial class MonthCalendarPanel : UserControl
         bool isSelected = date.Date == _selected;
         bool isFuture = date.Date > DateTime.Today;
         bool isWeekend = date.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday;
-        bool hasContent = _marked.Contains(DateKey(date));
+        int count = CountOf(date);
 
         var cell = new Button
         {
@@ -174,7 +237,7 @@ public partial class MonthCalendarPanel : UserControl
             Margin = new Thickness(1),
             BorderThickness = new Thickness(isToday && !isSelected ? 1.5 : 1),
             IsEnabled = !isFuture,
-            ToolTip = isFuture ? null : BuildTooltip(date, hasContent),
+            ToolTip = isFuture ? null : BuildTooltip(date, count),
         };
         cell.Style = (Style)Resources["DayCell"];
 
@@ -209,7 +272,7 @@ public partial class MonthCalendarPanel : UserControl
             : "TextPrimaryBrush");
         if (isToday && !isSelected) number.FontWeight = FontWeights.Medium;
 
-        // 数字和圆点上下摞成一坨，整坨在格子里居中。
+        // 数字和圆点（归档模式下还有数量）上下摞成一坨，整坨在格子里居中。
         //
         // 以前是"数字撑满格子、圆点贴格子底"两个独立对齐 —— 那样两者的间距由
         // 字体行高和格子高度各自决定，谁也算不出来。实测就是这样：数字墨迹落在
@@ -217,27 +280,17 @@ public partial class MonthCalendarPanel : UserControl
         // 把数字笔画盖掉一块。而且就算把圆点底距压到 0，顶边也只到 540，
         // 还是够不着数字底下 —— 36 高的格子里，光移圆点根本走不出去。
         //
-        // 改成一坨之后，间距是 Margin 上的 2，**与字体无关的绝对量**；
+        // 改成一坨之后，间距是 Margin 上的 1，**与字体无关的绝对量**；
         // 整坨居中，数字自然上移，两者再也不会撞。
-        var dot = new Ellipse
-        {
-            Width = 5,
-            Height = 5,
-            HorizontalAlignment = HorizontalAlignment.Center,
-            Margin = new Thickness(0, 1, 0, 0),
-            // 用 Opacity 而不是 Collapsed：Collapsed 不占位，会让数字回到格子正中，
-            // 于是同一行里"有记录"和"没记录"的日子数字高度差 3.5 DIP，一眼就是错位。
-            Opacity = hasContent ? 1 : 0,
-        };
-        dot.SetResourceReference(Shape.FillProperty, isSelected ? "AccentForegroundBrush" : "AccentBrush");
-
+        // 归档模式在圆点右边接一个小数字，仍然在这一坨里：宽度方向由 StackPanel 自己算，
+        // 不会撑到格子外面去（撑出去就会被布局套一个矩形 clip，把圆角切平）。
         var content = new StackPanel
         {
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center,
         };
         content.Children.Add(number);
-        content.Children.Add(dot);
+        content.Children.Add(BuildMarkRow(date, isSelected, count));
         cell.Content = content;
 
         // 非本月的日子也允许点，但视觉上退到背景里
@@ -249,12 +302,83 @@ public partial class MonthCalendarPanel : UserControl
         return cell;
     }
 
-    private string BuildTooltip(DateTime date, bool hasContent)
+    /// <summary>
+    /// 数字下面那一行：一个圆点；归档模式下圆点右边再跟一个当天的归档数量。
+    ///
+    /// 藏起来的时候用 Opacity 而不是 Collapsed —— Collapsed 不占位，
+    /// 会让数字回到格子正中，于是同一行里"有"和"没有"的日子数字高度差 3.5 DIP，
+    /// 一眼就是错位。**整行一起透明**（点点和数字是一体，只藏数字会剩一个孤零零的点）。
+    ///
+    /// 顺手把真正写出去的那串角标文字记进 <c>_renderedBadges</c>，给诊断侧核销用。
+    /// </summary>
+    private UIElement BuildMarkRow(DateTime date, bool isSelected, int count)
+    {
+        var brush = isSelected ? "AccentForegroundBrush" : "AccentBrush";
+
+        if (!IsArchiveMode)
+        {
+            // 今日记录页那套：只有一个点。这条路径的几何是量过像素核销过的（见上面的长注释），
+            // 除了取值来源以外一个数都没动。
+            var lone = new Ellipse
+            {
+                Width = 5,
+                Height = 5,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                Margin = new Thickness(0, 1, 0, 0),
+                Opacity = count > 0 ? 1 : 0,
+            };
+            lone.SetResourceReference(Shape.FillProperty, brush);
+            return lone;
+        }
+
+        var row = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            Margin = new Thickness(0, 1, 0, 0),
+            Opacity = count > 0 ? 1 : 0,
+        };
+
+        var dot = new Ellipse
+        {
+            Width = 5,
+            Height = 5,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        dot.SetResourceReference(Shape.FillProperty, brush);
+        row.Children.Add(dot);
+
+        // 8.5 号字是为了让"数字 + 5 DIP 点"整行不超过格子宽度：
+        // 两位数最宽也就 15 个 DIP 左右，加上点和间距一共 22，离 34 的内容区还很远。
+        // 数字本身封顶两位（99+），见 DayIndex.CountBadge。
+        var badge = new TextBlock
+        {
+            Text = DayIndex.CountBadge(count),
+            FontSize = 8.5,
+            Margin = new Thickness(2, 0, 0, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        badge.SetResourceReference(TextBlock.ForegroundProperty, brush);
+        row.Children.Add(badge);
+
+        // 记的是**控件上那串字**（而不是刚才算出来的 count）：改这里的赋值，
+        // 诊断那边读到的就会跟着变，断言拦得住。
+        _renderedBadges[DateKey(date)] = badge.Text;
+
+        return row;
+    }
+
+    /// <summary>
+    /// 格子上的提示语。归档模式下必须写清"几个文件"——
+    /// 数字封顶在 99+，说到具体数量只能靠这里。
+    /// </summary>
+    private string BuildTooltip(DateTime date, int count)
     {
         var text = date.ToString("yyyy-MM-dd") + " " + ReportService.WeekdayText(date);
         if (date.Date == DateTime.Today) text += "（今天）";
-        if (hasContent) text += "\n有记录";
-        return text;
+        if (count <= 0) return text;
+
+        return text + (IsArchiveMode ? $"\n{count} 个归档文件" : "\n有记录");
     }
 
     // ------------------------------------------------------------------

@@ -770,6 +770,66 @@ public static class DiagnosticsService
         var panel = new MonthCalendarPanel();
         panel.Show(today, today, MainWindow.CollectMarkedDates());
 
+        RenderPanelToPng(panel, path, scale);
+        DumpCalendarGeometry(panel);
+        return path;
+    }
+
+    /// <summary>
+    /// 把**归档日历**（文件归档页那个：蓝点 + 旁边的当天归档数量）放大渲染成 PNG。
+    ///
+    /// 为什么不能借 `--shot`（截主窗口）：它和今日记录页的月历一样挂在 Popup 里，
+    /// 而 Popup 是独立 HWND，`RenderTargetBitmap.Render(主窗口)` 拍不到它。
+    ///
+    /// 为什么必须看图：格子只有 36 DIP 宽，里面要挤下"日期数字 + 5 DIP 的圆点 +
+    /// 一个 8.5 号的小数字"。断言只量得到"控件有宽度"，圆点有没有被数字盖住、
+    /// 小数字有没有顶到格子边（顶出去就会被布局套一个矩形 clip 把圆角切平）只有放大看才知道。
+    /// </summary>
+    public static string WriteFileCalendarShot(string path, int scale = 4)
+    {
+        if (scale < 1) scale = 1;
+
+        var counts = DayIndex.ArchiveCounts(App.Store.Book.Files);
+
+        // 锚到"归档最多的那一天"所在的月 —— 要核销的是最挤的格子：
+        // 那天可能是二十来个文件，两位数的小数字是最容易顶破格子宽度的情况。
+        // （界面上打开时停的是"最新一个有归档的月"，那是给用户的默认值，不是这张图的重点。）
+        var busiestKey = counts.Count == 0
+            ? null
+            : counts.OrderByDescending(kv => kv.Value).First().Key;
+        var anchor = busiestKey != null && DateTime.TryParse(busiestKey, out var d)
+            ? d.Date
+            : DateTime.Today;
+
+        var panel = new MonthCalendarPanel();
+        panel.Show(anchor, anchor, null, counts);
+
+        RenderPanelToPng(panel, path, scale);
+        DumpCalendarGeometry(panel);
+
+        if (counts.Count == 0)
+        {
+            Console.WriteLine("[archive-cal] 数据里还没有任何归档");
+        }
+        else
+        {
+            var busiest = counts[busiestKey!];
+            Console.WriteLine($"[archive-cal] {counts.Count} 天有归档 · 共 {counts.Values.Sum()} 个文件 · "
+                              + $"最密的一天 {busiestKey}（{busiest} 个），这一屏停在 {anchor:yyyy-MM}");
+        }
+
+        return path;
+    }
+
+    /// <summary>
+    /// 把一个离屏面板按整数倍放大渲染成 PNG。
+    ///
+    /// 面板自己是透明的（圆角卡片外那圈 Margin 是空的），垫一层窗口底色才看得出边界，
+    /// 也才判断得了"圆点是不是贴到格子边缘了"。放大靠 RenderTargetBitmap 的 dpi 参数，
+    /// 是矢量重绘、不是位图拉伸，所以对着图能量亚像素的间距。
+    /// </summary>
+    private static void RenderPanelToPng(FrameworkElement panel, string path, int scale)
+    {
         panel.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
         var size = panel.DesiredSize;
         panel.Arrange(new Rect(new Point(0, 0), size));
@@ -783,8 +843,6 @@ public static class DiagnosticsService
             pw, ph, dpi, dpi, System.Windows.Media.PixelFormats.Pbgra32);
         panelBitmap.Render(panel);
 
-        // 面板本身是透明的（圆角卡片外那圈 Margin 是空的），垫一层窗口底色，
-        // 否则看图分不清卡片边界，也没法判断"圆点是不是贴到格子边缘了"。
         var visual = new System.Windows.Media.DrawingVisual();
         using (var dc = visual.RenderOpen())
         {
@@ -805,11 +863,8 @@ public static class DiagnosticsService
         var dir = Path.GetDirectoryName(path);
         if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
 
-        using var fs2 = File.Create(path);
-        encoder.Save(fs2);
-
-        DumpCalendarGeometry(panel);
-        return path;
+        using var file = File.Create(path);
+        encoder.Save(file);
     }
 
     /// <summary>
@@ -3642,21 +3697,137 @@ public static class DiagnosticsService
 
             var total = App.Store.Book.Files.Count;
 
-            check("目录条的胶囊数等于日期分组数",
-                window.FileDateChipCount == window.FileGroups.Count,
-                $"胶囊 {window.FileDateChipCount} 颗 / 分组 {window.FileGroups.Count} 组");
-
-            check("只有一天的文件时收起目录条（一颗胶囊没有可去的地方）",
-                window.FileDateIndexVisible == (window.FileGroups.Count > 1),
-                $"{window.FileGroups.Count} 组，目录条{(window.FileDateIndexVisible ? "显示" : "隐藏")}");
-
-            if (window.FileGroups.Count > 1)
+            // 归档日历：标记的日子必须**正好**是有归档的日子，格子上写的数字必须是那天的文件数。
+            // 期望值在这里独立捋一遍（不调 DayIndex），否则"计数函数自己写错"会跟着一起通过。
+            var wantCounts = new Dictionary<string, int>(StringComparer.Ordinal);
+            foreach (var f in App.Store.Book.Files)
             {
-                var key = window.FileGroups[0].Key;
-                check("点目录能滚到对应的那一组", window.JumpToFileGroup(key), key);
-                check("不在列表里的日期不会假装跳成功",
-                    !window.JumpToFileGroup("1999-01-01"), "1999-01-01");
+                if (string.IsNullOrEmpty(f.AddedDate)) continue;
+                wantCounts[f.AddedDate] = wantCounts.TryGetValue(f.AddedDate, out var c) ? c + 1 : 1;
             }
+
+            check("归档日历在「全部」且不止一天时露出",
+                window.FileCalendarVisible == (wantCounts.Count > 1),
+                $"{wantCounts.Count} 天有归档，日历{(window.FileCalendarVisible ? "显示" : "隐藏")}");
+
+            window.OpenFileCalendar();
+            window.UpdateLayout();
+
+            var cal = window.FileCalendar;
+
+            check("日历标的日子正好是有归档的日子（不多不少）",
+                cal.Counts != null
+                && cal.Counts.Count == wantCounts.Count
+                && wantCounts.All(kv => cal.Counts.TryGetValue(kv.Key, out var v) && v == kv.Value),
+                $"日历 {cal.Counts?.Count ?? 0} 天 / 库里 {wantCounts.Count} 天");
+
+            // 角标要逐格读**真正渲染出来的那串字**（BadgeOf 读的就是面板渲染时记下来的文本，
+            // 不是拿计数函数重算一遍 —— 重算的话"数字整体 +1"这种改动会一起错、一起通过）。
+            // 先把日历翻到"有归档的日子最多"的那个月：打开时停的月份常常只有今天一天有归档，
+            // 那样只核得到一个格子，等于没核。
+            var denseMonth = wantCounts.Keys
+                .Select(k => DateTime.Parse(k))
+                .GroupBy(d => new DateTime(d.Year, d.Month, 1))
+                .OrderByDescending(g => g.Count())
+                .First().Key;
+
+            for (int guard = 0; cal.DisplayMonth > denseMonth && guard < 36; guard++) cal.GoMonth(-1);
+
+            var onScreen = cal.VisibleDates
+                .Where(d => wantCounts.ContainsKey(d.ToString("yyyy-MM-dd")))
+                .ToList();
+
+            var badBadge = onScreen
+                .Where(d => cal.BadgeOf(d) != DayIndex.CountBadge(wantCounts[d.ToString("yyyy-MM-dd")]))
+                .ToList();
+
+            check("这一屏上每个有归档的日子，格子里写的数字就是那天的文件数",
+                onScreen.Count > 0 && badBadge.Count == 0,
+                onScreen.Count == 0
+                    ? "这一屏上一个有归档的日子都没有，量不到"
+                    : badBadge.Count == 0
+                        ? $"{onScreen.Count} 格逐个核对过（{cal.DisplayMonth:yyyy-MM}）"
+                        : string.Join("、", badBadge.Take(3).Select(d =>
+                            $"{d:yyyy-MM-dd} 写的是「{cal.BadgeOf(d)}」"
+                            + $"应为「{DayIndex.CountBadge(wantCounts[d.ToString("yyyy-MM-dd")])}」")));
+
+            // 反过来也要查：没有归档的日子写数字，等于整月都是数字，那这个标记就废了
+            var stray = cal.VisibleDates
+                .Where(d => !wantCounts.ContainsKey(d.ToString("yyyy-MM-dd")) && cal.BadgeOf(d).Length > 0)
+                .ToList();
+
+            check("没有归档的日子一个数字都不写",
+                stray.Count == 0, $"{stray.Count} 格多余");
+
+            check("图例说的是「有归档的日期」（归档页里写「有记录」就串了口径）",
+                cal.LegendTextValue == "有归档的日期", cal.LegendTextValue);
+
+            check("日历上每一颗亮点都点得动（标记的日子和列表分组是同一批）",
+                wantCounts.Keys.All(window.JumpToFileGroup),
+                $"{wantCounts.Count} 天逐个试过");
+
+            check("不在列表里的日期不会假装跳成功",
+                !window.JumpToFileGroup("1999-01-01"), "1999-01-01");
+
+            if (wantCounts.Count > 0)
+            {
+                // 真的点一格：应当收起日历、把那天设成锚点、让列表滚过去，并在状态栏说一声
+                var oldest = wantCounts.Keys.OrderBy(k => k, StringComparer.Ordinal).First();
+                var picked = DateTime.Parse(oldest);
+
+                var accepted = cal.Pick(picked);
+                window.UpdateLayout();
+
+                check("点日历上的一天：收起日历、锚点落到那天、列表滚到那一组",
+                    accepted
+                    && !window.FileCalendarPopup.IsOpen
+                    && window.FileCalendarAnchor == picked
+                    && window.JumpToFileGroup(oldest),
+                    $"锚点 {window.FileCalendarAnchor:yyyy-MM-dd}，日历{(window.FileCalendarPopup.IsOpen ? "还开着" : "已收起")}，"
+                    + $"状态栏「{window.StatusLine}」");
+            }
+
+            var undated = App.Store.Book.Files.Count(f => string.IsNullOrEmpty(f.AddedDate));
+            check("没标日期的归档有单独入口（库里没有这种文件时胶囊收起）",
+                window.FileUndatedCount == undated && window.FileUndatedVisible == (undated > 0),
+                $"入口 {window.FileUndatedCount} 个 / 库里 {undated} 个，"
+                + $"胶囊{(window.FileUndatedVisible ? "露出" : "收起")}");
+
+            // 真实数据里"没标日期"的文件可能一个都没有，这条路径就永远没被跑到过 ——
+            // 而它现在只剩一颗胶囊在兜着，坏掉的表现是"那几个文件从界面上消失"。
+            // 所以临时塞一条进来验一遍，验完原样撤回（同「悬浮窗的文件拖放」那节的做法）。
+            var probe = new FileRecord
+            {
+                FileName = "自检-没日期.txt",
+                AddedDate = "",
+                Category = "未分类",
+                FullPath = Path.Combine(AppPaths.Root, "自检-没日期.txt"),
+            };
+
+            try
+            {
+                App.Store.Book.Files.Add(probe);
+                window.SetFileFilter(true);   // 这条路径末尾会重刷列表
+                window.UpdateLayout();
+
+                bool jumpable = window.JumpToFileGroup(DateGrouping.UnknownKey);
+
+                check("没标日期的文件被那颗胶囊兜住（真的露出来）并且点得动",
+                    window.FileUndatedCount == undated + 1 && window.FileUndatedVisible && jumpable,
+                    $"入口 {window.FileUndatedCount} 个（原有 {undated} 个），"
+                    + $"胶囊{(window.FileUndatedVisible ? "露出" : "收起")}，"
+                    + $"跳转{(jumpable ? "成功" : "失败")}");
+            }
+            finally
+            {
+                App.Store.Book.Files.Remove(probe);
+                window.SetFileFilter(true);
+                window.UpdateLayout();
+            }
+
+            check("撤回之后列表回到原来的条数",
+                window.VisibleFileCount == total,
+                $"界面 {window.VisibleFileCount} 个 / 库里 {total} 个");
 
             var sample = App.Store.Book.Files.FirstOrDefault(f => f.FileName.Length >= 4);
 
@@ -3672,9 +3843,11 @@ public static class DiagnosticsService
                     window.VisibleFileCount == hit,
                     $"界面 {window.VisibleFileCount} 个，按规则算 {hit} 个（关键字「{keyword}」）");
 
-                check("搜索时目录条跟着只留命中的日期",
-                    window.FileDateChipCount == window.FileGroups.Count,
-                    $"胶囊 {window.FileDateChipCount} 颗 / 分组 {window.FileGroups.Count} 组");
+                check("搜索时日历只标命中的日子（和列表是同一份数据）",
+                    window.FileCalendar.Counts?.Count
+                        == window.FileGroups.Count(g => g.Key != DateGrouping.UnknownKey),
+                    $"日历 {window.FileCalendar.Counts?.Count ?? 0} 天 / 列表里"
+                    + $" {window.FileGroups.Count(g => g.Key != DateGrouping.UnknownKey)} 个日期组");
 
                 // 在「只看当天」里直接打字：应当自动放宽到全部 ——
                 // 不放宽的话，用户敲完发现自己要找的东西明明归档过却没有，只会以为记录丢了。

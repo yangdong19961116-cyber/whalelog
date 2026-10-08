@@ -91,7 +91,7 @@ public partial class App : Application
         bool oneShot = HasFlag("--selfcheck") || HasFlag("--create-shortcut")
                     || HasFlag("--shot") || HasFlag("--shot-notes") || HasFlag("--shot-settings")
                     || HasFlag("--shot-floating") || HasFlag("--shot-calendar")
-                    || HasFlag("--shot-recent")
+                    || HasFlag("--shot-recent") || HasFlag("--shot-file-calendar")
                     || HasFlag("--export-assets");
 
         if (!oneShot)
@@ -232,6 +232,31 @@ public partial class App : Application
                 LogCrash(ex);
                 if (!HasFlag("--quiet"))
                     MessageBox.Show(ex.Message, "鲸记 · 往期清单截图失败",
+                        MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+
+            Shutdown();
+            return;
+        }
+
+        // 截图模式：把归档日历（文件归档页那个"蓝点 + 当天归档数"）单独放大渲染成 PNG。
+        // 它也在 Popup 里，和上面两条同理。
+        if (HasFlag("--shot-file-calendar"))
+        {
+            var target = ArgValue("--shot-file-calendar")
+                         ?? Path.Combine(AppPaths.LogDir, "file-calendar.png");
+            try
+            {
+                DiagnosticsService.WriteFileCalendarShot(target);
+                if (!HasFlag("--quiet"))
+                    MessageBox.Show($"已保存到：\n{target}", "鲸记 · 归档日历截图",
+                        MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            catch (Exception ex)
+            {
+                LogCrash(ex);
+                if (!HasFlag("--quiet"))
+                    MessageBox.Show(ex.Message, "鲸记 · 归档日历截图失败",
                         MessageBoxButton.OK, MessageBoxImage.Warning);
             }
 

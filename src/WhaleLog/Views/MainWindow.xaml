@@ -443,18 +443,49 @@
                 </Border>
 
                 <!--
-                    日期目录条：每一颗是一个有文件的日期 + 那天的文件数，点一下滚到那一组。
-                    归到几十个文件时，「全部」视图是一长条卡片，找某一天的记录只能一路滚到底；
-                    这一行就是那份长列表的目录。只在「全部」且不止一天时出现 ——
-                    「只看当天」本来就只有一天，再挂个目录是噪音。
+                    归档日历。以前这里是一排会无限长下去的日期胶囊（有归档的一天一颗），
+                    归档攒到几百天就糊成好几行、还得自己上下找。
+                    日历永远是固定的 42 格：哪天有归档、各有多少，一格一格看过去就行，
+                    不会再"堆积在一起"。
+
+                    和今日记录页那个月历是**同一个控件**（MonthCalendarPanel），
+                    差别只在口径 —— 这里传"日期 → 文件数"，于是圆点旁边多一个小数字。
+
+                    日历本体挂在 Popup 里：它高 300 多 DIP，直接摊在这一页会把下面的
+                    文件列表压到只剩一两张卡片（主面板默认才 700 高）。
                 -->
-                <ScrollViewer x:Name="FileDateIndexScroll" Grid.Row="2" Margin="0,10,0,0"
-                              MaxHeight="62" VerticalScrollBarVisibility="Auto"
-                              HorizontalScrollBarVisibility="Disabled"
-                              Style="{StaticResource SlimScroller}"
-                              Visibility="Collapsed">
-                    <WrapPanel x:Name="FileDateIndex" />
-                </ScrollViewer>
+                <StackPanel x:Name="FileCalendarBar" Grid.Row="2" Orientation="Horizontal"
+                            Margin="0,10,0,0" Visibility="Collapsed">
+                    <Button x:Name="FileCalendarButton" Style="{StaticResource GhostButton}"
+                            Padding="10,4" Click="OnFileCalendarButtonClick"
+                            ToolTip="按整月挑日期：有归档的日子标一个蓝点和当天数量，点一下滚到那一组">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="归档日历" FontSize="13" VerticalAlignment="Center" />
+                            <TextBlock x:Name="FileCalendarAnchorText" FontSize="13" FontWeight="Medium"
+                                       Margin="7,0,0,0" VerticalAlignment="Center" />
+                            <TextBlock Text="▾" FontSize="11" Margin="7,1,0,0"
+                                       VerticalAlignment="Center"
+                                       Foreground="{DynamicResource TextMutedBrush}" />
+                        </StackPanel>
+                    </Button>
+
+                    <!--
+                        没标归档日期的文件在日历上没有落点（键就是日期本身）。
+                        改版前它是一颗「未标注日期」的胶囊，得给它留个入口，
+                        否则那些人会从界面上彻底消失。
+                    -->
+                    <Button x:Name="FileUndatedButton" Style="{StaticResource DateChipButton}"
+                            Margin="10,0,0,0" VerticalAlignment="Center"
+                            Visibility="Collapsed" Click="OnFileUndatedClick" />
+
+                    <Popup x:Name="FileCalendarPopup" StaysOpen="False" AllowsTransparency="True"
+                           PopupAnimation="Fade" Placement="Bottom"
+                           PlacementTarget="{Binding ElementName=FileCalendarButton}"
+                           HorizontalOffset="-14" VerticalOffset="4"
+                           Closed="OnFileCalendarPopupClosed">
+                        <v:MonthCalendarPanel x:Name="FileCalendarPanel" />
+                    </Popup>
+                </StackPanel>
 
                 <Grid x:Name="FileDropZone" Grid.Row="3" Margin="0,12,0,0">
                     <ScrollViewer Style="{StaticResource SlimScroller}">
