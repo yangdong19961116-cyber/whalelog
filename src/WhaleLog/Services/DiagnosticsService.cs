@@ -441,6 +441,12 @@ public static class DiagnosticsService
         Section("归档与完工的互动");
         ProbeArchiveAndCheer(Check, sb);
 
+        // 闲置小动作以前是 93 个等概率随机，现在按"今天干得怎么样"加权。
+        // 失效方式同样是安静的：素材改名 → hint 一条都匹配不上 → 悄悄退回纯随机，
+        // 界面照常出动作，你只是再也看不出它跟你的工作有什么关系了。
+        Section("闲置动作：按工作状态挑选");
+        ProbeAmbientMood(Check, sb);
+
         // ---- 透明视频 ----
         // 这条链路跨进程（ffmpeg 是外部程序），断了的表现是"点下去什么都不发生"。
         Section("透明视频动画");
@@ -2556,6 +2562,171 @@ public static class DiagnosticsService
             }
             catch { /* 还原不了也只能继续 */ }
 
+            try { window?.Close(); }
+            catch { /* 关不掉不影响结论 */ }
+
+            try
+            {
+                Environment.SetEnvironmentVariable("WHALELOG_ASSET_DIR", previousAssetDir);
+                IconAssets.Reload();
+            }
+            catch { /* 还原失败也只能继续 */ }
+
+            try { Directory.Delete(probeRoot, true); }
+            catch { /* 删不掉不影响结论 */ }
+        }
+    }
+
+    /// <summary>
+    /// 闲置小动作按工作状态加权（见 <see cref="AmbientPicker"/>）。
+    ///
+    /// 这一节盯的是一件**安静失效**的事：hint 是动作名的子串，素材一改名就匹配不上，
+    /// 而表现只是"加权不生效"（悄悄退回纯随机）—— 不报错、界面上完全看不出来。
+    /// 所以前半段拿**真实的**闲置动作清单跟每条 hint 对账：零命中 = 改名了，
+    /// 一次命中一大堆 = hint 写太短、把不相关的动作也捞进来了。
+    ///
+    /// 后半段造一份最小素材跑界面路径（扫描 → 按状态挑 → 真的播起来）。
+    /// 挑的算法本身在纯逻辑自测里测 —— 那边能喂假数据、能跑几千次统计分布；
+    /// 这里只验"接线接对了"，以及"加权不是硬映射"。
+    /// </summary>
+    private static void ProbeAmbientMood(CheckFn check, StringBuilder sb)
+    {
+        // ---------------- 前半：hint 跟真实素材对账 ----------------
+        if (!CharacterPacks.IsAvailable(CharacterPacks.DshId))
+        {
+            sb.AppendLine("  （没装新版形象包，跳过闲置动作的加权断言）");
+            return;
+        }
+
+        var dshRoot = CharacterPacks.DirOf(CharacterPacks.DshId);
+        var realAmbient = AnimLibrary.Scan(dshRoot).ActionsWithRole(AnimActions.Ambient);
+        if (realAmbient.Count == 0)
+        {
+            sb.AppendLine($"  （{dshRoot} 下没有 ambient-* 动作，跳过）");
+            return;
+        }
+
+        var dead = new List<string>();     // 一条动作都命中不了 —— 素材改名了
+        var greedy = new List<string>();   // 一捞一大把 —— hint 写太短
+
+        foreach (var hint in AmbientPicker.AllHints)
+        {
+            var n = realAmbient.Count(a => a.Contains(hint, StringComparison.OrdinalIgnoreCase));
+            if (n == 0) dead.Add(hint);
+            else if (n > 3) greedy.Add($"{hint}→{n} 个");
+        }
+
+        check("每条 hint 都能在真实素材里找到对应动作（素材改名会让加权静默失效）",
+            dead.Count == 0,
+            dead.Count == 0
+                ? $"{AmbientPicker.AllHints.Count} 条 hint 全部命中（对着 {realAmbient.Count} 个闲置动作）"
+                : $"零命中 {dead.Count} 条：{string.Join("、", dead.Take(6))}");
+
+        check("没有 hint 一次捞进太多动作（子串写太短会顺手带走无关动作）",
+            greedy.Count == 0,
+            greedy.Count == 0 ? "单条 hint 最多命中 3 个" : string.Join("、", greedy));
+
+        // 典型场景各跑一遍，把"抬了几个"记进报告 —— 出问题时这一行能直接看出是哪个状态没配上
+        foreach (var (label, ctx) in new[]
+        {
+            ("空白下午", new AmbientPicker.Context(new DateTime(2026, 1, 1, 15, 0, 0), 0, 0, 0, 18, null)),
+            ("忙着推进", new AmbientPicker.Context(new DateTime(2026, 1, 1, 15, 0, 0), 4, 1, 0, 18, null)),
+            ("堆着没收尾", new AmbientPicker.Context(new DateTime(2026, 1, 1, 15, 0, 0), 6, 3, 0, 18, null)),
+            ("凌晨两点", new AmbientPicker.Context(new DateTime(2026, 1, 1, 2, 0, 0), 0, 0, 0, 18, null)),
+        })
+        {
+            var w = FloatingWindow.WeighForProbe(
+                realAmbient, ctx.Now, ctx.Entries, ctx.OpenEntries, ctx.Files, ctx.WorkEndHour, ctx.LastActivity);
+            var hot = w.Count(kv => kv.Value > 1.0);
+            sb.AppendLine($"  {label}：抬权 {hot}/{realAmbient.Count} 个　{AmbientPicker.Explain(ctx)}");
+
+            // 全抬等于没加权，一个都不抬等于功能没生效 —— 两头都要拦
+            check($"{label}下抬权的动作是少数但不止一个（全抬 = 没加权，零抬 = 没生效）",
+                hot > 0 && hot <= realAmbient.Count / 2, $"抬权 {hot}/{realAmbient.Count}");
+        }
+
+        // ---------------- 后半：界面路径真的走一遍 ----------------
+        var probeRoot = Path.Combine(AppPaths.LogDir, "ambient-mood-probe");
+        var assetDir = Path.Combine(probeRoot, "Assets");
+
+        const int frameSize = 720;
+        var moodAction = AnimActions.Ambient + "-工作状态-忙碌点按";  // 被 InProgress/Backlog 抬权
+        var plainAction = AnimActions.Ambient + "-探针毫不相干的动作"; // 不被任何 hint 命中
+
+        string? previousAssetDir = null;
+        FloatingWindow? window = null;
+        var settings = App.Settings.Settings;
+
+        try
+        {
+            previousAssetDir = Environment.GetEnvironmentVariable("WHALELOG_ASSET_DIR");
+
+            // 位置挪到屏幕外、关掉自动收起（收起会顺手把坐标写进设置，外面那层快照兜底）
+            settings.FloatingAnimations = true;
+            settings.FloatingAutoCollapse = false;
+            settings.FloatingLeft = Offscreen;
+            settings.FloatingTop = Offscreen;
+
+            WriteProbeAnimation(assetDir, moodAction, frameSize, 2, 2);
+            WriteProbeAnimation(assetDir, plainAction, frameSize, 2, 2);
+
+            Environment.SetEnvironmentVariable("WHALELOG_ASSET_DIR", assetDir);
+
+            window = new FloatingWindow
+            {
+                WindowStartupLocation = WindowStartupLocation.Manual,
+                ShowInTaskbar = false,
+                ShowActivated = false,
+                BackgroundProbeMode = true,
+                Left = Offscreen,
+                Top = Offscreen,
+            };
+            window.Show();
+            window.UpdateLayout();
+
+            check("两个探针动作都被认成闲置小动作",
+                window.AmbientActionCount == 2,
+                $"认到 {window.AmbientActionCount} 个");
+
+            check("能说清此刻是什么工作状态（这一行就是「为什么今天总在叹气」的答案）",
+                window.AmbientExplain.StartsWith("状态 [", StringComparison.Ordinal),
+                window.AmbientExplain);
+
+            var player = window.AnimPlayer;
+            if (player == null)
+            {
+                check("播放器已建立", false, "拿不到播放器");
+                return;
+            }
+
+            check("按状态挑出来的动作真的播起来了，而且记进了「最近播过」",
+                window.PlayAmbientForProbe() &&
+                window.AmbientRecent.Count == 1 &&
+                window.AmbientRecent[0] == window.CurrentAnimation,
+                $"在播 {window.CurrentAnimation ?? "（无）"}；最近队列 [{string.Join("、", window.AmbientRecent)}]");
+
+            // 连挑若干次，两个动作都该露过面 —— 加权**不是**"只播这几个"的硬映射：
+            // 没被抬权的动作权重仍是 1，永远有机会冒出来（小鲸鱼该有自己的想法）
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            for (int i = 0; i < 24; i++)
+            {
+                player.AdvanceBy(TimeSpan.FromMilliseconds(500));   // 先确保上一段播完
+                if (window.PlayAmbientForProbe() && window.CurrentAnimation is { } cur) seen.Add(cur);
+            }
+
+            check("连挑 24 次两个动作都露过面（加权不是硬映射，池子里所有动作都还在）",
+                seen.Count == 2,
+                $"出现过 {seen.Count} 个：{string.Join("、", seen)}");
+
+            sb.AppendLine($"  探针素材：2 个闲置动作（{Path.GetFileName(assetDir)}）");
+        }
+        catch (Exception ex)
+        {
+            check("闲置动作按状态挑选", false, ex.Message);
+            sb.AppendLine("      " + ex);
+        }
+        finally
+        {
             try { window?.Close(); }
             catch { /* 关不掉不影响结论 */ }
 

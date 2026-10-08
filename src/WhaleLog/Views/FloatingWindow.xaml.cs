@@ -95,6 +95,15 @@ public partial class FloatingWindow : Window
     private IReadOnlyList<string> _dragActions = Array.Empty<string>();
 
     /// <summary>
+    /// 最近冒过的闲置小动作（新的在前）。
+    ///
+    /// 交给 <see cref="AmbientPicker.Pick"/> 给刚播过的降权。93 个动作看着多，
+    /// 但按状态加权之后高权重的那几个就那么些，纯随机很容易连着出同一个 ——
+    /// "刚叹完气又叹气"看着像卡住了。
+    /// </summary>
+    private readonly List<string> _ambientRecent = new();
+
+    /// <summary>
     /// 归档成功之后演的"清点归档"（角色 archive，见 <see cref="AnimActions.Archive"/>）。
     ///
     /// 和上面几个角色一样是"同角色里随机挑一个"（目前只有一个动作），
@@ -1167,6 +1176,7 @@ public partial class FloatingWindow : Window
         _archiveActions = Array.Empty<string>();
         _cheerActions = Array.Empty<string>();
         _loopingIdle = null;
+        _ambientRecent.Clear();
     }
 
     /// <summary>
@@ -1305,6 +1315,77 @@ public partial class FloatingWindow : Window
         return PlayAnimation(actions[index]);
     }
 
+    /// <summary>
+    /// 冒一个闲置小动作 —— 但**按今天干得怎么样加权挑**（见 <see cref="AmbientPicker"/>）。
+    ///
+    /// 以前这里是一句 <c>PlayRandomOfRole(_ambientActions)</c>：93 个动作等概率，
+    /// 「垂头叹气冒汗」和「吃冰淇淋融化」一样常见。现在改成"这个状态下更可能出这几个"，
+    /// 但所有动作都还在池子里 —— 小鲸鱼仍然会有自己的主意，只是开始跟你有点关系了。
+    /// </summary>
+    private bool PlayAmbient()
+    {
+        if (!_animationsOn || _player == null || _ambientActions.Count == 0) return false;
+
+        var picked = AmbientPicker.Pick(_ambientActions, BuildAmbientContext(), _ambientRecent, BlinkRng);
+        if (picked == null) return false;
+
+        RememberAmbient(picked);
+        return PlayAnimation(picked);
+    }
+
+    /// <summary>
+    /// 把"今天"的现状读成一个 <see cref="AmbientPicker.Context"/>。
+    ///
+    /// 组装放在这里、判定放在 <see cref="AmbientPicker"/>，是为了让判定那半边
+    /// 能在纯逻辑自测里被喂假数据（"下午四点、3 条记录、2 条没收尾"这种场景，
+    /// 真去造一份数据文件来测太笨重了）。
+    /// </summary>
+    private AmbientPicker.Context BuildAmbientContext()
+    {
+        var today = DateTime.Today;
+        var day = App.Store.Book.FindDay(today);
+
+        return new AmbientPicker.Context(
+            Now: DateTime.Now,
+            Entries: day?.Entries.Count ?? 0,
+            OpenEntries: day?.OpenCount ?? 0,
+            Files: App.Store.FilesOnDate(today).Count(),
+            WorkEndHour: App.Settings.Settings.WorkEndHour,
+            LastActivity: LastEntryActivity(day));
+    }
+
+    /// <summary>
+    /// 今天最后一次"动了记录"是什么时候 —— 新增和标完成都算。
+    ///
+    /// 用 <c>max(创建时间, 完成时间)</c>，因为"三小时前建的那条刚被标掉"也是刚动过；
+    /// 只看创建时间的话，收尾一条旧记录会被误判成"久没动"。
+    /// </summary>
+    private static DateTime? LastEntryActivity(DayNote? day)
+    {
+        if (day == null || day.Entries.Count == 0) return null;
+
+        DateTime? last = null;
+        foreach (var e in day.Entries)
+        {
+            if (last == null || e.CreatedAt > last) last = e.CreatedAt;
+            if (e.DoneAt is { } done && (last == null || done > last)) last = done;
+        }
+        return last;
+    }
+
+    /// <summary>记下刚冒过的动作，供下一次挑选时降权。</summary>
+    private void RememberAmbient(string action)
+    {
+        _ambientRecent.Remove(action);
+        _ambientRecent.Insert(0, action);
+
+        // 留两倍窗口就够：判定只读前 RecentWindow 个，多留一截是为了
+        // Remove 的时候还能命中（不然刚滑出窗口的马上又"新鲜"了）
+        var cap = AmbientPicker.RecentWindow * 2;
+        if (_ambientRecent.Count > cap)
+            _ambientRecent.RemoveRange(cap, _ambientRecent.Count - cap);
+    }
+
     /// <summary>安排下一次"自己冒个小动作"。间隔 25~70 秒随机 —— 固定节拍一眼就看得出是循环。</summary>
     private void ScheduleAmbient()
     {
@@ -1327,7 +1408,7 @@ public partial class FloatingWindow : Window
             timer.Stop();
 
             // 鼠标在身上、或者正弹气泡时先不冒 —— 打断用户当下的注意力没礼貌
-            if (CanActFreely) PlayRandomOfRole(_ambientActions);
+            if (CanActFreely) PlayAmbient();
 
             ScheduleAmbient();
         };
@@ -1591,6 +1672,36 @@ public partial class FloatingWindow : Window
 
         return PlayRandomOfRole(list);
     }
+
+    // ---- 按工作状态挑闲置动作（见 AmbientPicker）----
+
+    /// <summary>自检用：走真实的 <see cref="PlayAmbient"/> 加权挑选路径。</summary>
+    public bool PlayAmbientForProbe() => PlayAmbient();
+
+    /// <summary>自检用：当前工作状态的可读说明（"状态 [正在推进、今天有进账]（…）"）。</summary>
+    public string AmbientExplain => AmbientPicker.Explain(BuildAmbientContext());
+
+    /// <summary>自检用：此刻命中了哪些状态键。</summary>
+    public IReadOnlyList<string> AmbientStateKeys => AmbientPicker.StatesOf(BuildAmbientContext());
+
+    /// <summary>
+    /// 自检用：某个动作在**当前状态**下的权重（1 = 没被抬权，&gt;1 = 状态相关）。
+    /// 传动作全名（含 <c>ambient-</c> 前缀）。
+    /// </summary>
+    public double AmbientWeightOf(string action)
+        => AmbientPicker.Weigh(new[] { action }, BuildAmbientContext())
+                        .TryGetValue(action, out var w) ? w : 1.0;
+
+    /// <summary>自检用：最近冒过的闲置动作（新的在前）。</summary>
+    public IReadOnlyList<string> AmbientRecent => _ambientRecent;
+
+    /// <summary>自检用：把一个动作塞进"最近播过"，验降权确实生效。</summary>
+    public void NoteAmbientRecentForProbe(string action) => RememberAmbient(action);
+
+    /// <summary>自检用：按给定事实算权重（不碰真实数据），验状态判定本身。</summary>
+    public static IReadOnlyDictionary<string, double> WeighForProbe(
+        IReadOnlyList<string> actions, DateTime now, int entries, int open, int files, int workEndHour, DateTime? lastActivity)
+        => AmbientPicker.Weigh(actions, new AmbientPicker.Context(now, entries, open, files, workEndHour, lastActivity));
 
     /// <summary>
     /// 自检用：视频动作是"边播边解"的，帧不会凭空出现，得给它一点真实时间。

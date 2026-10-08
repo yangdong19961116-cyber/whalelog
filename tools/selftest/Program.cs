@@ -50,6 +50,7 @@ internal static class Program
             TestVideoAssets(workspace);
             TestCharacterGeometry();
             TestCharacterPacks(workspace);
+            TestAmbientPicker();
             await TestEndToEndIntakeAsync(workDir);
             await TestDataDirSiblingNotSkippedAsync();
             await TestDateScopedIntakeAsync(workspace);
@@ -1815,6 +1816,153 @@ internal static class Program
         {
             return ex.Message;
         }
+    }
+
+    // ==================================================================
+    // 闲置动作：按工作状态挑选
+    // ==================================================================
+
+    /// <summary>
+    /// 桌面小鲸鱼原先从 93 个闲置动作里等概率抽，现在按"今天干得怎么样"加权。
+    ///
+    /// 这里验判定与算术那半边（纯逻辑）；界面侧只负责把事实读成 Context、把挑出来的播了。
+    /// 随机那部分用固定种子的统计来验 —— "权重确实把分布掰弯了"这件事，
+    /// 只能靠跑几千次看比例，断言具体某一次挑中什么没有意义。
+    /// </summary>
+    private static void TestAmbientPicker()
+    {
+        var afternoon = new DateTime(2026, 10, 8, 15, 0, 0);
+
+        // ---------------- 状态判定 ----------------
+        Section("闲置动作：状态判定");
+
+        var blank = new AmbientPicker.Context(afternoon, 0, 0, 0, 18, null);
+        var blankStates = AmbientPicker.StatesOf(blank);
+        Check(blankStates.Contains(AmbientPicker.NotStarted), "一个字的下午 → 还没开工");
+        Check(blankStates.Contains(AmbientPicker.PurseEmpty), "没记录也没文件 → 今天的钱包是空的");
+        Check(!blankStates.Contains(AmbientPicker.AllDone), "空白不等于「都收尾了」");
+
+        var busy = new AmbientPicker.Context(afternoon, 4, 1, 0, 18, afternoon.AddMinutes(-20));
+        Check(AmbientPicker.StatesOf(busy).Contains(AmbientPicker.InProgress), "4 条记录、1 条没收尾 → 正在推进");
+        Check(!AmbientPicker.StatesOf(busy).Contains(AmbientPicker.Backlog), "只堆了 1 条不算「堆着」");
+        Check(!AmbientPicker.StatesOf(busy).Contains(AmbientPicker.Stale), "20 分钟前刚动过，不算久没动");
+
+        var piled = new AmbientPicker.Context(afternoon, 6, 3, 0, 18, afternoon.AddMinutes(-10));
+        Check(AmbientPicker.StatesOf(piled).Contains(AmbientPicker.Backlog), "3 条没收尾 → 堆着");
+        Check(AmbientPicker.StatesOf(piled).Contains(AmbientPicker.PurseRich), "6 条记录 → 今天的钱包是满的");
+
+        var done = new AmbientPicker.Context(afternoon, 5, 0, 0, 18, afternoon.AddMinutes(-5));
+        var doneStates = AmbientPicker.StatesOf(done);
+        Check(doneStates.Contains(AmbientPicker.AllDone), "都标完了 → 今天收尾了");
+        Check(!doneStates.Contains(AmbientPicker.Backlog), "收尾了不该还算「堆着」");
+
+        var night = new AmbientPicker.Context(new DateTime(2026, 10, 8, 2, 0, 0), 0, 0, 0, 18, null);
+        Check(AmbientPicker.StatesOf(night).Contains(AmbientPicker.LateNight), "凌晨两点 → 深夜");
+        Check(!AmbientPicker.StatesOf(night).Contains(AmbientPicker.NotStarted),
+            "凌晨没记录不叫「还没开工」—— 这个点本来就该没记录");
+
+        Check(AmbientPicker.StatesOf(new AmbientPicker.Context(new DateTime(2026, 10, 8, 7, 0, 0), 0, 0, 0, 18, null))
+                .Contains(AmbientPicker.EarlyMorning), "早上七点 → 清晨");
+
+        var evening = new AmbientPicker.Context(new DateTime(2026, 10, 8, 19, 30, 0), 3, 0, 1, 18,
+                                                new DateTime(2026, 10, 8, 18, 0, 0));
+        Check(AmbientPicker.StatesOf(evening).Contains(AmbientPicker.AfterHours), "过了下班点 → 下班后");
+
+        var staleCtx = new AmbientPicker.Context(afternoon, 3, 1, 0, 18, afternoon.AddHours(-3));
+        Check(AmbientPicker.StatesOf(staleCtx).Contains(AmbientPicker.Stale), "最后一次动记录是 3 小时前 → 久没动");
+
+        // ---------------- 权重 ----------------
+        Section("闲置动作：只有状态相关的动作被抬权");
+
+        var pool = new[]
+        {
+            "ambient-工作状态-垂头叹气冒汗",   // 堆着的时候该演这个
+            "ambient-吃冰淇淋融化",           // 这个状态下不该演
+        };
+        var weights = AmbientPicker.Weigh(pool, piled);
+        Check(Math.Abs(weights["ambient-工作状态-垂头叹气冒汗"] - AmbientPicker.PreferredWeight) < 0.001,
+            $"堆着没收尾时「垂头叹气冒汗」抬到 {AmbientPicker.PreferredWeight} 倍");
+        Check(Math.Abs(weights["ambient-吃冰淇淋融化"] - 1.0) < 0.001,
+            "无关动作的权重还是 1 —— 不会被清出池子，只是不那么常出现");
+        Check(weights.Count == pool.Length, "权重表覆盖传进来的每一个动作（调用方不用再补默认值）");
+
+        // ---------------- 加权随机（统计） ----------------
+        Section("闲置动作：加权随机确实把分布掰弯了");
+
+        var rng = new Random(20261008);
+        const int trials = 4000;
+        var mixed = new[]
+        {
+            "ambient-工作状态-垂头叹气冒汗", "ambient-工作状态-忙碌点按", "ambient-吃Token",
+            "ambient-吃冰淇淋融化", "ambient-荡秋千", "ambient-撸猫", "ambient-吹笛子",
+            "ambient-放风筝", "ambient-堆雪人", "ambient-抽陀螺",
+        };
+
+        int preferredHits = 0;
+        for (int i = 0; i < trials; i++)
+        {
+            var pick = AmbientPicker.Pick(mixed, piled, Array.Empty<string>(), rng);
+            if (pick is "ambient-工作状态-垂头叹气冒汗" or "ambient-工作状态-忙碌点按" or "ambient-吃Token")
+                preferredHits++;
+        }
+        var rate = preferredHits / (double)trials;
+        // 理论：3×5 / (3×5 + 7×1) = 15/22 ≈ 68%；等概率的话只有 30%
+        Check(rate > 0.55 && rate < 0.80,
+            $"状态相关的 3 个占了 {rate:P0}（理论约 68%，等概率只有 30%）");
+
+        // ---------------- 刚播过的降权 ----------------
+        Section("闲置动作：刚播过的降权");
+
+        var two = new[] { "ambient-工作状态-忙碌点按", "ambient-堆雪人" };
+
+        int hot = 0;
+        for (int i = 0; i < trials; i++)
+            if (AmbientPicker.Pick(two, piled, Array.Empty<string>(), rng) == "ambient-工作状态-忙碌点按") hot++;
+        var hotRate = hot / (double)trials;
+        Check(hotRate > 0.75, $"没播过时那个动作占 {hotRate:P0}（5/6 ≈ 83%）");
+
+        int cooled = 0;
+        var recent = new[] { "ambient-工作状态-忙碌点按" };
+        for (int i = 0; i < trials; i++)
+            if (AmbientPicker.Pick(two, piled, recent, rng) == "ambient-工作状态-忙碌点按") cooled++;
+        var cooledRate = cooled / (double)trials;
+        Check(cooledRate < 0.5,
+            $"刚播过之后掉到 {cooledRate:P0}（0.75/1.75 ≈ 43%）——「刚叹完气又叹气」被压住了");
+
+        // ---------------- 边界 ----------------
+        Section("闲置动作：边界");
+
+        Check(AmbientPicker.Pick(Array.Empty<string>(), piled, Array.Empty<string>(), rng) == null,
+            "素材池为空 → 返回 null（调用方跳过，而不是硬编码假设素材一定在）");
+
+        var unknown = new[] { "ambient-用户自己画的" };
+        Check(Math.Abs(AmbientPicker.Weigh(unknown, piled)["ambient-用户自己画的"] - 1.0) < 0.001,
+            "认不出来的自制动作权重保持 1 —— 自己做的素材不会因为「不在名单里」就播不到");
+
+        // 同一动作被两个状态同时命中时取最大、不连乘：
+        // 3 条记录全收尾 + 最后活动在 3 小时前 → allDone 和 stale 都含「摇扇纳凉」
+        var dualCtx = new AmbientPicker.Context(afternoon, 3, 0, 0, 18, afternoon.AddHours(-3));
+        var dualStates = AmbientPicker.StatesOf(dualCtx);
+        Check(dualStates.Contains(AmbientPicker.AllDone) && dualStates.Contains(AmbientPicker.Stale),
+            "构造得对：这个场景同时命中「都收尾了」和「久没动」");
+        var dual = AmbientPicker.Weigh(new[] { "ambient-摇扇纳凉" }, dualCtx);
+        Check(Math.Abs(dual["ambient-摇扇纳凉"] - AmbientPicker.PreferredWeight) < 0.001,
+            $"同时命中两个状态也还是 {AmbientPicker.PreferredWeight} 倍，不是 5×5 —— 连乘会把池子挤成确定性的几个");
+
+        // 加了一个新状态却忘了给它配偏好动作，表现是"这个状态下跟以前一样纯随机"——
+        // 不报错、看不出来，所以在这儿拦一道
+        var allStates = new[]
+        {
+            AmbientPicker.LateNight, AmbientPicker.EarlyMorning, AmbientPicker.NotStarted,
+            AmbientPicker.InProgress, AmbientPicker.Backlog, AmbientPicker.AllDone,
+            AmbientPicker.Stale, AmbientPicker.AfterHours,
+            AmbientPicker.PurseRich, AmbientPicker.PurseMid, AmbientPicker.PurseEmpty,
+        };
+        var noHints = allStates.Where(s => AmbientPicker.HintsOf(s).Count == 0).ToList();
+        Check(noHints.Count == 0, "每个状态都配了偏好动作"
+            + (noHints.Count > 0 ? "，缺：" + string.Join("、", noHints) : ""));
+
+        Check(AmbientPicker.AllHints.Count >= 40, $"hint 足够细：{AmbientPicker.AllHints.Count} 条");
     }
 
     // ==================================================================

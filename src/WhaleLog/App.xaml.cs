@@ -150,12 +150,16 @@ public partial class App : Application
             // --quiet 供脚本调用：只写日志不弹窗
             if (!HasFlag("--quiet"))
             {
-                MessageBox.Show(
+                    MessageBox.Show(
                     $"{conclusion}\n\n详细结果已写入：\n{path}",
                     "鲸记 · 诊断自检", MessageBoxButton.OK, MessageBoxImage.Information);
             }
 
-            Shutdown();
+            // 退出码跟着结论走。原先无论成败都返回 0，脚本里
+            // `WhaleLog.exe --selfcheck --quiet && echo 没问题` 会一路绿灯走下去 ——
+            // 那正是"断言形同虚设"最隐蔽的一种：报了错，但没有任何机制会停下来。
+            var passed = conclusion.Contains("全部通过", StringComparison.Ordinal);
+            Shutdown(passed ? 0 : 1);
             return;
         }
 
