@@ -48,6 +48,13 @@ public partial class MainWindow : Window
     private string _selectedCategory = NoteCategories.Work;
     private bool _syncing;
     private bool _showAllFiles;
+
+    /// <summary>文件归档页的搜索关键字（已去空白，空串 = 不筛）。</summary>
+    private string _fileKeyword = "";
+
+    /// <summary>程序化写搜索框时立起来，避免 TextChanged 反过来再跑一遍筛选。</summary>
+    private bool _syncingSearch;
+
     private Action? _pendingAction;
 
     public MainWindow()
@@ -84,6 +91,8 @@ public partial class MainWindow : Window
         // 月历里选日期和日期栏的「‹ › 今天」走的是同一个 LoadDay，行为保持一致
         MonthPanel.DateChosen += OnMonthPanelDateChosen;
         MonthPanel.DismissRequested += () => DatePopup.IsOpen = false;
+        RecentPanel.DateChosen += OnRecentPanelDateChosen;
+        RecentPanel.DismissRequested += () => RecentPopup.IsOpen = false;
         PreviewKeyDown += OnWindowPreviewKeyDown;
 
         DataPathText.Text = AppPaths.Root;
@@ -230,6 +239,28 @@ public partial class MainWindow : Window
 
     private void OnTodayClick(object sender, RoutedEventArgs e) => LoadDay(DateTime.Today);
 
+    /// <summary>
+    /// 跳到相邻的"有记录的日子"（Alt + ← / →，也就是往期清单里 ↑↓ 的落点规则）。
+    ///
+    /// 返回 false 表示这个方向上再没有有记录的日子了 —— 界面据此说一句话，
+    /// 而不是默默不动（"按了没反应"和"确实没有了"是两件事，用户分不出来）。
+    /// </summary>
+    public bool GoToAdjacentDayWithContent(int direction)
+    {
+        var days = DayIndex.Build(App.Store.Book.Days, App.Store.Book.Files);
+        var target = DayIndex.Adjacent(days, _currentDate, direction);
+        if (target == null)
+        {
+            SetStatus(direction < 0 ? "前面再没有记过东西的日子了" : "后面再没有记过东西的日子了");
+            return false;
+        }
+
+        LoadDay(target.Value);
+        SetStatus($"已跳到 {target.Value:yyyy-MM-dd} {ReportService.WeekdayText(target.Value)}" +
+                  (direction < 0 ? "（上一个有记录的日子）" : "（下一个有记录的日子）"));
+        return true;
+    }
+
     /// <summary>切到指定日期。日期栏「‹ ›」、月历、跳转框都收敛到 LoadDay 这一个入口。</summary>
     public void GoToDate(DateTime date) => LoadDay(date);
 
@@ -270,37 +301,98 @@ public partial class MainWindow : Window
     private void OnDatePopupClosed(object? sender, EventArgs e)
         => _datePopupClosedAt = DateTime.UtcNow;
 
+    // ------------------------------------------------------------------
+    // 往期清单
+    // ------------------------------------------------------------------
+
+    private DateTime _recentPopupClosedAt = DateTime.MinValue;
+
+    /// <summary>往期清单面板实例。诊断自检用。</summary>
+    public RecentDaysPanel RecentDays => RecentPanel;
+
+    /// <summary>往期清单里当前有几行（等于筛出来的"有记录的日子"数）。诊断自检用。</summary>
+    public int RecentDayRowCount => RecentPanel.RowCount;
+
+    private void OnRecentButtonClick(object sender, RoutedEventArgs e)
+    {
+        if (RecentPopup.IsOpen)
+        {
+            RecentPopup.IsOpen = false;
+            return;
+        }
+
+        // 和月历同一套：StaysOpen=False 的弹出层被自己的触发按钮点到时会先自关，
+        // 那一次点击不会再走到这里，所以加个时间窗避免"刚关掉又被立刻打开"。
+        if ((DateTime.UtcNow - _recentPopupClosedAt).TotalMilliseconds < 260) return;
+
+        OpenRecentDays();
+    }
+
+    /// <summary>把数据灌进往期清单并打开它。诊断自检走的是同一条路。</summary>
+    public void OpenRecentDays()
+    {
+        RefreshRecentDays();
+        RecentPopup.IsOpen = true;
+        RecentPanel.FocusFilterInput();
+    }
+
+    /// <summary>
+    /// 重新灌一次往期清单的数据（不打开弹出层）。
+    ///
+    /// 每次打开都重算而不是常驻：清单依赖的是整库的汇总，
+    /// 缓存一份就要在"归档了新文件""删了记录""换了日期"每个入口都记得刷新它 —— 漏一处就是脏数据。
+    /// </summary>
+    public void RefreshRecentDays()
+        => RecentPanel.Show(_currentDate, DayIndex.Build(App.Store.Book.Days, App.Store.Book.Files));
+
+    private void OnRecentPopupClosed(object? sender, EventArgs e)
+        => _recentPopupClosedAt = DateTime.UtcNow;
+
+    /// <summary>往期清单里选中某一天：切过去并收起弹出层。</summary>
+    private void OnRecentPanelDateChosen(DateTime date)
+    {
+        RecentPopup.IsOpen = false;
+        LoadDay(date);
+        SetStatus($"已跳到 {date:yyyy-MM-dd} {ReportService.WeekdayText(date)}");
+    }
+
     /// <summary>
     /// 哪些日子有内容（手写记录或归档文件），用来在月历上点小圆点。
     ///
     /// 公开且静态：诊断侧要把月历单独渲染成图核销（小圆点的位置只能看图判断），
     /// 而"哪天算有记录"必须**只有这一处判定** —— 诊断自己再抄一遍的话，
     /// 哪天改了规则就会出现"图上没有圆点、界面上有"这种最误导人的局面。
+    ///
+    /// 判定本身搬到了 <see cref="DayIndex.Build"/>（纯逻辑、能自测、往期清单也用同一份结果），
+    /// 这里只是把索引取出来 —— 留着这个入口是为了让"月历上的圆点"和
+    /// "往期清单里的行"永远是同一批日子。
     /// </summary>
     public static IEnumerable<string> CollectMarkedDates()
-    {
-        var marked = new HashSet<string>(StringComparer.Ordinal);
+        => DayIndex.Build(App.Store.Book.Days, App.Store.Book.Files).Select(d => d.Date);
 
-        foreach (var day in App.Store.Book.Days)
-        {
-            if (day.Entries.Count > 0) marked.Add(day.Date);
-        }
-
-        foreach (var file in App.Store.Book.Files)
-        {
-            if (!string.IsNullOrEmpty(file.AddedDate)) marked.Add(file.AddedDate);
-        }
-
-        return marked;
-    }
-
-    /// <summary>Esc 收起月历（StaysOpen=False 只管点击外部，不管键盘）。</summary>
+    /// <summary>
+    /// 窗口级快捷键：
+    ///   Esc           收起月历 / 往期清单（StaysOpen=False 只管点击外部，不管键盘）
+    ///   Alt + ← / →   跳到上一个 / 下一个**有记录**的日子
+    ///
+    /// 后者的理由是「‹」只能一天一天退：从今天退到两周前要点十几次，中间还夹着空白日。
+    /// 用 Alt 而不是裸方向键，是因为裸方向键在输入框里要留给光标移动。
+    /// </summary>
     private void OnWindowPreviewKeyDown(object sender, KeyEventArgs e)
     {
-        if (e.Key == Key.Escape && DatePopup.IsOpen)
+        if (e.Key == Key.Escape && (DatePopup.IsOpen || RecentPopup.IsOpen))
         {
             DatePopup.IsOpen = false;
+            RecentPopup.IsOpen = false;
             e.Handled = true;
+            return;
+        }
+
+        if ((e.Key == Key.Left || e.Key == Key.Right) &&
+            Keyboard.Modifiers.HasFlag(ModifierKeys.Alt))
+        {
+            e.Handled = true;
+            GoToAdjacentDayWithContent(e.Key == Key.Left ? -1 : 1);
         }
     }
 
@@ -514,7 +606,7 @@ public partial class MainWindow : Window
             ? App.Store.QueryFiles(null)
             : App.Store.QueryFiles(_currentDate.ToString("yyyy-MM-dd"));
 
-        var list = source.ToList();
+        var list = FileSearch.Filter(source, _fileKeyword);
 
         // 「全部」视图要按归档日期分组，而分组的先后取决于记录在集合里的出现顺序，
         // 所以这里必须先把顺序排好（日期从新到旧，同一天内按拖入时刻从新到旧）。
@@ -526,10 +618,13 @@ public partial class MainWindow : Window
         _syncing = false;
 
         ApplyFileGrouping();
+        RebuildFileDateIndex(list);
 
-        FileEmptyHint.Text = _showAllFiles
-            ? "还没有归档文件。把文件拖到窗口里试试。"
-            : $"{_currentDate:M月d日}还没有归档文件。把文件拖到窗口里，或切到「全部」看看历史。";
+        FileEmptyHint.Text = _fileKeyword.Length > 0
+            ? $"没有包含「{_fileKeyword}」的文件。换个词，或者把搜索框清空看全部。"
+            : _showAllFiles
+                ? "还没有归档文件。把文件拖到窗口里试试。"
+                : $"{_currentDate:M月d日}还没有归档文件。把文件拖到窗口里，或切到「全部」看看历史。";
         FileEmptyHint.Visibility = list.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
 
         var byCategory = list
@@ -538,9 +633,12 @@ public partial class MainWindow : Window
             .Select(g => $"{g.Key} {g.Count()}")
             .ToList();
 
-        var scope = _showAllFiles ? FileScopeSummary(list) : $"{_currentDate:M月d日}";
+        var scope = _fileKeyword.Length > 0
+            ? $"搜「{Truncate(_fileKeyword, 10)}」"
+            : _showAllFiles ? FileScopeSummary(list) : $"{_currentDate:M月d日}";
+
         FileStatText.Text = list.Count == 0
-            ? "暂无文件"
+            ? (_fileKeyword.Length > 0 ? "没有匹配" : "暂无文件")
             : $"{scope} {list.Count} 个 · " + string.Join(" · ", byCategory.Take(4));
 
         // 放在这里是因为所有"文件变了"或"日期变了"的路径最后都会走到 RefreshFileList，
@@ -548,8 +646,182 @@ public partial class MainWindow : Window
         RefreshDayFiles();
     }
 
+    // ------------------------------------------------------------------
+    // 归档页：搜索
+    // ------------------------------------------------------------------
+
+    /// <summary>当前搜索关键字（空串 = 不筛）。诊断自检用。</summary>
+    public string FileKeyword => _fileKeyword;
+
+    private void OnFileSearchTextChanged(object sender, TextChangedEventArgs e)
+    {
+        FileSearchPlaceholder.Visibility = string.IsNullOrEmpty(FileSearchBox.Text)
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+
+        if (_syncingSearch) return;
+        ApplyFileKeyword(FileSearchBox.Text);
+    }
+
+    /// <summary>
+    /// 从头设置搜索关键字（会一并改搜索框的内容）。
+    ///
+    /// autoWiden：在「只看当天」里输入关键字时自动放宽到「全部」。
+    /// 搜索的心智是"在归档里找那个文件"，而不是"在这一天里找" —— 不放宽的话，
+    /// 用户敲完发现自己要找的东西明明归档过却没有，只会以为记录丢了。放宽会在状态栏说明。
+    /// </summary>
+    public void SetFileKeyword(string keyword, bool autoWiden = true)
+    {
+        _syncingSearch = true;
+        FileSearchBox.Text = keyword ?? "";
+        _syncingSearch = false;
+
+        FileSearchPlaceholder.Visibility = string.IsNullOrEmpty(FileSearchBox.Text)
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+
+        ApplyFileKeyword(keyword, autoWiden);
+    }
+
+    private void ApplyFileKeyword(string? keyword, bool autoWiden = true)
+    {
+        _fileKeyword = FileSearch.Normalize(keyword);
+
+        bool widen = autoWiden && _fileKeyword.Length > 0 && !_showAllFiles;
+        if (widen)
+        {
+            // 只改状态字段 + 两颗胶囊，不走 SetFileFilter —— 那条路会先刷一次列表，
+            // 然后这里再刷第二次。同一个入口刷两遍不会错，只是白做一次全量重排。
+            _showAllFiles = true;
+            _syncing = true;
+            FileFilterToday.IsChecked = false;
+            FileFilterAll.IsChecked = true;
+            _syncing = false;
+        }
+
+        RefreshFileList();
+        if (widen) SetStatus("已在「全部文件」范围内搜索");
+    }
+
+    // ------------------------------------------------------------------
+    // 归档页：日期目录条
+    // ------------------------------------------------------------------
+
+    /// <summary>目录条上的日期胶囊数量。诊断自检用。</summary>
+    public int FileDateChipCount => FileDateIndex.Children.Count;
+
+    /// <summary>目录条是否可见。诊断自检用。</summary>
+    public bool FileDateIndexVisible => FileDateIndexScroll.Visibility == Visibility.Visible;
+
+    /// <summary>
+    /// 按当前的日期分组重搭目录条。
+    ///
+    /// 分组是从**传进来的那个列表**顺着数出来的，不是去读视图的 Groups ——
+    /// 视图的 Groups 要等一次刷新才有内容，而这里是在刷新过程中被调用的，
+    /// 时序一错就会安静地少一整条目录（界面只是"没有目录"，不报错）。
+    /// 列表进这一层之前已经按日期倒序排过（见 DateGrouping.Sort），同一天必然连续，
+    /// 所以顺着数一遍就是分组。目录和列表是否真的一致，自检里有断言盯着。
+    /// </summary>
+    private void RebuildFileDateIndex(IReadOnlyList<FileRecord> list)
+    {
+        FileDateIndex.Children.Clear();
+
+        var groups = new List<(string Key, int Count)>();
+        foreach (var file in list)
+        {
+            var key = string.IsNullOrEmpty(file.AddedDate) ? DateGrouping.UnknownKey : file.AddedDate;
+            if (groups.Count > 0 && groups[^1].Key == key)
+                groups[^1] = (key, groups[^1].Count + 1);
+            else
+                groups.Add((key, 1));
+        }
+
+        // 只有「全部」且真的跨了不止一天才出现：
+        // 「只看当天」本来就只有一组，一颗胶囊没有可去的地方。
+        bool show = _showAllFiles && groups.Count > 1;
+        FileDateIndexScroll.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+        if (!show) return;
+
+        foreach (var group in groups)
+        {
+            var key = group.Key;
+            var label = key.Length == 0 ? "未标注日期" : DayIndex.DateLabel(key, DateTime.Today);
+
+            var content = new StackPanel { Orientation = Orientation.Horizontal };
+            var dateText = new TextBlock { Text = label, FontSize = 11.5 };
+            dateText.SetResourceReference(TextBlock.ForegroundProperty, "TextPrimaryBrush");
+
+            var countText = new TextBlock
+            {
+                Text = group.Count.ToString(),
+                FontSize = 11,
+                Margin = new Thickness(5, 0, 0, 0),
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            countText.SetResourceReference(TextBlock.ForegroundProperty, "TextMutedBrush");
+
+            content.Children.Add(dateText);
+            content.Children.Add(countText);
+
+            var chip = new Button
+            {
+                Content = content,
+                Style = (Style)FindResource("DateChipButton"),
+                Tag = key,
+                ToolTip = key.Length == 0
+                    ? $"未标注日期的 {group.Count} 个文件"
+                    : $"{DateGrouping.Label(key)} · {group.Count} 个文件（点一下滚到那一组）",
+            };
+            chip.Click += OnFileDateChipClick;
+            FileDateIndex.Children.Add(chip);
+        }
+    }
+
+    private void OnFileDateChipClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button { Tag: string key }) JumpToFileGroup(key);
+    }
+
+    /// <summary>
+    /// 把列表滚到某个日期的分组。返回 false 表示这个日期不在当前列表里 ——
+    /// 界面据此不假装"跳过了"，诊断也靠它验"目录上的日期和列表里的分组是一回事"。
+    /// </summary>
+    public bool JumpToFileGroup(string dateKey)
+    {
+        var group = CollectionViewSource.GetDefaultView(_files).Groups?
+            .OfType<CollectionViewGroup>()
+            .FirstOrDefault(g => (g.Name as string ?? DateGrouping.UnknownKey) == dateKey);
+        if (group == null) return false;
+
+        // 分组容器是布局时才生成的。没生成就先把列表走一遍布局再取，
+        // 免得"点目录没反应"看起来像跳转逻辑坏了。
+        var container = FileList.ItemContainerGenerator.ContainerFromItem(group) as FrameworkElement;
+        if (container == null)
+        {
+            FileList.UpdateLayout();
+            container = FileList.ItemContainerGenerator.ContainerFromItem(group) as FrameworkElement;
+        }
+        if (container == null) return false;
+
+        container.BringIntoView();
+        return true;
+    }
+
     /// <summary>今日记录页里的「去归档 ›」：直接切到文件归档页。</summary>
-    private void OnGoToFilesPageClick(object sender, RoutedEventArgs e) => SwitchTo(NavPage.Files);
+    private void OnGoToFilesPageClick(object sender, RoutedEventArgs e) => GoToFilesOfCurrentDay();
+
+    /// <summary>
+    /// 跳到文件归档页看这一天的文件。
+    ///
+    /// 顺手把范围收回「只看当天」：这个动作的语义是"看这一天的全部文件"，
+    /// 上一次留在「全部」的话，跳过去看到的是一整片历史，还得自己再筛一次。
+    /// public 是为了自检 —— 按钮没名字，探针点不到它。
+    /// </summary>
+    public void GoToFilesOfCurrentDay()
+    {
+        SetFileFilter(false);
+        SwitchTo(NavPage.Files);
+    }
 
     /// <summary>
     /// 刷新今日记录页里那份「当天归档的文件」。

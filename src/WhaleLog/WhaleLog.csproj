@@ -19,7 +19,7 @@
     <AssemblyTitle>WhaleLog 鲸记</AssemblyTitle>
     <Product>WhaleLog</Product>
     <Description>每日工作记录与文件归档台</Description>
-    <Version>1.4.5</Version>
+    <Version>1.4.6</Version>
     <Authors>WhaleLog</Authors>
     <Copyright>MIT</Copyright>
     <NeutralLanguage>zh-CN</NeutralLanguage>

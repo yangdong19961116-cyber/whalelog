@@ -41,6 +41,7 @@ internal static class Program
             TestVersionNaming();
             TestReports();
             TestFileDateGrouping();
+            TestDayIndex();
             TestSettingsClamp();
             TestSettingsMigration();
             TestIntakeSummary();
@@ -555,6 +556,144 @@ internal static class Program
 
         Check(R("old", "", 9).AddedStampText == "09:00",
             $"没有归属日期时只显示时刻，实际「{R("old", "", 9).AddedStampText}」");
+    }
+
+    /// <summary>
+    /// 「哪天有记录」的索引，以及归档文件的按关键字筛选。
+    ///
+    /// 这两块都是"回看往期"的地基：索引错了，往期清单和月历小圆点会各说各话；
+    /// 筛选错了，用户搜不到自己明明归档过的文件。两者都不报错，只是安静地少给东西，
+    /// 所以边界（没有日期的记录、空白关键字、越过头尾）要一条条钉住。
+    /// </summary>
+    private static void TestDayIndex()
+    {
+        Section("按日期回看：索引与搜索");
+
+        var today = new DateTime(2026, 10, 8);   // 周四
+
+        var days = new List<DayNote>
+        {
+            new()
+            {
+                Date = "2026-09-24",
+                Entries =
+                {
+                    new NoteEntry { Text = "整理第三季度数据", Done = true },
+                    new NoteEntry { Text = "写周报", Done = false },
+                },
+            },
+            new() { Date = "2026-09-23", Entries = { new NoteEntry { Text = "需求评审" } } },
+            // 这一天在 Book 里存在（启动时 EnsureToday 造的），但既没记录也没文件 ——
+            // 不该进索引，否则往期清单里会多出一行"9月20日 没有内容"。
+            new() { Date = "2026-09-20" },
+        };
+
+        static FileRecord F(string name, string date, string category = "文档") => new()
+        {
+            FileName = name,
+            AddedDate = date,
+            Category = category,
+            FullPath = @"C:\work\" + name,
+        };
+
+        var files = new List<FileRecord>
+        {
+            F("Q3报表.xlsx", "2026-09-24", "表格"),
+            F("Q3报表.xlsx", "2026-09-24", "表格"),
+            F("会议纪要.docx", "2026-09-23"),
+            F("没有归属日期.bin", ""),
+        };
+
+        var digests = DayIndex.Build(days, files);
+
+        Check(digests.Count == 2,
+            $"只有 09-24 / 09-23 这两天有内容，实际 {digests.Count} 天：{string.Join("、", digests.Select(d => d.Date))}");
+
+        Check(digests.Select(d => d.Date).SequenceEqual(new[] { "2026-09-24", "2026-09-23" }),
+            $"索引必须从新到旧，实际 {string.Join(" → ", digests.Select(d => d.Date))}");
+
+        var first = digests[0];
+        Check(first.Entries == 2 && first.Open == 1 && first.Files == 2,
+            $"09-24 应有 2 条记录（1 条未收尾）+ 2 个文件，实际 {first.Entries}/{first.Open}/{first.Files}");
+        Check(first.Total == 4, $"合计应为 4，实际 {first.Total}");
+
+        Check(digests.All(d => d.HasContent),
+            "索引里不该出现总数为 0 的日子");
+        Check(digests.Sum(d => d.Files) == 3,
+            $"没有归属日期的归档记录不进索引（3 个有日期的文件才对），实际 {digests.Sum(d => d.Files)}");
+
+        Check(DayIndex.CountsText(first) == "记录 2 · 文件 2",
+            $"实际「{DayIndex.CountsText(first)}」");
+        Check(DayIndex.CountsText(new DayDigest { Date = "2026-09-23", Files = 1 }) == "文件 1",
+            "只有文件时不该带出「记录 0」");
+
+        // ---- 搜索 ----
+        Check(DayIndex.Search(digests, "").Count == 2, "空关键字应当原样返回（不筛）");
+        Check(DayIndex.Search(digests, "   ").Count == 2, "全空白和没输入是同一件事");
+
+        Check(DayIndex.Search(digests, "周报").Single().Date == "2026-09-24",
+            "记录正文里的词要能搜到");
+        Check(DayIndex.Search(digests, "会议").Single().Date == "2026-09-23",
+            "归档文件名里的词也要能搜到");
+        Check(DayIndex.Search(digests, "第三季度").Count == 1, "长词整体匹配");
+        Check(DayIndex.Search(digests, "不存在的东西").Count == 0, "搜不到时应给空结果，不是全部");
+        Check(DayIndex.Search(digests, "q3").Single().Date == "2026-09-24",
+            "大小写不敏感");
+
+        Check(DayIndex.FirstMatch(first, "周报") == "写周报",
+            $"命中说明要指出是哪一条，实际「{DayIndex.FirstMatch(first, "周报") ?? "null"}」");
+        Check(DayIndex.FirstMatch(first, "") == null, "没搜索时不给命中说明");
+
+        // ---- Alt+← / → 的落点 ----
+        Check(DayIndex.Adjacent(digests, new DateTime(2026, 10, 8), -1) == new DateTime(2026, 9, 24),
+            "从今天往前走，应落到最近的一个有记录的日子（跨过中间那些空白日）");
+        Check(DayIndex.Adjacent(digests, new DateTime(2026, 9, 24), -1) == new DateTime(2026, 9, 23),
+            "再往前应落到 09-23");
+        Check(DayIndex.Adjacent(digests, new DateTime(2026, 9, 23), -1) == null,
+            "没有更早的了要给 null（界面据此说一句，而不是原地打转）");
+        Check(DayIndex.Adjacent(digests, new DateTime(2026, 9, 22), 1) == new DateTime(2026, 9, 23),
+            "往后走应落到 09-23");
+        Check(DayIndex.Adjacent(digests, new DateTime(2026, 9, 24), 1) == null,
+            "已经是最后一天时往后没有落点");
+        Check(DayIndex.Adjacent(digests, new DateTime(2026, 9, 24), 0) == null,
+            "方向 0 既不是往前也不是往后，给 null 而不是随便挑一天");
+
+        // ---- 文案 ----
+        Check(DayIndex.DateLabel("2026-09-24", today) == "9月24日",
+            $"当年不带年份，实际「{DayIndex.DateLabel("2026-09-24", today)}」");
+        Check(DayIndex.DateLabel("2025-09-24", today) == "2025年9月24日",
+            $"跨年必须带年份，实际「{DayIndex.DateLabel("2025-09-24", today)}」");
+        Check(DayIndex.WeekdayLabel("2026-10-08", today) == "今天",
+            $"实际「{DayIndex.WeekdayLabel("2026-10-08", today)}」");
+        Check(DayIndex.WeekdayLabel("2026-10-07", today) == "昨天",
+            $"实际「{DayIndex.WeekdayLabel("2026-10-07", today)}」");
+        Check(DayIndex.WeekdayLabel("2026-09-24", today) == "周四",
+            $"更早的日期显示星期，实际「{DayIndex.WeekdayLabel("2026-09-24", today)}」");
+        Check(DayIndex.MonthLabel("2026-09-24", today) == "9月",
+            $"同年的月份头不带年份，实际「{DayIndex.MonthLabel("2026-09-24", today)}」");
+        Check(DayIndex.MonthLabel("2025-09-24", today) == "2025 年 9 月",
+            $"跨年的月份头要带年份，实际「{DayIndex.MonthLabel("2025-09-24", today)}」");
+        Check(DayIndex.SummaryText(digests) == "2 天有记录 · 3 条记录 · 3 个文件",
+            $"实际「{DayIndex.SummaryText(digests)}」");
+        Check(DayIndex.SummaryText(new List<DayDigest>()) == "还没有可回溯的记录",
+            $"空索引要给一句人话，实际「{DayIndex.SummaryText(new List<DayDigest>())}」");
+
+        // ---- 归档页的搜索 ----
+        Check(FileSearch.Filter(files, "").Count == files.Count, "空关键字不筛");
+        Check(FileSearch.Filter(files, "   ").Count == files.Count, "全空白不筛");
+        Check(FileSearch.Filter(files, "Q3报表").Count == 2, "按文件名筛");
+        Check(FileSearch.Filter(files, "  Q3报表  ").Count == 2, "关键字首尾空白要吃掉");
+        Check(FileSearch.Filter(files, "表格").Count == 2, "按类别筛");
+        Check(FileSearch.Filter(files, @"C:\work").Count == 4, "按路径筛");
+        Check(FileSearch.Filter(files, "q3").Count == 2, "文件名匹配大小写不敏感");
+        Check(FileSearch.Filter(files, "彻底不存在").Count == 0, "筛不到就是空列表");
+
+        var withNote = F("报表.xlsx", "2026-09-24");
+        withNote.Note = "给老板的版本";
+        withNote.MatchedRule = "表格类";
+        Check(FileSearch.Matches(withNote, "老板"), "备注也要能搜到");
+        Check(FileSearch.Matches(withNote, "表格类"), "命中的规则名也要能搜到");
+        Check(!FileSearch.Matches(withNote, withNote.Id), "内部 Id 不该被搜到（用户看不见它）");
     }
 
     /// <summary>

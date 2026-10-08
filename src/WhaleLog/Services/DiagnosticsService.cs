@@ -379,6 +379,14 @@ public static class DiagnosticsService
         Section("今日记录里的归档文件");
         ProbeDayFileList(Check);
 
+        // ---- 按日期回看 ----
+        // 以前回看往期只有日期栏的「‹」一天一天退（从今天退到两周前要点十几次），
+        // 或者去月历上找小圆点。现在多了往期清单、Alt+← / →、归档页的日期目录和搜索。
+        // 这些东西的失效方式全是安静的：清单少一行、目录少一颗胶囊、搜索筛出空列表，
+        // 界面一个错都不报，只是没东西可点 —— 所以逐项断言。
+        Section("按日期回看");
+        ProbeBackBrowse(Check);
+
         // ---- 滑杆 ----
         // "滑块拖不动"这类问题编译期完全没有痕迹，而且界面上看不出是模板的哪一部分断了。
         // 这里直接把 Thumb 的拖拽事件抛出去，看 Slider 的值会不会跟着变。
@@ -801,6 +809,66 @@ public static class DiagnosticsService
         encoder.Save(fs2);
 
         DumpCalendarGeometry(panel);
+        return path;
+    }
+
+    /// <summary>
+    /// 把往期清单面板单独渲染成 PNG（按整数倍放大，默认 2 倍）。
+    ///
+    /// 和月历一样挂在 Popup 里，<see cref="WritePageShot"/> 拍主窗口抓不到它 ——
+    /// 但它比月历更吃"看图核销"：一行里有日期、星期、条数、未收尾标记四段文字挤在一起，
+    /// 右端够不够宽、会不会把「2 未收尾」挤出去，断言量不出来（只能量到控件有宽度）。
+    ///
+    /// 面板新建实例渲染，不依赖弹出层开没开；数据取真实数据目录。
+    /// </summary>
+    public static string WriteRecentShot(string path, int scale = 2)
+    {
+        if (scale < 1) scale = 1;
+
+        var today = DateTime.Today;
+        var panel = new RecentDaysPanel();
+        panel.Show(today, DayIndex.Build(App.Store.Book.Days, App.Store.Book.Files));
+
+        panel.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        var size = panel.DesiredSize;
+        panel.Arrange(new Rect(new Point(0, 0), size));
+        panel.UpdateLayout();
+
+        int pw = Math.Max(1, (int)Math.Ceiling(size.Width * scale));
+        int ph = Math.Max(1, (int)Math.Ceiling(size.Height * scale));
+        double dpi = 96.0 * scale;
+
+        var panelBitmap = new System.Windows.Media.Imaging.RenderTargetBitmap(
+            pw, ph, dpi, dpi, System.Windows.Media.PixelFormats.Pbgra32);
+        panelBitmap.Render(panel);
+
+        // 面板自己透明（圆角卡片外那圈 Margin 是空的），垫一层窗口底色才看得出边界
+        var visual = new System.Windows.Media.DrawingVisual();
+        using (var dc = visual.RenderOpen())
+        {
+            var bg = Application.Current?.TryFindResource("WindowBackgroundBrush")
+                         as System.Windows.Media.Brush
+                     ?? System.Windows.Media.Brushes.White;
+            dc.DrawRectangle(bg, null, new Rect(0, 0, size.Width, size.Height));
+            dc.DrawImage(panelBitmap, new Rect(0, 0, size.Width, size.Height));
+        }
+
+        var composed = new System.Windows.Media.Imaging.RenderTargetBitmap(
+            pw, ph, dpi, dpi, System.Windows.Media.PixelFormats.Pbgra32);
+        composed.Render(visual);
+
+        var encoder = new System.Windows.Media.Imaging.PngBitmapEncoder();
+        encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(composed));
+
+        var dir = Path.GetDirectoryName(path);
+        if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+
+        using var fs = File.Create(path);
+        encoder.Save(fs);
+
+        Console.WriteLine($"[recent] 面板 {size.Width:F1}×{size.Height:F1} · {panel.RowCount} 行 · "
+                          + $"摘要「{panel.SummaryLine}」");
+        Console.WriteLine($"[recent] 第一行：{string.Join(" | ", panel.RowCounts.Take(1))}");
         return path;
     }
 
@@ -3388,6 +3456,257 @@ public static class DiagnosticsService
         }
         finally
         {
+            try { window?.Close(); }
+            catch { /* 关不掉不影响结论 */ }
+        }
+    }
+
+    /// <summary>
+    /// 「按日期回看」：往期清单、相邻跳转、归档页的日期目录与搜索。
+    ///
+    /// 期望值尽量在探针里独立算一遍（比如"有内容的日子"直接从 Book 现算一份，
+    /// 而不是调 <see cref="DayIndex.Build"/>），这样"索引函数本身写退化了"也能被抓住，不会自证。
+    /// </summary>
+    private static void ProbeBackBrowse(CheckFn check)
+    {
+        // ---- 清单本身：造数据，不依赖用户实际记录 ----
+        try
+        {
+            var today = DateTime.Today;
+            var yesterday = today.AddDays(-1).ToString("yyyy-MM-dd");
+            var nineDaysAgo = today.AddDays(-9).ToString("yyyy-MM-dd");
+
+            var digests = new List<DayDigest>
+            {
+                new()
+                {
+                    Date = yesterday, Entries = 1, Open = 1, Files = 21,
+                    EntryTexts = new[] { "整理第三季度数据，等老板回话" },
+                },
+                new()
+                {
+                    Date = nineDaysAgo, Entries = 2, Files = 7,
+                    EntryTexts = new[] { "需求评审", "写周报" },
+                    FileNames = new[] { "Q3报表.xlsx", "会议纪要.docx" },
+                },
+            };
+
+            var panel = new RecentDaysPanel();
+            panel.Show(today, digests);
+
+            check("往期清单给每个有记录的日子一行",
+                panel.RowCount == 2, $"{panel.RowCount} 行：{string.Join("、", panel.RowDates)}");
+            check("清单从新到旧排列",
+                panel.RowDates.SequenceEqual(new[] { yesterday, nineDaysAgo }),
+                string.Join(" → ", panel.RowDates));
+            check("行里带上了那天的条数",
+                panel.RowCounts.Count == 2 && panel.RowCounts[0].Contains("21", StringComparison.Ordinal),
+                string.Join(" | ", panel.RowCounts));
+
+            // 光标默认停在"当前正在看的那天"上：打开清单按 ↑ 就是上一个有记录的日子，
+            // 这正是用户点这个面板想要的第一件事。
+            panel.Show(DateTime.Parse(nineDaysAgo), digests);
+            check("光标默认落在当前查看的那一天上",
+                panel.CursorIndex == 1, $"停在第 {panel.CursorIndex + 1} 行");
+            check("↑ 把光标挪到上一个有记录的日子",
+                panel.TryMoveCursor(-1) && panel.CursorIndex == 0, $"停在第 {panel.CursorIndex + 1} 行");
+            check("已经到顶时 ↑ 不假装动过", !panel.TryMoveCursor(-1));
+            check("↓ 能挪回来", panel.TryMoveCursor(1) && panel.CursorIndex == 1);
+            check("到底时 ↓ 不假装动过", !panel.TryMoveCursor(1));
+
+            DateTime? chosen = null;
+            panel.DateChosen += d => chosen = d;
+
+            check("点第二行抛出的日期就是第二行的日期",
+                panel.PickIndex(1) && chosen == DateTime.Parse(nineDaysAgo),
+                chosen?.ToString("yyyy-MM-dd") ?? "未触发");
+
+            chosen = null;
+            check("按日期点也能命中（宿主实现「点哪行跳哪天」就靠它）",
+                panel.PickDate(yesterday) && chosen == DateTime.Parse(yesterday),
+                chosen?.ToString("yyyy-MM-dd") ?? "未触发");
+
+            check("点不存在的行 / 日期明确返回 false",
+                !panel.PickIndex(9) && !panel.PickDate("1999-01-01"));
+
+            // ---- 搜索 ----
+            panel.FilterText = "周报";
+            check("搜索只留下命中的日子",
+                panel.RowCount == 1 && panel.RowDates[0] == nineDaysAgo,
+                $"{panel.RowCount} 行：{string.Join("、", panel.RowDates)}");
+            check("搜索时顶部说明改成命中口径",
+                panel.SummaryLine.Contains("命中", StringComparison.Ordinal), panel.SummaryLine);
+
+            panel.FilterText = "Q3";
+            check("归档文件名里的词也能搜到",
+                panel.RowCount == 1 && panel.RowDates[0] == nineDaysAgo, $"{panel.RowCount} 行");
+
+            panel.FilterText = "这个词肯定没有";
+            check("搜不到时清单为空（而不是退回全部）", panel.RowCount == 0, $"{panel.RowCount} 行");
+            check("空清单不假装有光标", panel.CursorIndex < 0, $"光标 {panel.CursorIndex}");
+            check("空清单按 Enter 不炸也不跳", !panel.PickCursor());
+
+            panel.FilterText = "";
+            check("清空搜索后恢复全部行", panel.RowCount == 2, $"{panel.RowCount} 行");
+        }
+        catch (Exception ex)
+        {
+            check("往期清单", false, ex.Message);
+        }
+
+        // ---- 接到主面板上：清单能不能真的把界面切过去 ----
+        MainWindow? window = null;
+        try
+        {
+            // 「有内容的日子」独立算一份（照 CollectMarkedDates 原来那份口径写），
+            // DayIndex.Build 是它的替代品 —— 两边结果必须一致，不然月历上的小圆点
+            // 和往期清单里的行会各说各话。
+            var expected = new SortedSet<string>(StringComparer.Ordinal);
+            foreach (var day in App.Store.Book.Days)
+            {
+                if (day.Entries.Count > 0) expected.Add(day.Date);
+            }
+            foreach (var file in App.Store.Book.Files)
+            {
+                if (!string.IsNullOrEmpty(file.AddedDate)) expected.Add(file.AddedDate);
+            }
+
+            window = new MainWindow
+            {
+                WindowStartupLocation = WindowStartupLocation.Manual,
+                ShowInTaskbar = false,
+                Left = Offscreen,
+                Top = Offscreen,
+            };
+            window.Show();
+            window.UpdateLayout();
+
+            var marked = MainWindow.CollectMarkedDates().ToList();
+            check("月历小圆点和往期清单用的是同一批日子",
+                marked.Count == expected.Count && marked.All(expected.Contains),
+                $"圆点 {marked.Count} 天 / 独立算 {expected.Count} 天");
+
+            window.RefreshRecentDays();
+            check("往期清单的行数等于有内容的天数",
+                window.RecentDayRowCount == expected.Count,
+                $"界面 {window.RecentDayRowCount} 行，独立算 {expected.Count} 天");
+
+            if (expected.Count > 0)
+            {
+                var latest = expected.Max!;
+                check("从清单里点一行会真的切到那天",
+                    window.RecentDays.PickDate(latest) &&
+                    window.ViewingDate.ToString("yyyy-MM-dd") == latest,
+                    $"当前看着 {window.ViewingDate:yyyy-MM-dd}，期望 {latest}");
+
+                var olderDays = expected.Where(k => string.CompareOrdinal(k, latest) < 0).ToList();
+
+                if (olderDays.Count > 0)
+                {
+                    var want = olderDays.Max()!;
+                    check("Alt+← 跳到上一个有记录的日子（跨过中间的空白日）",
+                        window.GoToAdjacentDayWithContent(-1) &&
+                        window.ViewingDate.ToString("yyyy-MM-dd") == want,
+                        $"跳到 {window.ViewingDate:yyyy-MM-dd}，期望 {want}");
+
+                    check("Alt+→ 再跳回来",
+                        window.GoToAdjacentDayWithContent(1) &&
+                        window.ViewingDate.ToString("yyyy-MM-dd") == latest,
+                        $"跳到 {window.ViewingDate:yyyy-MM-dd}，期望 {latest}");
+                }
+                else
+                {
+                    check("只有一天有内容，跳过相邻跳转", true, $"只有 {latest}");
+                }
+
+                var earliest = expected.Min!;
+                window.GoToDate(DateTime.Parse(earliest));
+                check("已经是最早的一天时 Alt+← 明确返回 false（界面会说明，而不是原地不动）",
+                    !window.GoToAdjacentDayWithContent(-1),
+                    $"当前 {window.ViewingDate:yyyy-MM-dd}");
+            }
+            else
+            {
+                check("数据里还没有任何记录，跳过清单跳转检查", true, "空库");
+            }
+
+            // ---- 归档页：日期目录 + 搜索 ----
+            window.GoToFilesOfCurrentDay();
+            window.UpdateLayout();
+
+            check("「去归档 ›」顺手把范围收回「只看当天」",
+                !window.ShowAllFiles, window.FileFilterStateReport);
+
+            window.SetFileFilter(true);
+            window.UpdateLayout();
+
+            var total = App.Store.Book.Files.Count;
+
+            check("目录条的胶囊数等于日期分组数",
+                window.FileDateChipCount == window.FileGroups.Count,
+                $"胶囊 {window.FileDateChipCount} 颗 / 分组 {window.FileGroups.Count} 组");
+
+            check("只有一天的文件时收起目录条（一颗胶囊没有可去的地方）",
+                window.FileDateIndexVisible == (window.FileGroups.Count > 1),
+                $"{window.FileGroups.Count} 组，目录条{(window.FileDateIndexVisible ? "显示" : "隐藏")}");
+
+            if (window.FileGroups.Count > 1)
+            {
+                var key = window.FileGroups[0].Key;
+                check("点目录能滚到对应的那一组", window.JumpToFileGroup(key), key);
+                check("不在列表里的日期不会假装跳成功",
+                    !window.JumpToFileGroup("1999-01-01"), "1999-01-01");
+            }
+
+            var sample = App.Store.Book.Files.FirstOrDefault(f => f.FileName.Length >= 4);
+
+            if (sample != null)
+            {
+                var keyword = sample.FileName[..4];
+                int hit = App.Store.Book.Files.Count(f => FileSearch.Matches(f, keyword));
+
+                window.SetFileKeyword(keyword);
+                window.UpdateLayout();
+
+                check("搜索把列表收敛到命中的文件",
+                    window.VisibleFileCount == hit,
+                    $"界面 {window.VisibleFileCount} 个，按规则算 {hit} 个（关键字「{keyword}」）");
+
+                check("搜索时目录条跟着只留命中的日期",
+                    window.FileDateChipCount == window.FileGroups.Count,
+                    $"胶囊 {window.FileDateChipCount} 颗 / 分组 {window.FileGroups.Count} 组");
+
+                // 在「只看当天」里直接打字：应当自动放宽到全部 ——
+                // 不放宽的话，用户敲完发现自己要找的东西明明归档过却没有，只会以为记录丢了。
+                window.SetFileFilter(false);
+                window.SetFileKeyword(keyword);
+                window.UpdateLayout();
+
+                check("在「只看当天」里搜索会自动放宽到「全部」",
+                    window.ShowAllFiles && window.VisibleFileCount == hit,
+                    $"{window.FileFilterStateReport}，列表里 {window.VisibleFileCount} 个");
+
+                window.SetFileKeyword("");
+                window.UpdateLayout();
+
+                check("清空搜索后回到全部文件",
+                    window.VisibleFileCount == total,
+                    $"界面 {window.VisibleFileCount} 个，库里 {total} 个");
+            }
+            else
+            {
+                check("归档里还没有文件名够长的文件，跳过搜索检查", true, "跳过");
+            }
+        }
+        catch (Exception ex)
+        {
+            check("按日期回看（接到主面板）", false, ex.Message);
+        }
+        finally
+        {
+            try { window?.CancelPendingSaves(); }
+            catch { /* 停不掉不影响结论 */ }
+
             try { window?.Close(); }
             catch { /* 关不掉不影响结论 */ }
         }

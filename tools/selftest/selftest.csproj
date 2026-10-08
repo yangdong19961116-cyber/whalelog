@@ -29,6 +29,8 @@
     <Compile Include="..\..\src\WhaleLog\Services\FileIntakeService.cs" />
     <Compile Include="..\..\src\WhaleLog\Services\ReportService.cs" />
     <Compile Include="..\..\src\WhaleLog\Services\DateGrouping.cs" />
+    <Compile Include="..\..\src\WhaleLog\Services\DayIndex.cs" />
+    <Compile Include="..\..\src\WhaleLog\Services\FileSearch.cs" />
     <Compile Include="..\..\src\WhaleLog\Services\AssetCatalog.cs" />
     <Compile Include="..\..\src\WhaleLog\Services\CommandLine.cs" />
     <Compile Include="..\..\src\WhaleLog\Services\AnimSheet.cs" />

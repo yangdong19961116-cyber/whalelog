@@ -1,0 +1,116 @@
+<!--
+    往期记录面板：按日期列出"有记录的日子"，点一下直达。
+
+    为什么要有它 —— 以前回看往期只有两条路：
+      · 日期栏的「‹」一天一天退。从今天退到两周前要点十几次，中间还夹着没记录的日子。
+      · 月历上看小圆点。它能告诉你哪天有东西，但说不出"那天有多少、有没有没收尾的"，
+        而且每换一天都要重新点开一次弹出层。
+    这一块把"哪天有东西 + 有多少"摆成一列，跳转只要点一下。
+
+    条数取的是 DayIndex 的摘要，和月历小圆点是同一处判定 ——
+    两处各算一份的话，会出现"清单里有这天、月历上没圆点"这种最费解的局面。
+
+    宽度 316 是算出来的（和月历那块同一个道理，写在这里免得后人当成随手值）：
+        内容区 = 316 − Margin 20 − Border 2 − Padding 24 = 270
+        最宽的一行 = 日期（跨年时「2025年9月24日」≈ 110）+ 星期 26
+                    + 右侧「记录 3 · 文件 21 · 3 未收尾」≈ 146 + 间隙 8 ≈ 290
+    也就是说极端情况下还是会差 20 —— 所以行里的左边是**两列**（日期固定、星期可裁）：
+    挤不下时牺牲星期那两个字，日期和右边的数字永远完整，绝不出现"数字被切掉一半"。
+    （右端数字被裁是这类列表最坏的一种失败：图上看着正常，实际少了一位。）
+
+    ↑↓ 和 Enter 由搜索框的按键处理器接管（焦点一直留在框里，和月历的「跳到」框同一种做法），
+    行本身是普通 Button，不参与焦点链 —— 焦点一散，↑↓ 就会跑去滚动而不是挪光标。
+-->
+<UserControl x:Class="WhaleLog.Views.RecentDaysPanel"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Width="316"
+             FontFamily="Microsoft YaHei UI, Segoe UI, sans-serif">
+
+    <UserControl.Resources>
+        <Style x:Key="RecentRow" TargetType="Button">
+            <Setter Property="Padding" Value="8,5" />
+            <Setter Property="Margin" Value="0,0,0,2" />
+            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                                CornerRadius="8" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Stretch" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background"
+                                        Value="{DynamicResource HoverBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!--
+            光标停在哪一行（键盘 ↑↓）。底色走主题资源而不是写死：
+            深色主题下 SelectionBrush 是深蓝，写死浅色会把字吃掉。
+        -->
+        <Style x:Key="RecentRowActive" TargetType="Button" BasedOn="{StaticResource RecentRow}">
+            <Setter Property="Background" Value="{DynamicResource SelectionBrush}" />
+        </Style>
+    </UserControl.Resources>
+
+    <Border Background="{DynamicResource SurfaceBrush}"
+            BorderBrush="{DynamicResource BorderStrongBrush}"
+            BorderThickness="1"
+            CornerRadius="12"
+            Padding="12,11"
+            Margin="10">
+        <Border.Effect>
+            <DropShadowEffect BlurRadius="18" ShadowDepth="2" Opacity="0.32" Color="#000000" />
+        </Border.Effect>
+
+        <StackPanel>
+            <!--
+                标题和摘要分两列，摘要放不下时自己裁。
+                两块摆在同一格里靠左/靠右对齐的话，日子一多（"128 天有记录 · …"）
+                就会互相压住 —— 而"两个 TextBlock 叠在一起"是那种只有在数据变多以后
+                才出现、平时完全看不出来的布局事故。
+            -->
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="往期记录" FontSize="13" FontWeight="Medium"
+                           VerticalAlignment="Center" />
+                <TextBlock Grid.Column="1" x:Name="SummaryText" Margin="10,0,0,0"
+                           HorizontalAlignment="Right" VerticalAlignment="Center"
+                           FontSize="11" TextTrimming="CharacterEllipsis"
+                           Foreground="{DynamicResource TextMutedBrush}" />
+            </Grid>
+
+            <TextBox x:Name="FilterInput" Style="{StaticResource FlatTextBox}"
+                     Margin="0,9,0,0" Padding="8,4" FontSize="12"
+                     TextChanged="OnFilterTextChanged"
+                     PreviewKeyDown="OnFilterKeyDown"
+                     ToolTip="在这一屏里找：记录正文或归档文件名里有这个词的日子（留空看全部）" />
+
+            <ScrollViewer x:Name="RowsScroller" Style="{StaticResource SlimScroller}"
+                          MaxHeight="336" Margin="0,8,0,0">
+                <StackPanel>
+                    <StackPanel x:Name="RowsHost" />
+                    <TextBlock x:Name="EmptyHint" Margin="8,18,8,18" FontSize="12"
+                               TextAlignment="Center" TextWrapping="Wrap"
+                               Foreground="{DynamicResource TextMutedBrush}"
+                               Text="还没有可回溯的记录。" Visibility="Collapsed" />
+                </StackPanel>
+            </ScrollViewer>
+
+            <TextBlock x:Name="FooterHint" Margin="2,8,2,0" FontSize="11"
+                       Foreground="{DynamicResource TextMutedBrush}"
+                       Text="↑↓ 选 · Enter 跳过去 · Esc 收起" />
+        </StackPanel>
+    </Border>
+</UserControl>

@@ -91,6 +91,7 @@ public partial class App : Application
         bool oneShot = HasFlag("--selfcheck") || HasFlag("--create-shortcut")
                     || HasFlag("--shot") || HasFlag("--shot-notes") || HasFlag("--shot-settings")
                     || HasFlag("--shot-floating") || HasFlag("--shot-calendar")
+                    || HasFlag("--shot-recent")
                     || HasFlag("--export-assets");
 
         if (!oneShot)
@@ -206,6 +207,31 @@ public partial class App : Application
                 LogCrash(ex);
                 if (!HasFlag("--quiet"))
                     MessageBox.Show(ex.Message, "鲸记 · 月历截图失败",
+                        MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+
+            Shutdown();
+            return;
+        }
+
+        // 截图模式：把往期清单面板单独放大渲染成 PNG。
+        // 和月历同理 —— 它也在 Popup 里（独立 HWND），上面的 --shot 系列拍不到。
+        if (HasFlag("--shot-recent"))
+        {
+            var target = ArgValue("--shot-recent")
+                         ?? Path.Combine(AppPaths.LogDir, "recent-days.png");
+            try
+            {
+                DiagnosticsService.WriteRecentShot(target);
+                if (!HasFlag("--quiet"))
+                    MessageBox.Show($"已保存到：\n{target}", "鲸记 · 往期清单截图",
+                        MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            catch (Exception ex)
+            {
+                LogCrash(ex);
+                if (!HasFlag("--quiet"))
+                    MessageBox.Show(ex.Message, "鲸记 · 往期清单截图失败",
                         MessageBoxButton.OK, MessageBoxImage.Warning);
             }
 

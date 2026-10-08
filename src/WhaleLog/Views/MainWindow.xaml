@@ -93,6 +93,35 @@
                 </Grid>
             </Border>
         </DataTemplate>
+
+        <!--
+            归档页目录条上的一颗日期胶囊（「9月24日  21」）。
+            是 Button 不是 ToggleButton：点它不改变任何筛选状态，只是把列表滚到那一组 ——
+            做成 toggle 的话勾选态就成了一种"筛选"，和右上的「只看当天 / 全部」撞车。
+        -->
+        <Style x:Key="DateChipButton" TargetType="Button">
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="Margin" Value="0,0,6,5" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd" CornerRadius="11" Padding="9,3"
+                                Background="{DynamicResource AccentSoftBrush}"
+                                BorderBrush="{DynamicResource BorderSubtleBrush}"
+                                BorderThickness="1">
+                            <ContentPresenter VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background"
+                                        Value="{DynamicResource SelectionBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
     </Window.Resources>
 
     <Grid>
@@ -150,7 +179,7 @@
                 <Grid Grid.Row="0">
                     <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                         <Button Content="‹" Style="{StaticResource GhostButton}" Padding="11,4"
-                                Click="OnPrevDayClick" />
+                                Click="OnPrevDayClick" ToolTip="上一天（Alt + ←）" />
                         <Button x:Name="DateButton" Style="{StaticResource GhostButton}"
                                 Padding="10,4" Margin="8,0" Click="OnDateButtonClick"
                                 ToolTip="点开可以按整月跳转">
@@ -163,7 +192,22 @@
                             </StackPanel>
                         </Button>
                         <Button Content="›" Style="{StaticResource GhostButton}" Padding="11,4"
-                                Click="OnNextDayClick" />
+                                Click="OnNextDayClick" ToolTip="下一天（Alt + →）" />
+                        <!--
+                            往期清单。和「‹ ›」并存而不是取代它们：
+                            「‹」是"我想看昨天"，往期是"我想找哪天记过东西" —— 两个不同的意图。
+                            从今天翻回两周前要点十几次「‹」，清单里是一下。
+                        -->
+                        <Button x:Name="RecentButton" Style="{StaticResource GhostButton}"
+                                Padding="10,4" Margin="8,0,0,0" Click="OnRecentButtonClick"
+                                ToolTip="列出所有有记录的日子，点一下直接跳过去（Alt + ← / → 跳到相邻有记录的一天）">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="往期" FontSize="13" VerticalAlignment="Center" />
+                                <TextBlock Text="▾" FontSize="11" Margin="7,1,0,0"
+                                           VerticalAlignment="Center"
+                                           Foreground="{DynamicResource TextMutedBrush}" />
+                            </StackPanel>
+                        </Button>
                         <Button Content="回到今天" Style="{StaticResource TinyGhostButton}" Margin="10,0,0,0"
                                 Click="OnTodayClick" />
                     </StackPanel>
@@ -184,6 +228,16 @@
                            HorizontalOffset="-14" VerticalOffset="4"
                            Closed="OnDatePopupClosed">
                         <v:MonthCalendarPanel x:Name="MonthPanel" />
+                    </Popup>
+
+                    <!-- 往期清单弹出层。和月历各管一件事：
+                         月历是"我知道大概是哪天"，这一列是"带我去有记录的那天"。 -->
+                    <Popup x:Name="RecentPopup" StaysOpen="False" AllowsTransparency="True"
+                           PopupAnimation="Fade" Placement="Bottom"
+                           PlacementTarget="{Binding ElementName=RecentButton}"
+                           HorizontalOffset="-14" VerticalOffset="4"
+                           Closed="OnRecentPopupClosed">
+                        <v:RecentDaysPanel x:Name="RecentPanel" />
                     </Popup>
                 </Grid>
 
@@ -335,6 +389,7 @@
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
                     <RowDefinition Height="*" />
                 </Grid.RowDefinitions>
 
@@ -349,6 +404,22 @@
                                       Click="OnFileFilterClick" />
                     </StackPanel>
                     <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                        <!--
+                            搜索框。带一个自己的占位提示（WPF 的 TextBox 没有 placeholder），
+                            提示在框里垫着、有字就隐藏 —— 放在框外面会多占一列宽度，
+                            而这一行右边本来就挤着统计文字和按钮。
+                        -->
+                        <Grid Margin="0,0,14,0" VerticalAlignment="Center">
+                            <TextBox x:Name="FileSearchBox" Width="182"
+                                     Style="{StaticResource FlatTextBox}"
+                                     Padding="8,3" FontSize="12"
+                                     TextChanged="OnFileSearchTextChanged"
+                                     ToolTip="按文件名 / 类别 / 路径 / 备注筛（搜的是全部文件，不受上面两颗胶囊限制）" />
+                            <TextBlock x:Name="FileSearchPlaceholder" Text="搜文件名 / 类别"
+                                       FontSize="12" Margin="10,0,0,0"
+                                       VerticalAlignment="Center" IsHitTestVisible="False"
+                                       Foreground="{DynamicResource TextMutedBrush}" />
+                        </Grid>
                         <TextBlock x:Name="FileStatText" VerticalAlignment="Center" FontSize="12"
                                    Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,14,0" />
                         <Button Content="打开数据目录" Style="{StaticResource TinyGhostButton}"
@@ -371,7 +442,21 @@
                     </StackPanel>
                 </Border>
 
-                <Grid x:Name="FileDropZone" Grid.Row="2" Margin="0,12,0,0">
+                <!--
+                    日期目录条：每一颗是一个有文件的日期 + 那天的文件数，点一下滚到那一组。
+                    归到几十个文件时，「全部」视图是一长条卡片，找某一天的记录只能一路滚到底；
+                    这一行就是那份长列表的目录。只在「全部」且不止一天时出现 ——
+                    「只看当天」本来就只有一天，再挂个目录是噪音。
+                -->
+                <ScrollViewer x:Name="FileDateIndexScroll" Grid.Row="2" Margin="0,10,0,0"
+                              MaxHeight="62" VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled"
+                              Style="{StaticResource SlimScroller}"
+                              Visibility="Collapsed">
+                    <WrapPanel x:Name="FileDateIndex" />
+                </ScrollViewer>
+
+                <Grid x:Name="FileDropZone" Grid.Row="3" Margin="0,12,0,0">
                     <ScrollViewer Style="{StaticResource SlimScroller}">
                         <StackPanel>
                             <ItemsControl x:Name="FileList"
