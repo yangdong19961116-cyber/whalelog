@@ -45,6 +45,9 @@ public static class ReportService
         sb.AppendLine("## 概览");
         sb.AppendLine();
         sb.AppendLine($"- 记录 **{entries.Count}** 条，完成 **{done.Count}** 条，进行中 **{open.Count}** 条");
+        // 进行中的那几条平均做到哪儿了 —— 只看条数看不出"快收尾了"还是"刚开头"
+        if (open.Count > 0) sb.AppendLine($"- 进行中平均进度 **{day.OpenProgress}%**");
+        if (day.CarriedCount > 0) sb.AppendLine($"- 其中 **{day.CarriedCount}** 条由以前顺延而来");
         if (day.TotalSeconds > 0) sb.AppendLine($"- 已完成事项累计耗时 **{day.TotalDurationText}**");
         if (includeFiles && files.Count > 0) sb.AppendLine($"- 归档文件 **{files.Count}** 个");
 
@@ -97,10 +100,10 @@ public static class ReportService
         int index = 1;
         foreach (var e in entries)
         {
-            var meta = new List<string> { e.Category };
-            if (!string.IsNullOrWhiteSpace(e.Tag)) meta.Add(e.Tag);
-            if (e.Done && !string.IsNullOrWhiteSpace(e.DurationText)) meta.Add($"耗时 {e.DurationText}");
-            sb.AppendLine($"{index++}. `{e.TimeText}` {e.Text}  _（{string.Join(" / ", meta)}）_");
+            // 元信息的口径和 notes\*.md 完全共用一份（NoteEntry.MetaParts），
+            // 免得同一件事在落盘文件和日报里写法不一样。
+            var meta = string.Join(" / ", e.MetaParts());
+            sb.AppendLine($"{index++}. `{e.TimeText}` {e.Text}  _（{meta}）_");
         }
         sb.AppendLine();
     }
@@ -144,6 +147,9 @@ public static class ReportService
         sb.AppendLine();
         sb.AppendLine($"- 有记录的天数 **{dayNotes.Count(x => x.Note is { Entries.Count: > 0 })}** / {days.Count}");
         sb.AppendLine($"- 累计记录 **{allEntries.Count}** 条，完成 **{allEntries.Count(e => e.Done)}** 条");
+        var weekOpen = allEntries.Where(e => !e.Done).ToList();
+        if (weekOpen.Count > 0)
+            sb.AppendLine($"- 未完成 **{weekOpen.Count}** 条，平均进度 **{(int)Math.Round(weekOpen.Average(e => e.Progress))}%**");
         var totalSeconds = allEntries.Sum(e => e.DurationSeconds);
         if (totalSeconds > 0)
         {
@@ -176,7 +182,11 @@ public static class ReportService
                 foreach (var e in note.Entries.OrderBy(x => x.CreatedAt))
                 {
                     var box = e.Done ? "x" : " ";
-                    sb.AppendLine($"- [{box}] {e.Text}");
+                    // 没勾完的带上进度；顺延过来的标一下出处，不然连着几天看到同一条会以为是重复记录
+                    var tail = "";
+                    if (!e.Done && e.Progress > 0) tail += $"（进度 {e.Progress}%）";
+                    if (e.IsCarried) tail += $"（顺延自 {e.CarriedFromText}）";
+                    sb.AppendLine($"- [{box}] {e.Text}{tail}");
                 }
                 sb.AppendLine();
             }

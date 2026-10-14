@@ -337,6 +337,11 @@ public partial class App : Application
         StartReminder();
         ApplyQuickCaptureHotKey();
 
+        // 未完成的事项顺延到今天。
+        // 刻意放在这里而不是 BuildServices 里：一次性命令（自检 / 截图）不该顺手改用户的数据。
+        // 也刻意在 ShowMainWindow() 之前 —— 主面板随后才第一次 LoadDay，天然就能看到顺延来的条目。
+        RunCarryOver(announce: false);
+
         if (!startHidden)
             ShowMainWindow();
 
@@ -400,8 +405,57 @@ public partial class App : Application
     {
         Reminder.ReminderFired += OnReminderFired;
         Reminder.Ticked += UpdateTrayTooltip;
+        Reminder.Ticked += OnReminderTick;
         Reminder.Start();
         UpdateTrayTooltip();
+    }
+
+    /// <summary>上次做过跨天检查的日期。</summary>
+    private string _carryCheckedDate = DateTime.Today.ToString("yyyy-MM-dd");
+
+    /// <summary>
+    /// 每 20 秒的轮询里顺手看一眼有没有跨天。
+    ///
+    /// 只在启动时跑一次顺延是不够的：这程序常驻托盘、通宵开着是常态，
+    /// 那样子一早就看不到昨天下班前没勾完的事项了。
+    /// </summary>
+    private void OnReminderTick()
+    {
+        var today = DateTime.Today.ToString("yyyy-MM-dd");
+        if (today == _carryCheckedDate) return;
+        _carryCheckedDate = today;
+
+        RunCarryOver(announce: true);
+    }
+
+    /// <summary>
+    /// 跑一次顺延。announce = 跨天自动触发（需要弹气泡告诉用户），
+    /// false = 启动时（主面板还没建，写状态栏没意义，靠列表自己呈现就够了）。
+    /// </summary>
+    private void RunCarryOver(bool announce)
+    {
+        CarryOverService.CarryReport report;
+        try
+        {
+            report = CarryOverService.Run(Store);
+        }
+        catch (Exception ex)
+        {
+            LogCrash(ex);
+            return;
+        }
+
+        if (!report.Any) return;
+
+        // 列表有可能正开着（跨天那次），把新出现的条目补进去
+        _mainWindow?.RefreshCurrentDay();
+        _mainWindow?.SetStatusMessage(report.Describe());
+
+        if (announce)
+        {
+            try { _floatingWindow?.ShowBubble("新的一天", report.Describe(), 1); }
+            catch { /* 悬浮窗可能没开 */ }
+        }
     }
 
     private void UpdateTrayTooltip()

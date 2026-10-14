@@ -43,6 +43,7 @@ internal static class Program
             TestFileDateGrouping();
             TestDayIndex();
             TestSettingsClamp();
+            TestProgressAndCarryOver();
             TestSettingsMigration();
             TestIntakeSummary();
             TestAssetCatalog(workspace);
@@ -1142,6 +1143,170 @@ internal static class Program
         foreach (var path in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
             map[path] = (File.ReadAllBytes(path), File.GetLastWriteTimeUtc(path));
         return map;
+    }
+
+    // ==================================================================
+    // 进度与顺延（2026-10-14）
+    //
+    // 这里最容易悄悄错的是两处耦合：
+    //   1. 进度和"完成"是从两个方向互相推的 —— 写成互相递归会栈溢出，
+    //      写成单向又会出现"打了勾但进度条是 0%"。
+    //   2. 顺延要求幂等、不复活、完成即断链，只能靠组合日期来验。
+    // ==================================================================
+
+    private static void TestProgressAndCarryOver()
+    {
+        Section("进度条与顺延");
+
+        // ---- 进度和「完成」双向联动 ----
+        var e = new NoteEntry { Text = "甲" };
+        CheckEq(e.ProgressText, "0%", "新条目进度是 0%");
+
+        e.Progress = 40;
+        Check(!e.Done, "拖到 40% 不算完成");
+
+        e.Progress = 100;
+        Check(e.Done, "拖到 100% 自动打勾");
+
+        e.Done = false;
+        CheckEq(e.ProgressText, "40%", "取消勾选回到上次拖到的 40%，而不是归 0");
+
+        e.Done = true;
+        e.Done = false;
+        CheckEq(e.ProgressText, "40%", "反复勾选/取消后仍然回得到 40%");
+
+        var e2 = new NoteEntry { Text = "乙" };
+        e2.Done = true;
+        CheckEq(e2.ProgressText, "100%", "直接打勾会把进度拉到 100%");
+        e2.Done = false;
+        CheckEq(e2.ProgressText, "0%", "从没拖过的条目，取消勾选就回到 0%");
+
+        // ---- 取值钳制 ----
+        var e3 = new NoteEntry { Text = "丙" };
+        e3.Progress = 150;
+        CheckEq(e3.ProgressText, "100%", "进度上限钳到 100%");
+        e3.Progress = -20;
+        CheckEq(e3.ProgressText, "0%", "进度下限钳到 0%");
+
+        // ---- 老数据读档：没有 progress 字段时按 done 补出来 ----
+        var legacy = LogBookStore.Deserialize(
+            """{"schemaVersion":1,"days":[{"date":"2026-01-01","entries":[""" +
+            """{"id":"a","text":"老账","done":true},{"id":"b","text":"没勾","done":false}]}],"files":[]}""");
+        Check(legacy != null, "老格式索引能读进来");
+        if (legacy != null)
+        {
+            CheckEq(legacy.Days[0].Entries[0].ProgressText, "100%",
+                "老数据 done:true 的条目补成 100%（否则已完成的会显示成空进度条）");
+            CheckEq(legacy.Days[0].Entries[1].ProgressText, "0%",
+                "老数据 done:false 的条目是 0%");
+        }
+
+        // ---- 新格式落盘再读回来，进度和顺延标记都不能丢 ----
+        var roundTrip = new LogBook();
+        var rtDay = roundTrip.GetOrCreateDay(new DateTime(2026, 7, 19));
+        var rtEntry = new NoteEntry { Text = "带进度的", CreatedAt = new DateTime(2026, 7, 19, 9, 0, 0) };
+        rtEntry.Progress = 65;
+        rtDay.Entries.Add(rtEntry);
+        rtDay.Entries.Add(rtEntry.CloneForCarry(new DateTime(2026, 7, 20)));
+
+        var json = System.Text.Json.JsonSerializer.Serialize(roundTrip, new System.Text.Json.JsonSerializerOptions
+        {
+            PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase,
+        });
+        var reloaded = LogBookStore.Deserialize(json);
+        Check(reloaded != null && reloaded.Days[0].Entries.Count == 2, "序列化再读回来条目数不变");
+        if (reloaded != null)
+        {
+            CheckEq(reloaded.Days[0].Entries[0].ProgressText, "65%", "读回来进度还在");
+            Check(reloaded.Days[0].Entries[1].IsCarried, "读回来顺延标记还在");
+            CheckEq(reloaded.Days[0].Entries[1].CarriedFromText, "7月19日", "读回来顺延出处还在");
+        }
+
+        // ---- 顺延：基本搬运 ----
+        var today = new DateTime(2026, 7, 20);
+        var book = new LogBook();
+        var yesterday = book.GetOrCreateDay(today.AddDays(-1));
+
+        var a = new NoteEntry { Text = "没做完的甲", Category = "工作", CreatedAt = today.AddDays(-1).AddHours(9) };
+        a.Progress = 30;
+        var b = new NoteEntry { Text = "没做完的乙", Category = "工作", CreatedAt = today.AddDays(-1).AddHours(10) };
+        b.Progress = 60;
+        var c = new NoteEntry { Text = "做完的丙", Category = "工作", CreatedAt = today.AddDays(-1).AddHours(11) };
+        c.Done = true;
+        yesterday.Entries.Add(a);
+        yesterday.Entries.Add(b);
+        yesterday.Entries.Add(c);
+
+        var r1 = CarryOverService.RunOnBook(book, today);
+        CheckEq(r1.Carried.ToString(), "2", "只搬未完成的 2 条，已完成的不管");
+        CheckEq(r1.Describe(), "2 条未完成事项顺延到 7月20日：没做完的甲、没做完的乙", "顺延提示文案");
+
+        var todayNote = book.FindDay(today)!;
+        CheckEq(todayNote.Entries.Count.ToString(), "2", "今天多了 2 条副本");
+        CheckEq(todayNote.Entries[0].ProgressText, "30%", "顺延过来的进度原样带过来（甲）");
+        CheckEq(todayNote.Entries[1].ProgressText, "60%", "顺延过来的进度原样带过来（乙）");
+        CheckEq(todayNote.Entries[0].CarriedFromText, "7月19日", "副本标出顺延出处");
+        CheckEq(todayNote.Entries[0].CreatedAt.ToString("yyyy-MM-dd"), "2026-07-20", "副本的时间落在新的一天");
+        Check(todayNote.Entries[0].Id != a.Id, "副本是独立的一条，不是同一个对象");
+
+        CheckEq(a.Text, "没做完的甲", "源条目的文字没被动过");
+        CheckEq(a.ProgressText, "30%", "源条目的进度没被动过");
+        CheckEq(a.RolledToText, "已顺延至 7月20日", "源条目标出顺延去处");
+        CheckEq(yesterday.Entries.Count.ToString(), "3", "原日期那条仍然留在原日期");
+
+        // ---- 幂等：同一天跑第二遍不该再搬 ----
+        var r2 = CarryOverService.RunOnBook(book, today);
+        CheckEq(r2.Carried.ToString(), "0", "重复跑不会重复搬运");
+        CheckEq(book.FindDay(today)!.Entries.Count.ToString(), "2", "重复跑之后今天还是 2 条");
+
+        // ---- 完成了就不再顺延 ----
+        foreach (var x in book.FindDay(today)!.Entries) x.Done = true;
+        var r3 = CarryOverService.RunOnBook(book, today.AddDays(1));
+        CheckEq(r3.Carried.ToString(), "0", "勾完的条目不再顺延到次日");
+
+        // ---- 删掉顺延来的副本 = 主动放弃，不该自己长回来 ----
+        book.FindDay(today)!.Entries.Clear();
+        var r4 = CarryOverService.RunOnBook(book, today);
+        CheckEq(r4.Carried.ToString(), "0", "删掉副本后不会自己长回来");
+
+        // ---- 隔了好几天没开机，积压的未完成也要一次带过来 ----
+        var book2 = new LogBook();
+        var longAgo = book2.GetOrCreateDay(new DateTime(2026, 7, 10));
+        var stuck = new NoteEntry { Text = "积压的活", CreatedAt = new DateTime(2026, 7, 10, 9, 0, 0) };
+        stuck.Progress = 15;
+        longAgo.Entries.Add(stuck);
+        // 中间几天有记录但都是空的（用户开了程序没记东西）
+        book2.GetOrCreateDay(new DateTime(2026, 7, 15));
+
+        var r5 = CarryOverService.RunOnBook(book2, new DateTime(2026, 7, 20));
+        CheckEq(r5.Carried.ToString(), "1", "好几天没开机，积压的未完成也能带过来");
+
+        // ---- 链式顺延：今天还是没做完，明天接着搬 ----
+        var r6 = CarryOverService.RunOnBook(book2, new DateTime(2026, 7, 21));
+        CheckEq(r6.Carried.ToString(), "1", "今天没做完，明天继续顺延");
+        CheckEq(book2.FindDay(new DateTime(2026, 7, 21))!.Entries[0].ProgressText, "15%",
+            "链式顺延一路把进度带下去，不会丢");
+
+        // ---- 落盘 Markdown 里也要看得见 ----
+        var mdDay = new DayNote { Date = "2026-07-20" };
+        var m1 = new NoteEntry { Text = "半截活", Category = "工作", CreatedAt = new DateTime(2026, 7, 20, 9, 0, 0) };
+        m1.Progress = 45;
+        mdDay.Entries.Add(m1);
+        mdDay.Entries.Add(m1.CloneForCarry(new DateTime(2026, 7, 21)));
+        var md = mdDay.ToMarkdown();
+
+        Check(md.Contains("- [ ] `09:00` 半截活  _工作 / 进度 45%_"),
+            "Markdown 里没勾完的条目带进度");
+        Check(md.Contains("/ 顺延自 7月20日"), "Markdown 里顺延来的条目标出出处");
+        Check(md.Contains("carried: 1"), "front-matter 记了顺延条数");
+        Check(md.Contains("openProgress: 45"), "front-matter 记了未完成平均进度");
+
+        var doneMdDay = new DayNote { Date = "2026-07-20" };
+        var m2 = new NoteEntry { Text = "干完了", Category = "工作", CreatedAt = new DateTime(2026, 7, 20, 9, 0, 0) };
+        m2.Done = true;
+        doneMdDay.Entries.Add(m2);
+        Check(!doneMdDay.ToMarkdown().Contains("进度 100%"),
+            "已完成的条目不写「进度 100%」—— 勾本身已经说明了");
     }
 
     private static void CheckSnapshotUnchanged(

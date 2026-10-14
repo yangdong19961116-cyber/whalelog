@@ -351,6 +351,78 @@
 
     <Style TargetType="Slider" BasedOn="{StaticResource FlatSlider}" />
 
+    <!--
+      ============ 记录条目里的进度条 ============
+
+      比 FlatSlider 细一号（6px 轨 + 13px 小球），因为它要挤进一行条目里。
+      左边那段"已完成的填充"是 Track 的 DecreaseRepeatButton 画出来的 ——
+      它天然占据小球左边的全部区域，宽度自动跟着小球走，不需要任何值转换器；
+      小球在 100% 时正好盖住填充的右端，看着就是满格。
+
+      填充色取自 Slider 自己的 Foreground，而不是在模板里写死：这样"拖满变绿"
+      只需要改 Foreground 一个属性（见文件末尾的 DataTrigger），
+      不用去够嵌套模板里的元素 —— ControlTemplate 的名字作用域不跨模板，
+      TargetName 指不到 RepeatButton 内部那个 Border（试过，MC4111 报错）。
+    -->
+    <Style x:Key="ProgressSlider" TargetType="Slider">
+        <Setter Property="Height" Value="15" />
+        <Setter Property="Focusable" Value="False" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="Foreground" Value="{DynamicResource AccentBrush}" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Slider">
+                    <Grid VerticalAlignment="Center" Background="Transparent">
+                        <Border Height="6" CornerRadius="3"
+                                Background="{DynamicResource BorderSubtleBrush}" />
+                        <Track x:Name="PART_Track">
+                            <Track.DecreaseRepeatButton>
+                                <RepeatButton Command="Slider.DecreaseLarge"
+                                              Focusable="False" IsTabStop="False">
+                                    <RepeatButton.Template>
+                                        <ControlTemplate TargetType="RepeatButton">
+                                            <Grid Background="Transparent">
+                                                <Border Height="6" CornerRadius="3"
+                                                        VerticalAlignment="Center"
+                                                        Background="{Binding Foreground,
+                                                            RelativeSource={RelativeSource AncestorType=Slider}}" />
+                                            </Grid>
+                                        </ControlTemplate>
+                                    </RepeatButton.Template>
+                                </RepeatButton>
+                            </Track.DecreaseRepeatButton>
+                            <Track.Thumb>
+                                <Thumb Width="13" Height="13">
+                                    <Thumb.Template>
+                                        <ControlTemplate TargetType="Thumb">
+                                            <Ellipse StrokeThickness="2"
+                                                     Stroke="{DynamicResource SurfaceBrush}"
+                                                     Fill="{Binding Foreground,
+                                                         RelativeSource={RelativeSource AncestorType=Slider}}" />
+                                        </ControlTemplate>
+                                    </Thumb.Template>
+                                </Thumb>
+                            </Track.Thumb>
+                            <Track.IncreaseRepeatButton>
+                                <RepeatButton Command="Slider.IncreaseLarge" Opacity="0"
+                                              Focusable="False" IsTabStop="False" />
+                            </Track.IncreaseRepeatButton>
+                        </Track>
+                    </Grid>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+        <Style.Triggers>
+            <!--
+              拖满 = 完成，整条变绿，和列表里"已完成"的观感一致。
+              数据上下文就是那条记录本身（这个样式只给记录条目用）。
+            -->
+            <DataTrigger Binding="{Binding Done}" Value="True">
+                <Setter Property="Foreground" Value="{DynamicResource SuccessBrush}" />
+            </DataTrigger>
+        </Style.Triggers>
+    </Style>
+
     <!-- ============ 列表项 ============ -->
     <Style x:Key="PlainListBox" TargetType="ListBox">
         <Setter Property="Background" Value="Transparent" />

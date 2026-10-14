@@ -287,6 +287,8 @@
                                                     <ColumnDefinition Width="*" />
                                                     <ColumnDefinition Width="Auto" />
                                                     <ColumnDefinition Width="Auto" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                    <ColumnDefinition Width="Auto" />
                                                 </Grid.ColumnDefinitions>
 
                                                 <CheckBox Grid.Column="0" Style="{StaticResource FlatCheckBox}"
@@ -308,15 +310,50 @@
                                                                    Foreground="{DynamicResource TextSecondaryBrush}" />
                                                         <TextBlock Text="{Binding Tag}" FontSize="11.5" Margin="8,0,0,0"
                                                                    Foreground="{DynamicResource TextMutedBrush}" />
+                                                        <!--
+                                                            顺延徽标：这条是"昨天没勾完、今天接着做"的副本。
+                                                            没有徽标就是一句空串，NonEmptyToVis 会自动把它收起来。
+                                                        -->
+                                                        <Border Margin="8,0,0,0" Padding="6,1" CornerRadius="6"
+                                                                VerticalAlignment="Center"
+                                                                Background="{DynamicResource WarningSoftBrush}"
+                                                                Visibility="{Binding CarriedFromLabel, Converter={StaticResource NonEmptyToVis}}">
+                                                            <TextBlock Text="{Binding CarriedFromLabel}"
+                                                                       FontSize="10.5"
+                                                                       Foreground="{DynamicResource WarningBrush}" />
+                                                        </Border>
+                                                        <!-- 反过来的交代：这条已经顺延到后面某天了 -->
+                                                        <TextBlock Text="{Binding RolledToText}" FontSize="11"
+                                                                   Margin="8,0,0,0" VerticalAlignment="Center"
+                                                                   Foreground="{DynamicResource TextMutedBrush}"
+                                                                   Visibility="{Binding RolledToText, Converter={StaticResource NonEmptyToVis}}" />
                                                     </StackPanel>
                                                 </StackPanel>
 
-                                                <TextBlock Grid.Column="3" Text="{Binding DurationText}"
+                                                <!--
+                                                    完成度：可拖动的百分比进度条。
+                                                    ValueChanged 刻意不写在这里（解析阶段给 Minimum/Maximum 赋值会连带触发，
+                                                    那会儿同一段 XAML 里后面的控件还没构造）。保存走 Model 的
+                                                    PropertyChanged，由 MainWindow 里订阅后防抖落盘。
+                                                -->
+                                                <Slider Grid.Column="3" Style="{StaticResource ProgressSlider}"
+                                                        Width="104" VerticalAlignment="Center"
+                                                        Margin="10,0,0,0"
+                                                        Minimum="0" Maximum="100"
+                                                        Value="{Binding Progress, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                        ToolTip="拖动设置完成度，拖到 100% 就等于打勾" />
+                                                <TextBlock Grid.Column="4" Text="{Binding ProgressText}"
+                                                           Width="34" Margin="7,0,0,0"
+                                                           TextAlignment="Right" VerticalAlignment="Center"
+                                                           FontSize="11.5"
+                                                           Foreground="{DynamicResource TextSecondaryBrush}" />
+
+                                                <TextBlock Grid.Column="5" Text="{Binding DurationText}"
                                                            Margin="10,0,10,0" VerticalAlignment="Center"
                                                            FontSize="11.5"
                                                            Foreground="{DynamicResource SuccessBrush}" />
 
-                                                <Button Grid.Column="4" Content="删除"
+                                                <Button Grid.Column="6" Content="删除"
                                                         Style="{StaticResource TinyDangerButton}"
                                                         Tag="{Binding}" Click="OnDeleteEntryClick"
                                                         VerticalAlignment="Center" />

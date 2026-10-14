@@ -41,6 +41,8 @@ public sealed class LogBookStore
             Book = ReadIndex() ?? new LogBook();
             // 索引里的文件路径可能已经变了，启动时校正一次
             RefreshMissingFlags();
+            // 老数据没有 progress 字段，把「完成」和「进度」校准成互相一致（只改内存，不写盘）
+            CarryOverService.Normalize(Book);
         }
     }
 
@@ -53,7 +55,7 @@ public sealed class LogBookStore
                 if (!File.Exists(path)) continue;
                 var text = File.ReadAllText(path);
                 if (string.IsNullOrWhiteSpace(text)) continue;
-                var book = JsonSerializer.Deserialize<LogBook>(text, JsonOpts);
+                var book = Deserialize(text);
                 if (book != null) return book;
             }
             catch
@@ -62,6 +64,20 @@ public sealed class LogBookStore
             }
         }
         return null;
+    }
+
+    /// <summary>
+    /// 从 JSON 文本读一份索引，口径和 <see cref="Load"/> 完全一致（含完成/进度的归一化）。
+    ///
+    /// 单独开一个口子是给自测用的：老数据的 `done: true` 没有 progress 字段，
+    /// "读进来之后到底补没补成 100%" 是这次改动的关键风险，必须能直接构造旧格式来验，
+    /// 而不是在自测里再抄一份序列化选项（抄了就会各走各的）。
+    /// </summary>
+    public static LogBook? Deserialize(string json)
+    {
+        var book = JsonSerializer.Deserialize<LogBook>(json, JsonOpts);
+        if (book != null) CarryOverService.Normalize(book);
+        return book;
     }
 
     /// <summary>立刻落盘并重建当天 Markdown。</summary>

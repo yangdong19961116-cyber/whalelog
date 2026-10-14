@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Reflection;
@@ -123,6 +124,16 @@ public partial class MainWindow : Window
     protected override void OnClosed(EventArgs e)
     {
         App.Store.Changed -= OnStoreChanged;
+        DetachEntries();
+
+        // 防抖里的进度可能还没落盘。关掉主面板不等于程序退出（托盘还在，计时器还会跑），
+        // 但这里顺手结清更保险 —— 谁也不想拖完进度条随手关窗就丢了。
+        _debounce.Stop();
+        var pending = _pendingAction;
+        _pendingAction = null;
+        try { pending?.Invoke(); }
+        catch { /* 窗口正在关闭，落盘失败也不该再抛出去 */ }
+
         base.OnClosed(e);
     }
 
@@ -417,9 +428,13 @@ public partial class MainWindow : Window
         var day = App.Store.GetOrCreateDay(date);
 
         _syncing = true;
+        DetachEntries();
         _entries.Clear();
         foreach (var entry in day.Entries.OrderBy(x => x.CreatedAt))
+        {
+            AttachEntry(entry);
             _entries.Add(entry);
+        }
 
         SummaryInput.Text = day.Summary;
         DateText.Text = date == DateTime.Today ? $"今天 · {date:MM月dd日 dddd}" : $"{date:yyyy年MM月dd日 dddd}";
@@ -428,6 +443,80 @@ public partial class MainWindow : Window
         UpdateDropBanner();
         RefreshStats();
         RefreshFileList();
+    }
+
+    // ==================================================================
+    // 进度条的落盘
+    //
+    // 进度条靠 TwoWay 绑定直接写进 NoteEntry.Progress，控件那边不需要任何事件 ——
+    // 但"什么时候存盘"得有人管，而且拖动是连续的，不能动一下写一次 index.json。
+    // 所以在这里订阅每个条目的 PropertyChanged，统一走已有的 700ms 防抖。
+    // ==================================================================
+
+    private void AttachEntry(NoteEntry entry) => entry.PropertyChanged += OnEntryPropertyChanged;
+
+    private void DetachEntry(NoteEntry entry) => entry.PropertyChanged -= OnEntryPropertyChanged;
+
+    private void DetachEntries()
+    {
+        foreach (var entry in _entries) DetachEntry(entry);
+    }
+
+    private void OnEntryPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (_syncing || _probeMode) return;
+        // 只认进度条。勾选框那边有 OnEntryDoneChanged 自己那条路，两边都管就会写两遍。
+        if (e.PropertyName != nameof(NoteEntry.Progress)) return;
+
+        // 表头的"进行中 / 已完成"要立刻跟上，落盘可以慢一点（拖动是连续的，动一下写一次太浪费）
+        RefreshStats();
+        Debounce(() => App.Store.Save());
+    }
+
+    /// <summary>
+    /// 把事项列表按数据源重新对齐（顺延过来的新条目就是这时候冒出来的）。
+    ///
+    /// 刻意不做整表重建：LoadDay 会把 SummaryInput.Text 覆盖成落盘的值，
+    /// 而用户可能正在小结框里打字、防抖还没写盘 —— 那样会把他刚打的字吃掉。
+    /// 这里只动列表本身。
+    /// </summary>
+    public void RefreshCurrentDay()
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(new Action(RefreshCurrentDay));
+            return;
+        }
+
+        var day = App.Store.GetOrCreateDay(_currentDate);
+        var wanted = day.Entries.OrderBy(x => x.CreatedAt).ToList();
+
+        _syncing = true;
+
+        for (int i = _entries.Count - 1; i >= 0; i--)
+        {
+            if (wanted.Contains(_entries[i])) continue;
+            DetachEntry(_entries[i]);
+            _entries.RemoveAt(i);
+        }
+
+        for (int i = 0; i < wanted.Count; i++)
+        {
+            if (i < _entries.Count && ReferenceEquals(_entries[i], wanted[i])) continue;
+
+            int existing = _entries.IndexOf(wanted[i]);
+            if (existing >= 0)
+                _entries.Move(existing, i);
+            else
+            {
+                AttachEntry(wanted[i]);
+                _entries.Insert(i, wanted[i]);
+            }
+        }
+
+        _syncing = false;
+
+        RefreshStats();
     }
 
     /// <summary>
@@ -487,6 +576,7 @@ public partial class MainWindow : Window
 
         _syncing = true;
         day.Entries.Add(entry);
+        AttachEntry(entry);
         _entries.Add(entry);
         EntryInput.Clear();
         _syncing = false;
@@ -512,6 +602,7 @@ public partial class MainWindow : Window
         day.Entries.Remove(entry);
 
         _syncing = true;
+        DetachEntry(entry);
         _entries.Remove(entry);
         _syncing = false;
 
@@ -1791,6 +1882,67 @@ public partial class MainWindow : Window
     /// 但探针不先翻走的话，主面板恰好停在今天，这条规则对不对根本测不出来。
     /// </summary>
     public void SetViewingDateForProbe(DateTime date) => LoadDay(date);
+
+    /// <summary>诊断探针正在灌临时数据。期间不落盘、不刷统计，免得把测试数据写进用户记录。</summary>
+    private bool _probeMode;
+
+    /// <summary>
+    /// 自检用：往事项列表里灌一份临时数据，验完由调用方自己 LoadDay 恢复。
+    ///
+    /// 走的是和 LoadDay 同一套 Attach/Detach，只是数据刻意不落盘 ——
+    /// 为了让进度条渲染出来就往用户当天的记录里塞几条假事项，那是不能接受的。
+    /// </summary>
+    public void LoadEntriesForProbe(IReadOnlyList<NoteEntry> entries)
+    {
+        _probeMode = true;
+
+        _syncing = true;
+        DetachEntries();
+        _entries.Clear();
+        foreach (var entry in entries)
+        {
+            AttachEntry(entry);
+            _entries.Add(entry);
+        }
+        _syncing = false;
+
+        EntryList.UpdateLayout();
+    }
+
+    /// <summary>
+    /// 自检用：汇报每行进度条的**实际控件状态**。
+    ///
+    /// 刻意读可视树里的 Slider 和那串百分比文字，而不是回头读数据模型：
+    /// 「模型里有进度」和「界面上画出来了、拖得动」是两件事，中间隔着一层模板绑定。
+    /// 2026-09-20 那个「设置里点新形象没反应」就是纯逻辑断言全过、控件是灰的。
+    ///
+    /// 每行格式：事项文字|条的值|旁边的百分比文字|条的宽度|可交互
+    /// </summary>
+    public string ProgressBarsReport()
+    {
+        EntryList.UpdateLayout();
+
+        var lines = new List<string>();
+
+        foreach (var grid in DiagnosticsService.Descendants(EntryList).OfType<Grid>())
+        {
+            var slider = grid.Children.OfType<Slider>().FirstOrDefault();
+            if (slider == null) continue;
+
+            var entry = slider.DataContext as NoteEntry;
+            var percent = grid.Children.OfType<TextBlock>()
+                .Select(t => t.Text)
+                .FirstOrDefault(t => t.EndsWith('%')) ?? "(没有百分比文字)";
+
+            lines.Add(
+                $"{entry?.Text ?? "(没有数据上下文)"}|" +
+                $"{slider.Value:0}|{percent}|" +
+                $"w={slider.ActualWidth:0}|" +
+                $"{(slider.IsEnabled && slider.IsHitTestVisible ? "可拖" : "不可交互")}");
+        }
+
+        return string.Join(" ; ", lines);
+    }
 
     /// <summary>
     /// 等这个窗口加载完。

@@ -379,6 +379,13 @@ public static class DiagnosticsService
         Section("今日记录里的归档文件");
         ProbeDayFileList(Check);
 
+        // ---- 进度条与顺延 ----
+        // 模型那一半（进度/完成的联动、顺延的幂等与断链）在 tools/selftest 里跑纯逻辑。
+        // 这里只管另一半：「进度条真的画出来了、拖得动、旁边的百分比对得上吗」——
+        // 模型对了但模板没接上时，用户看到的只是一个永远不动的空条，一个错都不报。
+        Section("进度条与顺延（界面）");
+        ProbeProgressBars(Check);
+
         // ---- 按日期回看 ----
         // 以前回看往期只有日期栏的「‹」一天一天退（从今天退到两周前要点十几次），
         // 或者去月历上找小圆点。现在多了往期清单、Alt+← / →、归档页的日期目录和搜索。
@@ -3381,7 +3388,7 @@ public static class DiagnosticsService
         => "  " + text.Replace(Environment.NewLine, Environment.NewLine + "  ");
 
     /// <summary>可视树里的所有后代。用来确认界面真的渲染出了分组栏头。</summary>
-    private static IEnumerable<DependencyObject> Descendants(DependencyObject? root)
+    public static IEnumerable<DependencyObject> Descendants(DependencyObject? root)
     {
         if (root == null) yield break;
 
@@ -3422,6 +3429,114 @@ public static class DiagnosticsService
     /// 需求本身就很适合断言，两句话对应两个硬性检查：
     ///   "样式和文件归档内保持一致" → 两处列表必须是同一个模板对象
     ///   "多条时堆叠不要重叠"       → 相邻卡片的矩形不能相交，还得留下间距
+    /// </summary>
+    /// <summary>
+    /// 记录条目行上的进度条 —— 验的是**控件**，不是模型里的数字。
+    ///
+    /// 数据是自己现造的（走 LoadEntriesForProbe，不落盘），因为要覆盖
+    /// 0% / 中间值 / 100%（打完勾）三种状态，用户当天的真实记录里未必凑得齐；
+    /// 而恰恰是"100% 该不该显示成满格绿"这种事最容易只对了模型、错了画面。
+    /// </summary>
+    private static void ProbeProgressBars(CheckFn check)
+    {
+        MainWindow? window = null;
+        try
+        {
+            window = new MainWindow
+            {
+                WindowStartupLocation = WindowStartupLocation.Manual,
+                ShowInTaskbar = false,
+                Left = -32000,
+                Top = -32000,
+            };
+            window.Show();
+
+            var sample = new List<NoteEntry>
+            {
+                new() { Text = "零进度", Category = NoteCategories.Work },
+                new() { Text = "半截", Category = NoteCategories.Work, Progress = 45 },
+                new() { Text = "顺延来的", Category = NoteCategories.Work, Progress = 70,
+                        CarriedFromDate = DateTime.Today.AddDays(-1).ToString("yyyy-MM-dd") },
+                new() { Text = "干完了", Category = NoteCategories.Work, Done = true },
+            };
+
+            window.LoadEntriesForProbe(sample);
+
+            var report = window.ProgressBarsReport();
+            var rows = report.Split(" ; ", StringSplitOptions.RemoveEmptyEntries);
+
+            check("每条事项都长出了一根进度条",
+                rows.Length == sample.Count,
+                $"{rows.Length} 根 / {sample.Count} 条事项：{report}");
+
+            if (rows.Length != sample.Count) return;
+
+            // 逐行核对「条的值 = 进度」「旁边的文字 = 进度%」
+            for (int i = 0; i < sample.Count; i++)
+            {
+                var parts = rows[i].Split('|');
+                var name = sample[i].Text;
+                var value = parts.Length > 1 ? parts[1] : "?";
+                var percent = parts.Length > 2 ? parts[2] : "?";
+
+                check($"「{name}」的条值等于进度",
+                    value == sample[i].Progress.ToString(),
+                    $"条={value} 进度={sample[i].Progress}");
+
+                check($"「{name}」旁边的百分比文字对得上",
+                    percent == $"{sample[i].Progress}%",
+                    $"文字={percent} 进度={sample[i].Progress}%");
+            }
+
+            check("进度条有实际宽度（没有被压成 0）",
+                rows.All(r => !r.Contains("w=0|") && !r.Contains("w=0 ;")),
+                report);
+
+            check("进度条可以拖动（可命中、没被禁用）",
+                rows.All(r => r.EndsWith("可拖")),
+                report);
+
+            // 顺延徽标和「已顺延至」都挂在事项行的可视树里
+            var texts = Descendants(window).OfType<TextBlock>().Select(t => t.Text).ToList();
+            check("顺延来的条目带「顺延自」徽标",
+                texts.Any(t => t.StartsWith("顺延自 ")),
+                string.Join(" / ", texts.Where(t => t.Contains("顺延"))));
+
+            var rolledWindow = new List<NoteEntry>
+            {
+                new() { Text = "已经搬走了", Category = NoteCategories.Work, Progress = 20,
+                        CarriedToDate = DateTime.Today.AddDays(1).ToString("yyyy-MM-dd") },
+            };
+            window.LoadEntriesForProbe(rolledWindow);
+            var rolledTexts = Descendants(window).OfType<TextBlock>().Select(t => t.Text).ToList();
+            check("被顺延走的条目在旧日期标出「已顺延至」",
+                rolledTexts.Any(t => t.StartsWith("已顺延至 ")),
+                string.Join(" / ", rolledTexts.Where(t => t.Contains("顺延"))));
+
+            // 非顺延的条目不该挂徽标
+            var plainWindow = new List<NoteEntry>
+            {
+                new() { Text = "老老实实的条目", Category = NoteCategories.Work, Progress = 10 },
+            };
+            window.LoadEntriesForProbe(plainWindow);
+            var plainTexts = Descendants(window).OfType<TextBlock>().Select(t => t.Text).ToList();
+            check("不是顺延来的条目不挂顺延徽标",
+                !plainTexts.Any(t => t.Contains("顺延")),
+                string.Join(" / ", plainTexts.Where(t => t.Contains("顺延"))));
+        }
+        catch (Exception ex)
+        {
+            check("进度条探针没有抛异常", false, ex.Message);
+        }
+        finally
+        {
+            try { window?.Close(); }
+            catch { /* 关不掉不影响自检结论 */ }
+        }
+    }
+
+    /// <summary>
+    /// 今日记录页里那份「当天归档的文件」。
     /// </summary>
     private static void ProbeDayFileList(CheckFn check)
     {
@@ -3725,39 +3840,51 @@ public static class DiagnosticsService
             // 不是拿计数函数重算一遍 —— 重算的话"数字整体 +1"这种改动会一起错、一起通过）。
             // 先把日历翻到"有归档的日子最多"的那个月：打开时停的月份常常只有今天一天有归档，
             // 那样只核得到一个格子，等于没核。
-            var denseMonth = wantCounts.Keys
-                .Select(k => DateTime.Parse(k))
-                .GroupBy(d => new DateTime(d.Year, d.Month, 1))
-                .OrderByDescending(g => g.Count())
-                .First().Key;
+            //
+            // ⚠️ 一条归档都没有时必须整段跳过：下面的 OrderByDescending(...).First() 在
+            //    wantCounts 为空时抛「Sequence contains no elements」，整节被 catch 吞成
+            //    一条「按日期回看（接到主面板）」失败 —— 干净数据目录下跑自检会看到一条
+            //    莫名其妙的红，误以为功能坏了。（2026-10-14 修）
+            if (wantCounts.Count > 0)
+            {
+                var denseMonth = wantCounts.Keys
+                    .Select(k => DateTime.Parse(k))
+                    .GroupBy(d => new DateTime(d.Year, d.Month, 1))
+                    .OrderByDescending(g => g.Count())
+                    .First().Key;
 
-            for (int guard = 0; cal.DisplayMonth > denseMonth && guard < 36; guard++) cal.GoMonth(-1);
+                for (int guard = 0; cal.DisplayMonth > denseMonth && guard < 36; guard++) cal.GoMonth(-1);
 
-            var onScreen = cal.VisibleDates
-                .Where(d => wantCounts.ContainsKey(d.ToString("yyyy-MM-dd")))
-                .ToList();
+                var onScreen = cal.VisibleDates
+                    .Where(d => wantCounts.ContainsKey(d.ToString("yyyy-MM-dd")))
+                    .ToList();
 
-            var badBadge = onScreen
-                .Where(d => cal.BadgeOf(d) != DayIndex.CountBadge(wantCounts[d.ToString("yyyy-MM-dd")]))
-                .ToList();
+                var badBadge = onScreen
+                    .Where(d => cal.BadgeOf(d) != DayIndex.CountBadge(wantCounts[d.ToString("yyyy-MM-dd")]))
+                    .ToList();
 
-            check("这一屏上每个有归档的日子，格子里写的数字就是那天的文件数",
-                onScreen.Count > 0 && badBadge.Count == 0,
-                onScreen.Count == 0
-                    ? "这一屏上一个有归档的日子都没有，量不到"
-                    : badBadge.Count == 0
-                        ? $"{onScreen.Count} 格逐个核对过（{cal.DisplayMonth:yyyy-MM}）"
-                        : string.Join("、", badBadge.Take(3).Select(d =>
-                            $"{d:yyyy-MM-dd} 写的是「{cal.BadgeOf(d)}」"
-                            + $"应为「{DayIndex.CountBadge(wantCounts[d.ToString("yyyy-MM-dd")])}」")));
+                check("这一屏上每个有归档的日子，格子里写的数字就是那天的文件数",
+                    onScreen.Count > 0 && badBadge.Count == 0,
+                    onScreen.Count == 0
+                        ? "这一屏上一个有归档的日子都没有，量不到"
+                        : badBadge.Count == 0
+                            ? $"{onScreen.Count} 格逐个核对过（{cal.DisplayMonth:yyyy-MM}）"
+                            : string.Join("、", badBadge.Take(3).Select(d =>
+                                $"{d:yyyy-MM-dd} 写的是「{cal.BadgeOf(d)}」"
+                                + $"应为「{DayIndex.CountBadge(wantCounts[d.ToString("yyyy-MM-dd")])}」")));
 
-            // 反过来也要查：没有归档的日子写数字，等于整月都是数字，那这个标记就废了
-            var stray = cal.VisibleDates
-                .Where(d => !wantCounts.ContainsKey(d.ToString("yyyy-MM-dd")) && cal.BadgeOf(d).Length > 0)
-                .ToList();
+                // 反过来也要查：没有归档的日子写数字，等于整月都是数字，那这个标记就废了
+                var stray = cal.VisibleDates
+                    .Where(d => !wantCounts.ContainsKey(d.ToString("yyyy-MM-dd")) && cal.BadgeOf(d).Length > 0)
+                    .ToList();
 
-            check("没有归档的日子一个数字都不写",
-                stray.Count == 0, $"{stray.Count} 格多余");
+                check("没有归档的日子一个数字都不写",
+                    stray.Count == 0, $"{stray.Count} 格多余");
+            }
+            else
+            {
+                check("一条归档都没有，跳过日历角标的逐格核对", true, "跳过");
+            }
 
             check("图例说的是「有归档的日期」（归档页里写「有记录」就串了口径）",
                 cal.LegendTextValue == "有归档的日期", cal.LegendTextValue);
