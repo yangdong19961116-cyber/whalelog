@@ -9,6 +9,7 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Data;
 using System.Windows.Input;
+using System.Windows.Media;
 using System.Windows.Threading;
 using WhaleLog.Models;
 using WhaleLog.Services;
@@ -609,6 +610,65 @@ public partial class MainWindow : Window
         App.Store.Save();
         RefreshStats();
         SetStatus("已删除一条记录");
+    }
+
+    private void OnEditEntryClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button btn || btn.Tag is not NoteEntry entry) return;
+        OpenEntryEditor(entry);
+    }
+
+    /// <summary>
+    /// 双击整行也能进编辑。
+    ///
+    /// 刻意避开落在勾选框 / 进度条 / 按钮上的双击：那几处的双击本来就有别的意思
+    /// （勾选框双击等于来回切两次、滑块双击会把值顶到中间），抢过来只会让它们变得不可预测。
+    /// </summary>
+    private void OnEntryRowMouseDown(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ClickCount != 2) return;
+        if (sender is not Border row || row.DataContext is not NoteEntry entry) return;
+        if (HitsInteractiveControl(e.OriginalSource as DependencyObject, row)) return;
+
+        e.Handled = true;
+        OpenEntryEditor(entry);
+    }
+
+    /// <summary>
+    /// 从点击落点往上走，路上有没有勾选框 / 滑块 / 文本框 / 按钮。
+    ///
+    /// internal 是为了自检：这条判定只能拿真渲染出来的可视树去验，
+    /// 自己拼一棵假树测不出「真实行里那一处落点算不算交互控件」。
+    /// </summary>
+    internal static bool HitsInteractiveControl(DependencyObject? source, DependencyObject stopAt)
+    {
+        for (var node = source; node != null && node != stopAt; node = VisualTreeHelper.GetParent(node))
+        {
+            if (node is ButtonBase || node is Slider || node is TextBox) return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// 打开编辑窗改这条记录。
+    ///
+    /// 改的是模型里**同一个对象**，所以列表靠绑定自己刷新 —— 不重建列表、不新增记录，
+    /// 原来的时间、Id、进度和顺延标记都留着。落盘和状态提示由这里统一做。
+    /// </summary>
+    private void OpenEntryEditor(NoteEntry entry)
+    {
+        // 自检会往列表里灌假数据。那会儿真弹一个模态窗出来，自检就卡在那一行等人点确定 ——
+        // 表现为"跑到一半不动了"，而且不带 --quiet 时根本看不出是这里。
+        if (_probeMode) return;
+
+        var dialog = new EditEntryWindow(entry, _currentDate) { Owner = this };
+        dialog.ShowDialog();
+
+        if (!dialog.Saved) return;      // 取消了就什么都别做，一个字节都不写
+
+        App.Store.Save();
+        RefreshStats();
+        SetStatus($"已修改：{Truncate(entry.Text, 40)}");
     }
 
     private void OnSummaryChanged(object sender, TextChangedEventArgs e)

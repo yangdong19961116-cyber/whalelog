@@ -92,6 +92,7 @@ public partial class App : Application
                     || HasFlag("--shot") || HasFlag("--shot-notes") || HasFlag("--shot-settings")
                     || HasFlag("--shot-floating") || HasFlag("--shot-calendar")
                     || HasFlag("--shot-recent") || HasFlag("--shot-file-calendar")
+                    || HasFlag("--shot-edit")
                     || HasFlag("--export-assets");
 
         if (!oneShot)
@@ -188,6 +189,32 @@ public partial class App : Application
             return;
         }
 
+        // 截图模式：把「编辑记录」窗单独渲染成 PNG。
+        // 它是个独立窗口，--shot 系列拍主窗口抓不到；而窗里全是"排版对不对"的事
+        // （底部提示和按钮会不会压住、七个分类格子排不排得下），只能看图。
+        if (HasFlag("--shot-edit"))
+        {
+            var target = ArgValue("--shot-edit")
+                         ?? Path.Combine(AppPaths.LogDir, "edit-entry.png");
+            try
+            {
+                DiagnosticsService.WriteEditEntryShot(target);
+                if (!HasFlag("--quiet"))
+                    MessageBox.Show($"已保存到：\n{target}", "鲸记 · 编辑窗截图",
+                        MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            catch (Exception ex)
+            {
+                LogCrash(ex);
+                if (!HasFlag("--quiet"))
+                    MessageBox.Show(ex.Message, "鲸记 · 编辑窗截图失败",
+                        MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+
+            Shutdown();
+            return;
+        }
+
         // 截图模式：把月历面板单独放大渲染成 PNG。
         // 月历挂在 Popup 里（独立 HWND），上面的 --shot 系列拍不到它，只能单独开一条；
         // 格子里"数字 + 小圆点 + 今天描边"三层叠着，差一个像素只能靠放大看图判断。
@@ -271,6 +298,8 @@ public partial class App : Application
         //   --shot-notes <png>      今日记录页（当天的事项和归档文件）
         //   --shot-settings <png>   设置页 —— 各项开关、滑杆、形象那一排按钮都在这一页，
         //                           "按钮该亮还是该灰"这种事只能看图确认
+        //   （「编辑记录」窗也有一条独立出口 --shot-edit，不在这里：
+        //     它是独立窗口，拍主面板的这几条都抓不到它，所以在上面单独处理。）
         var shotPage = HasFlag("--shot-notes") ? NavPage.Notes
                      : HasFlag("--shot-settings") ? NavPage.Settings
                      : HasFlag("--shot") ? NavPage.Files

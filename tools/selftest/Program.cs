@@ -44,6 +44,7 @@ internal static class Program
             TestDayIndex();
             TestSettingsClamp();
             TestProgressAndCarryOver();
+            TestEntryEdit();
             TestSettingsMigration();
             TestIntakeSummary();
             TestAssetCatalog(workspace);
@@ -1153,6 +1154,70 @@ internal static class Program
     //      写成单向又会出现"打了勾但进度条是 0%"。
     //   2. 顺延要求幂等、不复活、完成即断链，只能靠组合日期来验。
     // ==================================================================
+
+    /// <summary>
+    /// 「改一条已经写下的记录」在模型这一半的行为。
+    ///
+    /// 界面那一半（行上有没有编辑入口、窗里改完有没有写回**原对象**）在
+    /// `--selfcheck` 的「记录的编辑」那一节。这里只管一件事：改了之后界面收不收得到通知 ——
+    /// 「模型改了、界面没跟着变」正是这个功能最典型的失效方式，
+    /// 用户看到的就是"点了保存，列表里还是老文字"。
+    /// </summary>
+    private static void TestEntryEdit()
+    {
+        Section("编辑一条已写下的记录");
+
+        var e = new NoteEntry
+        {
+            Text = "改之前",
+            Category = NoteCategories.Work,
+            Tag = "旧标签",
+            CreatedAt = new DateTime(2026, 7, 20, 9, 0, 0),
+        };
+        e.Progress = 45;
+
+        var id = e.Id;
+        var created = e.CreatedAt;
+
+        var seen = new List<string>();
+        e.PropertyChanged += (_, args) => seen.Add(args.PropertyName ?? "");
+
+        e.Text = "改之后";
+        e.Category = NoteCategories.Report;
+        e.Tag = "新标签";
+
+        Check(seen.Contains(nameof(NoteEntry.Text)),
+            "改正文会通知界面（不发通知，列表里就还是老文字）");
+        Check(seen.Contains(nameof(NoteEntry.Category)), "改分类会通知界面");
+        Check(seen.Contains(nameof(NoteEntry.Tag)), "改标签会通知界面");
+
+        // 赋成同样的值不该发通知：每发一次都连带一次防抖落盘，白写盘。
+        seen.Clear();
+        e.Text = "改之后";
+        e.Category = NoteCategories.Report;
+        e.Tag = "新标签";
+        CheckEq(seen.Count.ToString(), "0", "赋成同样的值不发通知（省掉一次无谓的落盘）");
+
+        // 编辑只动这三项，别的都得原样留着 —— 顺手换掉 Id 或时间，
+        // 表现就是"改完之后那条的时间变了 / 关联的归档文件脱钩了"。
+        CheckEq(e.Id, id, "编辑不改 Id");
+        Check(e.CreatedAt == created, "编辑不改创建时间");
+        CheckEq(e.ProgressText, "45%", "编辑不改进度");
+        Check(!e.Done, "编辑不改完成状态");
+
+        // 顺延标记尤其不能丢：被冲掉的话这条会被再顺延一次，明天多出一份重复的。
+        var carried = e.CloneForCarry(new DateTime(2026, 7, 21));
+        carried.Text = "副本改了";
+        Check(carried.IsCarried, "改顺延副本的内容不会抹掉它的来源标记");
+        Check(carried.CarriedFromText.Contains("7月20日"), "顺延出处还在");
+
+        // 落盘的 Markdown 得跟着变（notes\*.md、日报周报都读它）
+        var day = new DayNote { Date = "2026-07-20" };
+        day.Entries.Add(e);
+        var md = day.ToMarkdown();
+        Check(md.Contains("改之后"), "生成的 Markdown 里是改过之后的文字");
+        Check(!md.Contains("改之前"), "生成的 Markdown 里不再有旧文字");
+    }
 
     private static void TestProgressAndCarryOver()
     {

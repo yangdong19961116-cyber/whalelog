@@ -276,15 +276,22 @@
                             <ItemsControl x:Name="EntryList">
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate>
+                                        <!--
+                                            双击整行 = 编辑这条记录。处理器里会避开勾选框 / 进度条 / 按钮
+                                            上的双击（那几处双击本来就有别的意思），见 OnEntryRowMouseDown。
+                                            真实入口是右边那颗「编辑」，双击只是顺手 —— 隐式规则必须有一个显式入口。
+                                        -->
                                         <Border Background="{DynamicResource SurfaceBrush}"
                                                 BorderBrush="{DynamicResource BorderSubtleBrush}"
                                                 BorderThickness="1" CornerRadius="10"
-                                                Padding="12,9" Margin="0,0,4,7">
+                                                Padding="12,9" Margin="0,0,4,7"
+                                                MouseLeftButtonDown="OnEntryRowMouseDown">
                                             <Grid>
                                                 <Grid.ColumnDefinitions>
                                                     <ColumnDefinition Width="Auto" />
                                                     <ColumnDefinition Width="Auto" />
                                                     <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
                                                     <ColumnDefinition Width="Auto" />
                                                     <ColumnDefinition Width="Auto" />
                                                     <ColumnDefinition Width="Auto" />
@@ -353,7 +360,14 @@
                                                            FontSize="11.5"
                                                            Foreground="{DynamicResource SuccessBrush}" />
 
-                                                <Button Grid.Column="6" Content="删除"
+                                                <Button Grid.Column="6" Content="编辑"
+                                                        Style="{StaticResource TinyGhostButton}"
+                                                        Tag="{Binding}" Click="OnEditEntryClick"
+                                                        Margin="0,0,6,0"
+                                                        VerticalAlignment="Center"
+                                                        ToolTip="改这条记录的内容（双击整行也行）" />
+
+                                                <Button Grid.Column="7" Content="删除"
                                                         Style="{StaticResource TinyDangerButton}"
                                                         Tag="{Binding}" Click="OnDeleteEntryClick"
                                                         VerticalAlignment="Center" />

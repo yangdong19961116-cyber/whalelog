@@ -386,6 +386,13 @@ public static class DiagnosticsService
         Section("进度条与顺延（界面）");
         ProbeProgressBars(Check);
 
+        // ---- 改一条已经写下的记录 ----
+        // 以前写错了只能删掉重打一条，而删掉的恰恰是"这条记录存在过"这个事实本身。
+        // 现在点「编辑」或双击整行就能改。失效方式全是安静的：入口没接上 = 功能等于不存在；
+        // 改完没写回**原来那个对象** = 用户下次打开只会觉得"改了没生效"。
+        Section("记录的编辑");
+        ProbeEntryEdit(Check);
+
         // ---- 按日期回看 ----
         // 以前回看往期只有日期栏的「‹」一天一天退（从今天退到两周前要点十几次），
         // 或者去月历上找小圆点。现在多了往期清单、Alt+← / →、归档页的日期目录和搜索。
@@ -1254,6 +1261,88 @@ public static class DiagnosticsService
     /// 用离屏窗口渲染而不是抓屏：抓屏会受多显示器（可能有负坐标）和 DPI 影响，
     /// 量出来的尺寸对不上窗口真实尺寸，反而误导。离屏渲染是确定性的。
     /// </summary>
+    /// <summary>
+    /// 把「编辑记录」窗单独渲染成 PNG（按整数倍放大，默认 2 倍）。
+    ///
+    /// **为什么它需要一条独立出口**：它是个独立的窗口，<see cref="WritePageShot"/>
+    /// 拍主窗口根本抓不到它。
+    ///
+    /// 而这窗里几乎全是"排版对不对"的事，断言量不出来（只能量到控件有宽度）：
+    /// 底部那行提示和「取消 / 保存」会不会压住、七个分类格子排不排得下、标签输入框
+    /// 会不会挤出边界、正文长到换行之后窗口有没有跟着长高。全都是肉眼一看就知道、
+    /// 而日志里一个字都没有的问题。
+    /// </summary>
+    public static string WriteEditEntryShot(string path, int scale = 2)
+    {
+        if (scale < 1) scale = 1;
+
+        // 示例内容刻意做成"每样东西都出现"的一条：
+        // 正文长到要换行、带标签（标签框里有字）、分类刻意不落在第一个（验高亮没跑偏）。
+        var entry = new NoteEntry
+        {
+            Text = "迪兹瓦破碎站20% —— 复核皮带秤标定记录，和现场再对一遍安装尺寸",
+            Category = NoteCategories.Report,
+            Tag = "紧急, 现场",
+            Progress = 60,
+            CreatedAt = DateTime.Today.AddHours(18).AddMinutes(5),
+        };
+
+        var window = new EditEntryWindow(entry, DateTime.Today)
+        {
+            WindowStartupLocation = WindowStartupLocation.Manual,
+            ShowInTaskbar = false,
+            ShowActivated = false,          // 不要抢用户当前的焦点窗口
+            Left = -32000,
+            Top = -32000,
+        };
+
+        try
+        {
+            window.Show();
+            window.UpdateLayout();
+
+            int w = Math.Max(1, (int)Math.Ceiling(window.ActualWidth));
+            int h = Math.Max(1, (int)Math.Ceiling(window.ActualHeight));
+
+            var shot = new System.Windows.Media.Imaging.RenderTargetBitmap(
+                w * scale, h * scale, 96.0 * scale, 96.0 * scale,
+                System.Windows.Media.PixelFormats.Pbgra32);
+            shot.Render(window);
+
+            // 窗口背景是透明的（AllowsTransparency），不垫一层底色，
+            // 看图的人分不清边界，也看不出阴影那边到底有没有内容。
+            var visual = new System.Windows.Media.DrawingVisual();
+            using (var dc = visual.RenderOpen())
+            {
+                var bg = Application.Current?.TryFindResource("WindowBackgroundBrush")
+                             as System.Windows.Media.Brush
+                         ?? System.Windows.Media.Brushes.White;
+                dc.DrawRectangle(bg, null, new Rect(0, 0, w, h));
+                dc.DrawImage(shot, new Rect(0, 0, w, h));
+            }
+
+            var composed = new System.Windows.Media.Imaging.RenderTargetBitmap(
+                w * scale, h * scale, 96.0 * scale, 96.0 * scale,
+                System.Windows.Media.PixelFormats.Pbgra32);
+            composed.Render(visual);
+
+            var encoder = new System.Windows.Media.Imaging.PngBitmapEncoder();
+            encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(composed));
+
+            var dir = Path.GetDirectoryName(path);
+            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+
+            using var file = File.Create(path);
+            encoder.Save(file);
+            return path;
+        }
+        finally
+        {
+            try { window.Close(); }
+            catch { /* 关不掉不影响截图 */ }
+        }
+    }
+
     public static string WriteFloatingShot(string path)
     {
         // 同一个道理：截图要临时改缩放/不透明度和"自动收起"，跑完必须整体还原，
@@ -3531,6 +3620,181 @@ public static class DiagnosticsService
         finally
         {
             try { window?.Close(); }
+            catch { /* 关不掉不影响自检结论 */ }
+        }
+    }
+
+    /// <summary>
+    /// 「改一条已经写下的记录」这条链路。
+    ///
+    /// 分两半验，因为它们的失效方式完全不同：
+    ///   · 行上有没有编辑入口 —— 没有入口时功能等于不存在，界面一个错都不报；
+    ///   · 编辑窗改完到底写没写回**那条**记录 —— 窗体看着正常、点保存也关了，
+    ///     但写到了另一个对象上（或者干脆新建了一条），用户下次打开只会觉得"改了没生效"。
+    /// </summary>
+    private static void ProbeEntryEdit(CheckFn check)
+    {
+        // ---- 一半：条目行上的编辑入口 ----
+        MainWindow? window = null;
+        try
+        {
+            window = new MainWindow
+            {
+                WindowStartupLocation = WindowStartupLocation.Manual,
+                ShowInTaskbar = false,
+                Left = -32000,
+                Top = -32000,
+            };
+            window.Show();
+
+            var sample = new NoteEntry { Text = "要改的这条", Category = NoteCategories.Work };
+            window.LoadEntriesForProbe(new[] { sample });
+
+            // 从容器出发找那一行的模板根，比"在整棵可视树里按 DataContext 捞 Border"稳：
+            // 勾选框和按钮的模板里也有 Border，DataContext 同样是这条记录。
+            window.EntryList.UpdateLayout();
+            var container = window.EntryList.ItemContainerGenerator.ContainerFromIndex(0);
+            var row = Descendants(container ?? window.EntryList)
+                .OfType<Border>()
+                .FirstOrDefault(b => b.Child is Grid);
+
+            check("找得到那条记录的行", row != null, row == null ? "没找到" : "找到了");
+
+            var buttons = row == null
+                ? new List<Button>()
+                : Descendants(row).OfType<Button>().ToList();
+
+            var editButton = buttons.FirstOrDefault(b => (b.Content as string) == "编辑");
+
+            check("每条记录行右侧都有一个「编辑」按钮",
+                editButton != null,
+                string.Join(" / ", buttons.Select(b => b.Content as string)));
+
+            check("「编辑」按钮挂的是这条记录本身（不是另建的副本）",
+                ReferenceEquals(editButton?.Tag, sample),
+                editButton?.Tag?.GetType().Name ?? "null");
+
+            check("「编辑」按钮是活的（没被禁用、有实际宽度）",
+                editButton is { IsEnabled: true } && editButton.ActualWidth > 0,
+                editButton == null
+                    ? "没找到按钮"
+                    : $"IsEnabled={editButton.IsEnabled} 宽={editButton.ActualWidth:0.#}");
+
+            // 双击整行的落点判定。落在勾选框 / 进度条 / 按钮上的双击本来就有别的意思
+            // （勾选框双击来回切两次、滑块双击把值顶到中间），抢过来只会让它们变得不可预测。
+            if (row != null)
+            {
+                var box = Descendants(row).OfType<CheckBox>().FirstOrDefault();
+                var slider = Descendants(row).OfType<Slider>().FirstOrDefault();
+                var text = Descendants(row).OfType<TextBlock>()
+                    .FirstOrDefault(t => t.Text == "要改的这条");
+
+                check("双击勾选框不算「编辑整行」",
+                    box != null && MainWindow.HitsInteractiveControl(box, row),
+                    box == null ? "没找到勾选框" : "被判定成可编辑了");
+
+                check("双击进度条不算「编辑整行」",
+                    slider != null && MainWindow.HitsInteractiveControl(slider, row),
+                    slider == null ? "没找到进度条" : "被判定成可编辑了");
+
+                check("双击「编辑」按钮本身不算「编辑整行」",
+                    editButton != null && MainWindow.HitsInteractiveControl(editButton, row),
+                    editButton == null ? "没找到按钮" : "被判定成可编辑了");
+
+                check("双击正文文字算「编辑整行」",
+                    text != null && !MainWindow.HitsInteractiveControl(text, row),
+                    text == null ? "没找到正文文字" : "被拦下了，双击进不去");
+            }
+        }
+        catch (Exception ex)
+        {
+            check("编辑入口探针没有抛异常", false, ex.Message);
+        }
+        finally
+        {
+            try { window?.Close(); }
+            catch { /* 关不掉不影响自检结论 */ }
+        }
+
+        // ---- 另一半：编辑窗真的改到了那条记录 ----
+        var entry = new NoteEntry
+        {
+            Text = "改之前",
+            Category = NoteCategories.Work,
+            Tag = "旧标签",
+            Progress = 45,
+            CreatedAt = DateTime.Today.AddHours(9),
+        };
+        var originalId = entry.Id;
+        var originalTime = entry.CreatedAt;
+
+        EditEntryWindow? dialog = null;
+        try
+        {
+            dialog = new EditEntryWindow(entry, DateTime.Today)
+            {
+                WindowStartupLocation = WindowStartupLocation.Manual,
+                ShowInTaskbar = false,
+                ShowActivated = false,
+                Left = -32000,
+                Top = -32000,
+            };
+            dialog.Show();
+            dialog.UpdateLayout();
+
+            check("打开编辑窗时带出的是这条记录原来的内容",
+                dialog.BodyBoxForProbe.Text == "改之前"
+                && dialog.TagBoxForProbe.Text == "旧标签"
+                && dialog.SelectedCategoryForProbe == NoteCategories.Work,
+                $"正文=「{dialog.BodyBoxForProbe.Text}」标签=「{dialog.TagBoxForProbe.Text}」"
+                + $"分类=「{dialog.SelectedCategoryForProbe}」");
+
+            // 先验"清空正文再保存"必须被拦住 —— 保存偷偷干删除的活是最意外的一种。
+            dialog.BodyBoxForProbe.Text = "   ";
+            dialog.SaveForProbe();
+
+            check("正文清空时保存会被拦下（不会顺手把记录抹掉）",
+                entry.Text == "改之前" && !dialog.Saved,
+                $"保存后正文=「{entry.Text}」Saved={dialog.Saved}");
+
+            // 再按正常流程改一遍。
+            dialog.BodyBoxForProbe.Text = "改之后的正文";
+            var clicked = dialog.ClickCategoryForProbe(NoteCategories.Report);
+            dialog.TagBoxForProbe.Text = "新标签";
+            dialog.SaveForProbe();
+
+            check($"点得到「{NoteCategories.Report}」那个分类格子",
+                clicked, clicked ? "" : "没找到这个格子");
+
+            check("正文、分类、标签三项都写回了那条记录",
+                entry.Text == "改之后的正文"
+                && entry.Category == NoteCategories.Report
+                && entry.Tag == "新标签",
+                $"正文=「{entry.Text}」分类=「{entry.Category}」标签=「{entry.Tag}」");
+
+            check("改内容不会换掉原来的 Id 和时间（是改，不是新建了一条）",
+                entry.Id == originalId && entry.CreatedAt == originalTime,
+                entry.Id == originalId ? "时间和 Id 都没动" : "Id 被换掉了");
+
+            check("改内容不会顺手改掉进度和完成状态",
+                entry.Progress == 45 && !entry.Done,
+                $"进度={entry.Progress} Done={entry.Done}");
+
+            check("分类是单选：点完只剩目标那一个高亮",
+                dialog.CheckedChipCountForProbe == 1
+                && dialog.CheckedChipTextForProbe == NoteCategories.Report,
+                $"高亮 {dialog.CheckedChipCountForProbe} 个：{dialog.CheckedChipTextForProbe}");
+
+            check("点保存后编辑窗自己关掉（不留一个空窗在屏幕上）",
+                !dialog.IsVisible, $"IsVisible={dialog.IsVisible}");
+        }
+        catch (Exception ex)
+        {
+            check("编辑窗探针没有抛异常", false, ex.Message);
+        }
+        finally
+        {
+            try { dialog?.CloseForProbe(); }
             catch { /* 关不掉不影响自检结论 */ }
         }
     }

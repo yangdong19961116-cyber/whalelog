@@ -14,6 +14,11 @@
 当前版本 **1.4.7**（唯一来源 `src/WhaleLog/WhaleLog.csproj` 的 `<Version>`，界面读
 `Assembly.GetName().Version` 自动跟）。主面板三页（今日记录/文件归档/设置）+ 桌面悬浮窗 + 托盘常驻。
 - 记录：每天一份 Markdown；日期栏展开整月日历（有记录打点，「跳到」认 `9/23`/`0923`/`昨天`）。
+- **改已写下的记录**（2026-10-14，未发版）：行右侧「编辑」按钮 + **双击整行** → `Views/EditEntryWindow.xaml`。
+  **只改正文/分类/标签，不改时间**（时间是事实记录；改时间还要按新时间重算耗时，账会乱）。
+  写回**模型里同一个对象** → 列表靠绑定自刷新、不用重建列表，`Id`/时间/进度/完成/顺延标记一个都不动。
+  清空正文点保存**会被拦下**（保存不能偷偷等于删除）。**不回写已顺延出去的副本**（跨天同步会搅乱历史）。
+  双击落点判定 `MainWindow.HitsInteractiveControl`：往上碰到 `ButtonBase`/`Slider`/`TextBox` 就不算"编辑整行"。
 - **完成度进度条 + 未完成自动顺延**（2026-10-14，未发版）。`NoteEntry.Progress` 0–100 是唯一真源，
   `Done == (Progress == 100)`：`Progress` setter 里 `Done = v >= 100`，`Done` setter 里直接写 `_progress`
   （**两个 setter 不能互相调用，会成环**）。`ResumeProgress` 记住"取消勾选回哪"，只在拖到 <100 时更新、
@@ -45,15 +50,16 @@
 构建 `build-whalelog.cmd`（正常）/ `build-whalelog-offline.cmd`（受限）；
 **受限会话 restore 报 `path1` 为 null 时先跑 `python tools/mkenv.py` 再 `source .tmp-env.sh`**（见第六节）；
 打包 `python tools/make_portable_zip.py [out.zip]` → 自包含 zip（默认落 `E:\jingji`，命名自带版本号）；
-自测 `tools/selftest/`（**466 项**断言，直接编译主程序非界面部分，含真起 ffmpeg 的用例 →
+自测 `tools/selftest/`（**478 项**断言，直接编译主程序非界面部分，含真起 ffmpeg 的用例 →
 ffmpeg 需在 `tools\selftest\bin\Release\net8.0\`；**新增源文件要同步加进 `selftest.csproj` 的
 `<Compile Include>` 列表**，否则报 CS0103 找不到类型）；
 诊断 `WhaleLog.exe --selfcheck [--quiet]` → `%APPDATA%\WhaleLog\logs\selfcheck.log`
-（**28 段 / 真实数据 323 项 / 隔离空数据 309 项**；**脚本里跑必须带 `--quiet`**，
+（**29 段 / 真实数据 339 项 / 隔离数据 340 项**；**脚本里跑必须带 `--quiet`**，
 否则弹对话框等人点，表现为卡死到超时；**ffmpeg.exe 要在程序旁边**，否则
 「透明视频动画」「归档后演清点归档」那两条会假失败）；
-截图 `--shot` / `--shot-notes` / `--shot-settings` / `--shot-floating` / `--shot-calendar`
-（月历在 Popup 独立 HWND，单独出口、放大 4 倍看圆点），均支持 `--x 值` 和 `--x=值`；
+截图 `--shot` / `--shot-notes` / `--shot-settings` / `--shot-floating` / `--shot-calendar` / `--shot-edit`
+（月历在 Popup 独立 HWND、编辑窗是独立窗口，各开一条单独出口；月历放大 4 倍看圆点），
+均支持 `--x 值` 和 `--x=值`；
 交互探针 `python tools/drag_probe.py`（合成真实鼠标）、拖放探针 `python tools/drop_probe.py`
 （合成真实 OLE 拖放，先 `dotnet build tools\dragsource\`）—— 两者都会动光标、要求先退出运行实例，**手动跑**。
 素材：程序旁 `Assets\` 同名文件优先内置（`AssetCatalog` + `IconAssets`）；`--export-assets [dir]` 只导出出厂素材；
@@ -220,8 +226,20 @@ ffmpeg 需在 `tools\selftest\bin\Release\net8.0\`；**新增源文件要同步�
   `.OrderByDescending(...).First()`，一个归档都没有的数据目录下抛 `Sequence contains no elements`，
   被 catch 吞成一条「按日期回看」的红 —— **干净数据目录下跑自检必然踩到，直接让"清屋验证"失效**。
   凡取 `First()/Max()/Min()` 的地方先想一句"数据为空时它返回什么"。
-- **自检项数会随数据浮动**（真实数据 323 / 隔离空数据 309），**段落数固定 28**。
+- **自检项数会随数据浮动**（真实数据 339 / 隔离数据 340），**段落数固定 29**。
   **看结尾「结论：全部通过」，别死抠数字**。
+- **UI 自动化端到端**（2026-10-14 加的，用来验「编辑记录」真点真改）：PowerShell 载
+  `UIAutomationClient`，在**真窗口**上点按钮、改文本，最后回读 `index.json` 判成败。三个必须：
+  ① **`SetProcessDPIAware()`** —— 本机 150% 缩放，UIA 报的是物理像素，而 DPI-unaware 进程的
+  `SetCursorPos` 收到的是被虚拟化过的坐标 → 鼠标跑到 1.5 倍远的地方，点个空；
+  ② 按钮走 **`InvokePattern.Invoke()`**，别用鼠标点（它是 `Dispatcher.BeginInvoke` 异步派发的，
+  即使被 `ShowDialog()` 阻塞在嵌套消息循环里，客户端也照常拿到返回）；
+  ③ **`WindowStyle=None` + `AllowsTransparency` 的窗口不在 UIA 的 `RootElement.Children` 里**
+  （编辑窗、悬浮窗都是）→ 先用 `EnumWindows` 按标题拿 HWND，再 `AutomationElement.FromHandle`。
+  另：主窗口可能是**最小化**态（`IsIconic=True` 时矩形是 -21333 这种离屏值，看着像"窗口跑到屏幕外了"），
+  开工前先 `ShowWindow(hwnd, SW_RESTORE)`。
+  跑法：`Set-ExecutionPolicy -Scope Process Bypass` + `& "文件.ps1"`
+  （`Invoke-Expression` 被安全策略拦；ps1 要存成 **UTF-8 with BOM**，否则中文乱码）。
 
 ## 六、本机环境限制
 - **`dotnet restore` 报 `Value cannot be null. (Parameter 'path1')` 时，先试 `tools/mkenv.py`。**
