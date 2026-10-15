@@ -28,6 +28,9 @@ public partial class App : Application
     private ReportWindow? _reportWindow;
     private bool _exiting;
 
+    /// <summary>这次运行是一次性命令（自检 / 截图 / 导出素材）。这类运行不写用户的数据文件。</summary>
+    private bool _oneShot;
+
     public static SettingsService Settings { get; private set; } = null!;
     public static ThemeService Theme { get; private set; } = null!;
     public static LogBookStore Store { get; private set; } = null!;
@@ -106,6 +109,8 @@ public partial class App : Application
                 return;
             }
         }
+
+        _oneShot = oneShot;
 
         DispatcherUnhandledException += (_, args) =>
         {
@@ -366,6 +371,11 @@ public partial class App : Application
         StartReminder();
         ApplyQuickCaptureHotKey();
 
+        // 今天之前的每一天：把完成度定格在收工时的数字上。
+        // 顺序刻意在顺延之前 —— 先给昨天结账，再把没做完的事搬到今天。
+        // 和顺延一样放在这里而不是 BuildServices 里：一次性命令（自检 / 截图）不该顺手改用户的数据。
+        RunCompletionFreeze(announce: false);
+
         // 未完成的事项顺延到今天。
         // 刻意放在这里而不是 BuildServices 里：一次性命令（自检 / 截图）不该顺手改用户的数据。
         // 也刻意在 ShowMainWindow() 之前 —— 主面板随后才第一次 LoadDay，天然就能看到顺延来的条目。
@@ -454,7 +464,43 @@ public partial class App : Application
         if (today == _carryCheckedDate) return;
         _carryCheckedDate = today;
 
+        // 跨零点这一下就是"次日 0 点前保存当天完成度"的落点：先给刚过去的那天结账，再开工。
+        RunCompletionFreeze(announce: true);
         RunCarryOver(announce: true);
+    }
+
+    /// <summary>
+    /// 跑一次完成度定格（把"今天之前"还没结账的日子写死成收工时的数字）。
+    ///
+    /// announce = 跨零点自动触发（弹个气泡说一声），false = 启动时
+    /// （主面板还没建，写状态栏没意义，界面上那一行自己会呈现）。
+    /// </summary>
+    private void RunCompletionFreeze(bool announce)
+    {
+        CompletionService.FreezeReport report;
+        try
+        {
+            report = CompletionService.FreezePastDays(Store.Book);
+        }
+        catch (Exception ex)
+        {
+            LogCrash(ex);
+            return;
+        }
+
+        if (!report.Any) return;
+
+        Store.Save();
+
+        // 列表有可能正开着（跨天那次），让它把「收工定格」的徽标换上来
+        _mainWindow?.RefreshCurrentDay();
+        _mainWindow?.SetStatusMessage(report.Describe());
+
+        if (announce)
+        {
+            try { _floatingWindow?.ShowBubble("收工结账", report.Describe()); }
+            catch { /* 悬浮窗可能没开 */ }
+        }
     }
 
     /// <summary>
@@ -937,7 +983,13 @@ public partial class App : Application
 
             Reminder?.Stop();
             Theme?.Stop();
-            Store?.Save();
+
+            // 一次性命令（自检 / 截图 / 导出素材）**一个字节都不该写进用户的数据目录**：
+            // 它们读数据只是为了渲染或断言，退出时顺手 Save() 会把整个索引重写一遍
+            // （内容通常一样，但 mtime 变了、还留下新的 .backup），
+            // 于是"跑一趟自检看看有没有问题"变成了一次真实的写操作。
+            if (!_oneShot) Store?.Save();
+
             Settings?.Save();
             _quickCapture?.Close();
             _reportWindow?.Close();

@@ -472,6 +472,44 @@ public partial class MainWindow : Window
         // 表头的"进行中 / 已完成"要立刻跟上，落盘可以慢一点（拖动是连续的，动一下写一次太浪费）
         RefreshStats();
         Debounce(() => App.Store.Save());
+
+        // 回看历史时把一条改回"没做完" → 今天那边要立刻能看到（勾选框取消勾选也走这里：
+        // Done 的 setter 会把 Progress 退回 ResumeProgress，同样会抛出这条通知）。
+        TrySyncUnfinishedPastEntryToToday(sender as NoteEntry);
+    }
+
+    /// <summary>
+    /// 过去某天的记录被改成未完成 → 立刻把它同步（顺延）到今天。返回是否真的同步了。
+    ///
+    /// 为什么必须单独有这一步：自动顺延（<see cref="CarryOverService.RunOnBook"/>）只在
+    /// **启动**和**跨零点**跑。可"昨天那条其实没干完"这种更正，常常是第二天翻记录时才发现的 ——
+    /// 那时候早就过了顺延的时机，不在这儿补一下，今天这边一动不动，用户看到的就是
+    /// "我明明改了，它没过来"，而且只能等下次开机才冒出来。
+    ///
+    /// 前置过滤（过去的日子 / 没完成 / 没顺延过）在这里判一次，判定本身在
+    /// <see cref="CarryOverService.CarryEntry"/> 里再判一次 —— 那边是唯一权威，这里只是
+    /// 别去白跑一趟。真正搬的时候**今天的进展优先**：今天已经有这条副本就什么都不做，
+    /// 绝不因为回看历史把今天已经做完的事退回去。
+    ///
+    /// 自检模式（<c>_probeMode</c>）下只走到"该不该同步"这一步就返回：探针要验的是这个判定，
+    /// 而它手上的是假数据、背后却是用户的真实记录 —— 不能真去写。
+    /// </summary>
+    internal bool TrySyncUnfinishedPastEntryToToday(NoteEntry? entry)
+    {
+        if (entry is not { } e) return false;
+        if (_currentDate.Date >= DateTime.Today) return false;          // 只有回看过去才谈得上"同步到今天"
+        if (e.Done) return false;                                       // 又勾上了：不用带
+        if (!string.IsNullOrEmpty(e.CarriedToDate)) return false;        // 已经顺延过了
+
+        if (_probeMode) return true;
+
+        var report = CarryOverService.CarryEntry(App.Store.Book, _currentDate, e);
+        if (!report.Any) return false;
+
+        App.Store.Save();
+        SetStatus($"「{e.Text}」还没做完，已同步到今天 {DateTime.Today:M月d日}");
+
+        return true;
     }
 
     /// <summary>
@@ -666,10 +704,42 @@ public partial class MainWindow : Window
 
         if (!dialog.Saved) return;      // 取消了就什么都别做，一个字节都不写
 
-        App.Store.Save();
-        RefreshStats();
-        SetStatus($"已修改：{Truncate(entry.Text, 40)}");
+        ApplyEntryEdit(entry);
     }
+
+    /// <summary>
+    /// 编辑窗按下保存之后要干的事 —— 只有这一份，窗口和自检走的都是它。
+    ///
+    /// 抽出来是为了自检能真跑一遍：编辑窗是模态的（ShowDialog），
+    /// 探针里没法"点一下保存再让流程自己往下走"，只能把这段单独拎出来测 ——
+    /// 不然这段接线（同步到底调没调）就只能靠肉眼读代码。
+    ///
+    /// <paramref name="persist"/> 只给探针用：自检会拿**真实数据目录**也跑一遍，
+    /// 那时往索引里写一笔假的就等于动用户的记录。探针传 false，逻辑照跑、一个字节不落盘。
+    /// </summary>
+    internal void ApplyEntryEdit(NoteEntry entry, bool persist = true)
+    {
+        // 改动顺着顺延链传下去：这条任务从哪天开始、被搬过几天，链上那几份就一起改
+        // （双向，编最早那份和编今天这份一样）。只同步正文/分类/标签 ——
+        // 进度和勾选状态不碰，链上各天是各自推进的。
+        var sync = CarryOverService.SyncContent(App.Store.Book, entry);
+
+        if (persist) App.Store.Save();
+        RefreshStats();
+
+        // 同步动的是**别的日期**的记录，用户眼前这一天看不出任何变化 —— 必须说一声。
+        SetStatus(EditStatusText(entry.Text, sync));
+    }
+
+    /// <summary>
+    /// 编辑保存后的那行状态提示。
+    ///
+    /// 单独一个函数是为了让自检能核这句文案：同步发生在别的日期上，
+    /// 界面上一点痕迹都没有，这句话是用户唯一能知道"动过别处数据"的地方 ——
+    /// 真要是哪天漏了 Describe()，功能照跑、自检也不该放过。
+    /// </summary>
+    internal static string EditStatusText(string text, CarryOverService.SyncReport sync) =>
+        $"已修改：{Truncate(text, 40)}{sync.Describe()}";
 
     private void OnSummaryChanged(object sender, TextChangedEventArgs e)
     {
@@ -713,6 +783,73 @@ public partial class MainWindow : Window
         StatusRight.Text = App.Reminder.RemainingText;
 
         EntryEmptyHint.Visibility = _entries.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+
+        RefreshDayCompletion();
+    }
+
+    /// <summary>
+    /// 列表底部那行「当天完成度」。
+    ///
+    /// 口径只有一份，在 Models 的 DayCompletion 里（今天实时算、过去的日子用收工定格值），
+    /// 这里只负责把那个数字贴到控件上 —— 数字来源是**界面上真正显示的那些条目**（_entries），
+    /// 不是回头去数据源再捞一遍：自检往列表里灌假数据时，不会把用户的真实记录算进来。
+    ///
+    /// 它的失效方式很安静：行没画出来、数字和上面几条对不上、颜色全绿、文字跑到中间去 ——
+    /// 都不会报错，只是"看着不对"。所以自检里逐个控件核（见 DiagnosticsService 的「当天完成度」）。
+    /// </summary>
+    private void RefreshDayCompletion()
+    {
+        var day = App.Store.Book.FindDay(_currentDate);
+        bool isToday = _currentDate.Date == DateTime.Today;
+        int? live = DayCompletion.Average(_entries);
+
+        // 自检模式下定格值（属于真实数据）不能混进来，否则量出来的数字每次都不一样
+        int? frozen = _probeMode ? _probeFrozen : day?.Completion;
+        int? shown = DayCompletion.Display(live, frozen, isToday);
+
+        if (shown == null)
+        {
+            // 一条记录都没有的一天没有这个数字 —— 收起整行，
+            // 而不是显示个 0%（"今天还没记"和"今天做到 0%"是两回事）
+            DayCompletionRow.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        DayCompletionRow.Visibility = Visibility.Visible;
+
+        // 过去的日子被改动过（拖了进度条 / 勾了 / 加了一条 / 删了一条）→ 重新定格。
+        // 不这么做的话，上面几根条已经是新样子、底下这个数字还停在老样子，看着像坏了。
+        // 改动本身就是用户的意图，把结账单改到与事实一致才是诚实的做法。
+        if (!isToday && !_probeMode && day != null && day.Completion != live && day.Freeze(DateTime.Now))
+            Debounce(() => App.Store.Save());
+
+        var value = shown.Value;
+
+        DayCompletionValue.Text = $"{value}%";
+
+        bool perfect = value >= 100;
+        // 注意属性要用各自控件自己的那个 DP：TextBlock.Foreground 和 Control.Foreground
+        // 是两个不同的依赖属性，在 TextBlock 上设 Control.Foreground 是**没有视觉效果的**
+        // （不报错、也不变色，属于最安静的那种坏法）。
+        DayCompletionValue.SetResourceReference(
+            TextBlock.ForegroundProperty, perfect ? "SuccessBrush" : "AccentBrush");
+
+        DayCompletionChip.SetResourceReference(Border.BackgroundProperty, "SurfaceBrush");
+        DayCompletionChipText.SetResourceReference(
+            TextBlock.ForegroundProperty, isToday ? "AccentBrush" : "TextSecondaryBrush");
+        DayCompletionChipText.Text = isToday ? "实时更新" : "收工定格";
+
+        // 「今天这个数会变、过去的日子已经定死」这条规则光看界面是猜不到的，写在提示里。
+        // 时间戳只在真的在零点附近结过账时才有（补算历史的日子没有），所以两种写法要分开，
+        // 不能编一个"定格时间"出来 —— 那会让人以为那天半夜真的结过账。
+        DayCompletionRow.ToolTip = isToday
+            ? "今天所有事项进度的平均（勾选记 100%），跟着上面每一条实时更新。"
+            : day is { HasFrozenTime: true }
+                ? $"这一天收工时的完成度：所有事项进度的平均（勾选记 100%）。已于 {day.CompletionFrozenText} 定格，"
+                  + "翻回来看到的永远是当时的数字；重新改动这天的记录会再定格一次。"
+                : "这一天收工时的完成度：所有事项进度的平均（勾选记 100%）。"
+                  + (day is { IsCompletionSettled: true } ? "没有记下收工时刻（老记录或事后补算），" : "")
+                  + "显示的是按这天的记录算出来的数字；改动这天的记录会跟着重算。";
     }
 
     // ==================================================================
@@ -1946,15 +2083,26 @@ public partial class MainWindow : Window
     /// <summary>诊断探针正在灌临时数据。期间不落盘、不刷统计，免得把测试数据写进用户记录。</summary>
     private bool _probeMode;
 
+    /// <summary>自检用：假装"这一天已经收工定格成这个数"（null = 没有定格值）。</summary>
+    private int? _probeFrozen;
+
     /// <summary>
     /// 自检用：往事项列表里灌一份临时数据，验完由调用方自己 LoadDay 恢复。
     ///
     /// 走的是和 LoadDay 同一套 Attach/Detach，只是数据刻意不落盘 ——
     /// 为了让进度条渲染出来就往用户当天的记录里塞几条假事项，那是不能接受的。
+    ///
+    /// <paramref name="dateForProbe"/> 假装"正在看这一天"（验"翻回旧日期看到的是定格值"），
+    /// <paramref name="frozenForProbe"/> 假装那天的定格值。
+    /// 两者都只在探针里生效，不碰数据源 —— 真实数据里那天的定格值不该被自检读到，
+    /// 更不该被自检改写。
     /// </summary>
-    public void LoadEntriesForProbe(IReadOnlyList<NoteEntry> entries)
+    public void LoadEntriesForProbe(
+        IReadOnlyList<NoteEntry> entries, DateTime? dateForProbe = null, int? frozenForProbe = null)
     {
         _probeMode = true;
+        _probeFrozen = frozenForProbe;
+        if (dateForProbe.HasValue) _currentDate = dateForProbe.Value;
 
         _syncing = true;
         DetachEntries();
@@ -1967,6 +2115,53 @@ public partial class MainWindow : Window
         _syncing = false;
 
         EntryList.UpdateLayout();
+        RefreshDayCompletion();
+    }
+
+    /// <summary>
+    /// 自检用：汇报列表底部那行「当天完成度」的**实际控件状态**。
+    ///
+    /// 和进度条那份报告同一个道理：回头读数据模型没有意义 ——
+    /// 「模型里算得出 54%」和「界面上真的写着 54%」隔着绑定和模板两层。
+    /// 格式：可见性|数值文字|说明文字|徽标文字|数值颜色|x=行左边界|tx=说明文字左边界|fx=上面每行内容的左边界|pad=行左内边距
+    ///
+    /// 最后几个是"文字有没有贴住最左边"的判据（2026-10-14 用户要求左对齐、去掉那条汇总条）：
+    /// `tx` 要和 `fx`（上面每一行勾选框的左边界）对齐。文字跑到中间去不会有任何报错，只会
+    /// "看着不对"，而且绝对坐标换个主题、换个字号就变 —— 只有两个控件互相比才说明得了问题。
+    /// </summary>
+    public string DayCompletionReport()
+    {
+        UpdateLayout();
+        EntryList.UpdateLayout();
+        DayCompletionRow.UpdateLayout();
+
+        var color = DayCompletionValue.Foreground is SolidColorBrush brush
+            ? brush.Color.ToString()
+            : "(不是纯色)";
+
+        // 两个都量一次：一行文字的左边和整行容器的左边差多少。
+        // 基准刻意取"上面每一行勾选框的左边界"而不是本行的 Padding：
+        // 本行的 Padding 是它自己的一部分，拿它当基准等于自证；而且边框厚度也要算进去，
+        // 差 1 像素都说明"看着齐了其实没齐"。和上面每行内容起点对齐，才是用户说的"最左边"。
+        var rowOrigin = DayCompletionRow.TranslatePoint(new Point(0, 0), this);
+        var textOrigin = DayCompletionLabel.TranslatePoint(new Point(0, 0), this);
+        var rowContentX = DiagnosticsService.Descendants(EntryList).OfType<CheckBox>()
+            .Select(c => c.TranslatePoint(new Point(0, 0), this).X)
+            .DefaultIfEmpty(double.NaN)
+            .First();
+
+        return string.Join("|", new[]
+        {
+            DayCompletionRow.Visibility.ToString(),
+            DayCompletionValue.Text,
+            DayCompletionLabel.Text,
+            DayCompletionChipText.Text,
+            color,
+            $"x={rowOrigin.X:0.#}",
+            $"tx={textOrigin.X:0.#}",
+            $"fx={rowContentX:0.#}",
+            $"pad={DayCompletionRow.Padding.Left:0.#}",
+        });
     }
 
     /// <summary>

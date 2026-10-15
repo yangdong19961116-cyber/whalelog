@@ -293,7 +293,13 @@
                                                     <ColumnDefinition Width="*" />
                                                     <ColumnDefinition Width="Auto" />
                                                     <ColumnDefinition Width="Auto" />
-                                                    <ColumnDefinition Width="Auto" />
+                                                    <!--
+                                                        耗时列刻意给一个固定宽度（而不是让文字自己撑）：
+                                                        这一列是"右侧这块"的第一个变数，让它变来变去，
+                                                        各行进度条的起点就会跟着晃（"2h30m" 和 "0m" 差 20 多像素）。
+                                                        有了它，上面每行的进度条才会落在同一条竖线上。
+                                                    -->
+                                                    <ColumnDefinition Width="76" />
                                                     <ColumnDefinition Width="Auto" />
                                                     <ColumnDefinition Width="Auto" />
                                                 </Grid.ColumnDefinitions>
@@ -350,7 +356,7 @@
                                                         Value="{Binding Progress, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                                                         ToolTip="拖动设置完成度，拖到 100% 就等于打勾" />
                                                 <TextBlock Grid.Column="4" Text="{Binding ProgressText}"
-                                                           Width="34" Margin="7,0,0,0"
+                                                           Width="42" Margin="7,0,0,0"
                                                            TextAlignment="Right" VerticalAlignment="Center"
                                                            FontSize="11.5"
                                                            Foreground="{DynamicResource TextSecondaryBrush}" />
@@ -376,6 +382,49 @@
                                     </DataTemplate>
                                 </ItemsControl.ItemTemplate>
                             </ItemsControl>
+
+                            <!--
+                                ============ 当天完成度 ============
+
+                                把这一整天的事汇成一个数字：所有事项进度（勾选记 100%）的平均值。
+                                用户要的是"在次日 0 点前把当天的进度存下来，记下那一天完成了百分之多少"，
+                                所以它有两副面孔：
+                                  · 今天 —— 实时算，跟着上面每一根进度条动；
+                                  · 过去的日子 —— 显示收工定格值（跨零点那一刻写死的），
+                                    翻回 10/13 看到的永远是那天收工时的数字。旁边那个小徽标写着是哪种。
+
+                                2026-10-14 用户改的口径：**把那根汇总条去掉**（它是所有事项算出来的结果，
+                                不能拖，画成进度条的样子反而让人以为它自己能改），文字**左对齐**贴住整行左边。
+                                一行字说清"这一天完成了多少"就够了。
+
+                                它刻意放在列表的 StackPanel 里（而不是钉在列表下面）：
+                                钉出去的那份宽度是"窗口宽度 - 滚动条"，列表里的行是"窗口宽度 - 滚动条 - 4"，
+                                滚动条一出现两者就错开几个像素，放在里面就天然跟着走。
+                            -->
+                            <Border x:Name="DayCompletionRow" Visibility="Collapsed"
+                                    Background="{DynamicResource AccentSoftBrush}"
+                                    BorderBrush="{DynamicResource AccentBrush}"
+                                    BorderThickness="1" CornerRadius="10"
+                                    Padding="12,9" Margin="0,0,4,0">
+                                <StackPanel Orientation="Horizontal"
+                                            HorizontalAlignment="Left" VerticalAlignment="Center">
+                                    <TextBlock x:Name="DayCompletionLabel" Text="当天完成度"
+                                               FontSize="12.5" FontWeight="Medium"
+                                               VerticalAlignment="Center"
+                                               Foreground="{DynamicResource TextPrimaryBrush}" />
+                                    <Border x:Name="DayCompletionChip" Margin="8,0,0,0"
+                                            Padding="6,1" CornerRadius="6"
+                                            VerticalAlignment="Center">
+                                        <TextBlock x:Name="DayCompletionChipText" FontSize="10.5" />
+                                    </Border>
+                                    <!-- 数值和颜色都由代码给（见 MainWindow.RefreshDayCompletion）。
+                                         颜色要用 TextBlock 自己的那个 ForegroundProperty —— 
+                                         Control.Foreground 是两个不同的依赖属性，设了不报错也不变色。 -->
+                                    <TextBlock x:Name="DayCompletionValue" Margin="10,0,0,0"
+                                               VerticalAlignment="Center"
+                                               FontSize="15" FontWeight="Medium" />
+                                </StackPanel>
+                            </Border>
 
                             <TextBlock x:Name="EntryEmptyHint" Margin="0,26,0,0"
                                        HorizontalAlignment="Center" FontSize="13"

@@ -1,3 +1,4 @@
+using System.Globalization;
 using WhaleLog.Models;
 
 namespace WhaleLog.Services;
@@ -20,6 +21,16 @@ public sealed class DayDigest
     /// <summary>其中还没收尾的条数。</summary>
     public int Open { get; init; }
 
+    /// <summary>
+    /// 没收尾的那些里，**已经顺延出去**的条数（<see cref="Open"/> 的子集）。
+    ///
+    /// 为什么要单列一个数：清单右边那句「· 1 未收尾」是**催办**的意思（"我还能回去补一下"），
+    /// 而一条已经滚到后面的条目不该再催 —— 它在后一天有自己的副本在推。
+    /// 判据只有一个，就是条目自己身上的 CarriedToDate，不按"这天是不是过去"猜
+    /// （过去某天回看时补记的条目一条都还没滚过，硬说成已顺延是假话）。
+    /// </summary>
+    public int Carried { get; init; }
+
     /// <summary>当天归档的文件数。</summary>
     public int Files { get; init; }
 
@@ -34,7 +45,14 @@ public sealed class DayDigest
     /// <summary>这天算不算"有记录"。往期清单只收这样的日子。</summary>
     public bool HasContent => Total > 0;
 
-    public bool HasOpen => Open > 0;
+    /// <summary>
+    /// 还挂在待办上的条数（没收尾 − 已顺延）。清单上那句「· 2 未收尾」用的是它。
+    ///
+    /// 曾经有一个 `HasOpen = Open > 0` 的判定给清单判断"要不要标橙色"，
+    /// 现在这种"只要没收尾就都算待办"的口径已经不对了（顺延走的那些要另说），
+    /// 所以拆掉 —— 留着的话，下次很容易又有人拿它去决定那个橙色的标记。
+    /// </summary>
+    public int Pending => Math.Max(0, Open - Carried);
 }
 
 /// <summary>
@@ -58,6 +76,7 @@ public static class DayIndex
     {
         var entries = new Dictionary<string, int>(StringComparer.Ordinal);
         var open = new Dictionary<string, int>(StringComparer.Ordinal);
+        var carried = new Dictionary<string, int>(StringComparer.Ordinal);
         var entryTexts = new Dictionary<string, List<string>>(StringComparer.Ordinal);
         var fileNames = new Dictionary<string, List<string>>(StringComparer.Ordinal);
 
@@ -68,7 +87,14 @@ public static class DayIndex
             foreach (var entry in day.Entries)
             {
                 Bump(entries, day.Date);
-                if (!entry.Done) Bump(open, day.Date);
+                if (!entry.Done)
+                {
+                    Bump(open, day.Date);
+
+                    // 已经顺延走的：这条不欠在这一天了，它在后面那天有自己的副本。
+                    // 判据是条目身上那个标记，不按"这天是不是过去"猜（见 DayDigest.Carried）。
+                    if (entry.IsRolledForward) Bump(carried, day.Date);
+                }
 
                 // 正文为空的记录（只打了标签）也要能被搜到，否则搜标签名会漏
                 var text = !string.IsNullOrWhiteSpace(entry.Text) ? entry.Text : entry.Tag;
@@ -98,6 +124,7 @@ public static class DayIndex
                 Date = key,
                 Entries = Get(entries, key),
                 Open = Get(open, key),
+                Carried = Get(carried, key),
                 Files = Get(fileCounts, key),
                 EntryTexts = entryTexts.TryGetValue(key, out var t) ? t : new List<string>(),
                 FileNames = fileNames.TryGetValue(key, out var n) ? n : new List<string>(),
@@ -234,6 +261,41 @@ public static class DayIndex
         if (day.Files > 0) parts.Add($"文件 {day.Files}");
         return parts.Count == 0 ? "没有内容" : string.Join(" · ", parts);
     }
+
+    /// <summary>
+    /// 一天里没收尾的条目分成两拨：「还挂着」和「已经顺延走」。
+    ///
+    /// 用户 2026-10-15 的要求是"往期记录里的未收尾改成已顺延，当天存在的未收尾的除外"，
+    /// 所以这里有两条规则，缺一不可：
+    ///   · 顺延过的（条目身上有 CarriedToDate）→ 算**已顺延**：它往后滚了，
+    ///     这一天留下的只是历史，不该再拿橙色催办；
+    ///   · 今天（以及将来）的**一律算未收尾** —— 顺延只从过去往今天搬，今天的还没滚走。
+    ///     这正是"当天存在的未收尾的除外"。
+    ///
+    /// 刻意**不**写成"只要是过去的日子就全算已顺延"：那条规则会把
+    /// "回看旧日期时补记的一条"也说成已顺延，而它一条都还没滚过。
+    /// </summary>
+    public static (int Carried, int Pending) OpenSplit(DayDigest day, DateTime today)
+    {
+        if (day.Open <= 0) return (0, 0);
+
+        // 读不出日期的日子也归到"未收尾"：宁可不吹这个牛。
+        if (!DateTime.TryParse(day.Date, CultureInfo.InvariantCulture, DateTimeStyles.None, out var d)
+            || d.Date >= today.Date)
+        {
+            return (0, day.Open);
+        }
+
+        var carried = Math.Clamp(day.Carried, 0, day.Open);
+        return (carried, day.Open - carried);
+    }
+
+    /// <summary>
+    /// 清单行右边那一小截的文案：「· 1 未收尾」/「· 2 已顺延」。
+    /// 0 条返回空串 —— 调用方据此决定连控件都不建。
+    /// </summary>
+    public static string OpenLabel(int count, bool carried)
+        => count <= 0 ? "" : carried ? $"· {count} 已顺延" : $"· {count} 未收尾";
 
     /// <summary>清单顶部那句话，例如「17 天有记录 · 16 条记录 · 44 个文件」。</summary>
     public static string SummaryText(IReadOnlyList<DayDigest> days)

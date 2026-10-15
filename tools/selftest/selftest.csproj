@@ -25,6 +25,7 @@
     <Compile Include="..\..\src\WhaleLog\Services\SettingsService.cs" />
     <Compile Include="..\..\src\WhaleLog\Services\LogBookStore.cs" />
     <Compile Include="..\..\src\WhaleLog\Services\CarryOverService.cs" />
+    <Compile Include="..\..\src\WhaleLog\Services\CompletionService.cs" />
     <Compile Include="..\..\src\WhaleLog\Services\ClassifyService.cs" />
     <Compile Include="..\..\src\WhaleLog\Services\VersionService.cs" />
     <Compile Include="..\..\src\WhaleLog\Services\FileIntakeService.cs" />

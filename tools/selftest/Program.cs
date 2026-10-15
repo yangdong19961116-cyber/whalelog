@@ -44,6 +44,8 @@ internal static class Program
             TestDayIndex();
             TestSettingsClamp();
             TestProgressAndCarryOver();
+            TestDayCompletion();
+            TestCarryEditSync();
             TestEntryEdit();
             TestSettingsMigration();
             TestIntakeSummary();
@@ -633,6 +635,107 @@ internal static class Program
             $"实际「{DayIndex.CountsText(first)}」");
         Check(DayIndex.CountsText(new DayDigest { Date = "2026-09-23", Files = 1 }) == "文件 1",
             "只有文件时不该带出「记录 0」");
+
+        // ---- 未收尾 / 已顺延（用户 2026-10-15：「往期记录里的未收尾改成已顺延，
+        //      当天存在的未收尾的除外」）----
+        //
+        // 这一天里没收尾的条目要分成两拨说：已经顺延走的、还挂着的。
+        // 判据只有一个 —— 条目自己身上的 CarriedToDate；**不能**按"这天是不是过去"猜。
+        Section("往期清单：未收尾 / 已顺延");
+
+        var splitToday = new DateTime(2026, 10, 15);
+
+        var splitDays = new List<DayNote>
+        {
+            // 昨天：一条没收尾，已经滚到今天了
+            new()
+            {
+                Date = "2026-10-14",
+                Entries = { new NoteEntry { Text = "迪兹瓦破碎站", Progress = 45, CarriedToDate = "2026-10-15" } },
+            },
+            // 前天：一条滚走了 + 一条还挂着 —— 混在一起的一天
+            new()
+            {
+                Date = "2026-10-13",
+                Entries =
+                {
+                    new NoteEntry { Text = "滚走的", CarriedToDate = "2026-10-14" },
+                    new NoteEntry { Text = "还挂着的" },
+                },
+            },
+            // 今天：一条没完成，还没滚走
+            new() { Date = "2026-10-15", Entries = { new NoteEntry { Text = "今天这条" } } },
+            // 再往前一天：做完了的（两拨都不该算）
+            new() { Date = "2026-10-12", Entries = { new NoteEntry { Text = "做完了", Done = true } } },
+        };
+
+        var split = DayIndex.Build(splitDays, null);
+        static DayDigest Pick(List<DayDigest> list, string date)
+            => list.FirstOrDefault(d => d.Date == date) ?? new DayDigest { Date = date };
+
+        var yesterdayDigest = Pick(split, "2026-10-14");
+        Check(yesterdayDigest.Open == 1 && yesterdayDigest.Carried == 1 && yesterdayDigest.Pending == 0,
+            $"{yesterdayDigest.Date} 应 1 条没收尾、其中 1 条已顺延，实际 "
+            + $"{yesterdayDigest.Open}/{yesterdayDigest.Carried}/{yesterdayDigest.Pending}");
+
+        var mixedDigest = Pick(split, "2026-10-13");
+        Check(mixedDigest.Open == 2 && mixedDigest.Carried == 1 && mixedDigest.Pending == 1,
+            $"{mixedDigest.Date} 应 2 条没收尾（1 顺延 + 1 挂着），实际 "
+            + $"{mixedDigest.Open}/{mixedDigest.Carried}/{mixedDigest.Pending}");
+
+        var todayDigest = Pick(split, "2026-10-15");
+        Check(todayDigest.Open == 1 && todayDigest.Carried == 0 && todayDigest.Pending == 1,
+            $"今天的未完成还没滚走，应算未收尾，实际 "
+            + $"{todayDigest.Open}/{todayDigest.Carried}/{todayDigest.Pending}");
+
+        var doneDigest = Pick(split, "2026-10-12");
+        Check(doneDigest.Open == 0 && doneDigest.Pending == 0,
+            "做完了的那天两拨都不算（勾上就等于 100%，不再催）");
+
+        // ---- 拆分的规则 ----
+        // 期望值写成「已顺延/未收尾」两个数一起比：只比一个的话，
+        // "把该顺延的算成了未收尾"和"两拨都没算"在某个数上会撞成一样。
+        static string SplitText(DayDigest d, DateTime today)
+        {
+            var (carried, pending) = DayIndex.OpenSplit(d, today);
+            return $"{carried}/{pending}";
+        }
+
+        CheckEq(SplitText(yesterdayDigest, splitToday), "1/0",
+            "过去的某天、条目已经顺延走 → 算已顺延、不再算未收尾");
+        CheckEq(DayIndex.OpenLabel(1, carried: true), "· 1 已顺延", "已顺延那一截的文案");
+        CheckEq(DayIndex.OpenLabel(0, carried: false), "", "0 条时不给文案（调用方据此连控件都不建）");
+
+        CheckEq(SplitText(mixedDigest, splitToday), "1/1", "混合的一天：两拨各一条");
+        CheckEq(DayIndex.OpenLabel(1, carried: false), "· 1 未收尾", "还挂着那截的文案");
+
+        // 今天这一天**永远**算未收尾 —— 哪怕数据被手改得带了顺延标记。
+        // 这就是用户那句「当天存在的未收尾的除外」：顺延只从过去往今天搬，今天的还没滚走。
+        var oddToday = new DayDigest { Date = "2026-10-15", Entries = 1, Open = 1, Carried = 1 };
+        CheckEq(SplitText(oddToday, splitToday), "0/1",
+            "今天这一天的未完成一律算未收尾（不认顺延标记）");
+
+        // 将来的一天同理：它更没滚走。
+        var oddFuture = new DayDigest { Date = "2026-10-20", Entries = 1, Open = 1, Carried = 1 };
+        CheckEq(SplitText(oddFuture, splitToday), "0/1", "将来的日子也算未收尾");
+
+        // 反过来的那一半：过去某天有一条**一条都没滚过**的（回看旧日期时补记的一条），
+        // 硬说成"已顺延"是假话 —— 它哪儿都没去。
+        var neverRolled = new DayDigest { Date = "2026-10-10", Entries = 1, Open = 1, Carried = 0 };
+        CheckEq(SplitText(neverRolled, splitToday), "0/1",
+            "过去某天没打过顺延标记的：老实说未收尾，不硬说成已顺延");
+
+        // 脏数据：Carried 比 Open 还大（手改过 index.json）不能算出负数。
+        var dirty = new DayDigest { Date = "2026-10-10", Entries = 1, Open = 1, Carried = 5 };
+        CheckEq(SplitText(dirty, splitToday), "1/0",
+            "Carried 大于 Open 的脏数据要夹住（不能给出负条数）");
+
+        // 日期读不出来的日子：宁可说未收尾，也不吹"已顺延"这个牛。
+        var broken = new DayDigest { Date = "不知道哪天", Entries = 1, Open = 1, Carried = 1 };
+        CheckEq(SplitText(broken, splitToday), "0/1", "日期读不出来的日子算未收尾");
+
+        CheckEq(SplitText(new DayDigest { Date = "2026-10-14" }, splitToday), "0/0",
+            "一条记录都没有的日子两拨都是 0");
 
         // ---- 搜索 ----
         Check(DayIndex.Search(digests, "").Count == 2, "空关键字应当原样返回（不筛）");
@@ -1372,6 +1475,465 @@ internal static class Program
         doneMdDay.Entries.Add(m2);
         Check(!doneMdDay.ToMarkdown().Contains("进度 100%"),
             "已完成的条目不写「进度 100%」—— 勾本身已经说明了");
+    }
+
+    /// <summary>
+    /// 「当天完成度」这一半是纯逻辑：算法、定格、以及"落盘之后还回得来吗"。
+    ///
+    /// 界面那一半（列表底部那一行画没画出来、数字和条对不对得上）在 `--selfcheck` 的
+    /// 「当天完成度」那一节。这里盯的是三种安静的失效：
+    ///   1. 算法取平均却按"勾了几条"算 —— 数字看着正常，语义全错；
+    ///   2. 定格不定格都一个样 —— "收工那一刻的数字不再变"这条承诺就没了；
+    ///   3. 定格值没落盘 / 读不回来 —— 重启一次历史数字全没了。
+    /// </summary>
+    private static void TestDayCompletion()
+    {
+        Section("当天完成度：算法");
+
+        Check(DayCompletion.Average(Array.Empty<NoteEntry>()) == null,
+            "一条记录都没有的一天没有完成度（不是 0%）");
+
+        var onlyZero = new List<NoteEntry> { new() { Text = "还没动" } };
+        Check(DayCompletion.Average(onlyZero) == 0, "只有一条 0% 的事项 → 0%");
+
+        var half = new List<NoteEntry>
+        {
+            new() { Text = "干完了", Done = true },
+            new() { Text = "干到 30%", Progress = 30 },
+        };
+        CheckEq(DayCompletion.Average(half)?.ToString(), "65", "100% 和 30% → 65%（打勾按 100 参与平均）");
+
+        var four = new List<NoteEntry>
+        {
+            new() { Text = "零" },
+            new() { Text = "四十五", Progress = 45 },
+            new() { Text = "七十", Progress = 70 },
+            new() { Text = "满", Done = true },
+        };
+        CheckEq(DayCompletion.Average(four)?.ToString(), "54", "0/45/70/100 → 53.75 四舍五入成 54");
+
+        // 同样的条数、同样的"勾选率"，进度不同结果必须不同 ——
+        // 否则就是退化成"勾了几条 ÷ 共几条"了
+        var skewed = new List<NoteEntry>
+        {
+            new() { Text = "快好了", Progress = 95 },
+            new() { Text = "刚开头", Progress = 5 },
+        };
+        var flat = new List<NoteEntry>
+        {
+            new() { Text = "一半", Progress = 50 },
+            new() { Text = "一半", Progress = 50 },
+        };
+        Check(DayCompletion.Average(skewed) == DayCompletion.Average(flat) &&
+              DayCompletion.Average(skewed) == 50,
+            "95%+5% 和 50%+50% 都是 50%（按进度算，不是按条数算）");
+
+        // ------------------------------------------------------------------
+        Section("当天完成度：今天实时、过去定格");
+
+        var today = new DateTime(2026, 10, 14);
+        var day = new DayNote { Date = "2026-10-14" };
+        var e1 = new NoteEntry { Text = "甲", CreatedAt = today.AddHours(9) };
+        var e2 = new NoteEntry { Text = "乙", CreatedAt = today.AddHours(10) };
+        e1.Progress = 60;
+        day.Entries.Add(e1);
+        day.Entries.Add(e2);
+
+        CheckEq(day.DisplayCompletion(today)?.ToString(), "30", "今天：实时算（60% 和 0% → 30%）");
+
+        e2.Progress = 100;
+        CheckEq(day.DisplayCompletion(today)?.ToString(), "80", "今天这个数跟着条目变（60/100 → 80）");
+
+        // 过去的日子：定格值说了算，之后再改条目也不动它
+        Check(day.Freeze(today.AddDays(1)), "定格会写进值和时间");
+        CheckEq(day.Completion?.ToString(), "80", "定格下来的就是那一刻的 80%");
+        Check(day.IsCompletionSettled, "定格之后记下「已结账」");
+        Check(day.HasFrozenTime, "零点前后结的账记下了收工时刻");
+        CheckEq(day.CompletionFrozenText, "10月15日 00:00", "定格时间给人看的写法");
+
+        Check(!day.Freeze(today.AddDays(2)), "值没变时定格是幂等的（不重复写、不重复落盘）");
+        CheckEq(day.CompletionFrozenAt, "2026-10-15 00:00:00", "重复定格不会把时间改来改去");
+
+        e1.Progress = 0;
+        CheckEq(day.DisplayCompletion(today.AddDays(2))?.ToString(), "80",
+            "翻回过去的日子：条目变了，显示的还是收工时的 80%");
+        CheckEq(day.DisplayCompletion(today)?.ToString(), "50",
+            "但今天这一档仍然是实时算（80 → 50）");
+        CheckEq(day.CompletionFrozenAt, "2026-10-15 00:00:00", "看一眼不会改动定格时间（显示是只读的）");
+
+        // 用户回头改了那一天（拖了进度条）→ 界面上会重新定格：
+        // 否则上面几根条已经是新样子、底下这个数还停在老样子，看着像坏了。
+        Check(day.Freeze(today.AddDays(2)), "改动之后再定格会写上新的值");
+        CheckEq(day.Completion?.ToString(), "50", "重新定格成改动后的 50%");
+        CheckEq(day.CompletionFrozenText, "", "隔了两天才补算的日子不记时间戳（那会儿不是收工时刻）");
+        Check(day.HasFrozenTime == false && day.IsCompletionSettled, "补算的历史仍是「已结账」，只是没有收工时刻");
+        CheckEq(day.DisplayCompletion(today.AddDays(9))?.ToString(), "50", "之后翻回来看到的就是新的定格值");
+
+        // 老数据没有定格值 → 退回实时算（那个数就是它当年落盘的样子）
+        var legacyDay = new DayNote { Date = "2026-09-30" };
+        var old = new NoteEntry { Text = "老账", Progress = 40 };
+        legacyDay.Entries.Add(old);
+        CheckEq(legacyDay.DisplayCompletion(today)?.ToString(), "40",
+            "老数据没定格过：显示实时值，而不是空白");
+
+        var emptyDay = new DayNote { Date = "2026-09-29" };
+        Check(emptyDay.DisplayCompletion(today) == null, "没记录的一天显示不出数字（界面整行收起来）");
+        Check(!emptyDay.Freeze(today), "没记录的一天不给定格（不写 0%）");
+
+        CheckEq(DayCompletion.Display(null, 80, false)?.ToString() ?? "null", "null",
+            "没有条目时，就算有定格值也不显示（记录被全删了就真没这个数了）");
+
+        // ------------------------------------------------------------------
+        Section("当天完成度：收工定格（扫所有过去的日子）");
+
+        var book = new LogBook();
+        var d1 = book.GetOrCreateDay(new DateTime(2026, 10, 10));
+        var d2 = book.GetOrCreateDay(new DateTime(2026, 10, 11));
+        var d3 = book.GetOrCreateDay(new DateTime(2026, 10, 14));   // 今天
+        var d4 = book.GetOrCreateDay(new DateTime(2026, 10, 20));   // 还没到的日子
+
+        d1.Entries.Add(new NoteEntry { Text = "十天前干完了", Done = true });
+        d2.Entries.Add(new NoteEntry { Text = "十一天前干了一半", Progress = 50 });
+        d3.Entries.Add(new NoteEntry { Text = "今天在干", Progress = 20 });
+        d4.Entries.Add(new NoteEntry { Text = "写在前面的计划", Progress = 90 });
+
+        var report = CompletionService.FreezePastDays(book, new DateTime(2026, 10, 14), new DateTime(2026, 10, 14, 18, 0, 0));
+
+        CheckEq(report.Days.ToString(), "2", "把 10/10、10/11 两天都定格了（不是只看昨天）");
+        CheckEq(report.Describe(), "已把 2 天的完成度定格（最近 10月11日：50%）", "定格提示文案");
+
+        CheckEq(d1.Completion?.ToString(), "100", "10/10 定格成 100%");
+        CheckEq(d2.Completion?.ToString(), "50", "10/11 定格成 50%");
+        Check(d3.Completion == null, "今天不定格（还在进行中）");
+        Check(d4.Completion == null, "将来的日子不定格（那是计划，不是收成）");
+
+        CheckEq(CompletionService.FreezePastDays(book, new DateTime(2026, 10, 14)).Days.ToString(), "0",
+            "再跑一次不会再定格（幂等：每 20 秒的轮询重复跑不会改历史数字）");
+
+        var nextDay = CompletionService.FreezePastDays(book, new DateTime(2026, 10, 15));
+        CheckEq(nextDay.Days.ToString(), "1", "到了第二天，昨天也进入「过去的日子」被定格");
+        CheckEq(d3.Completion?.ToString(), "20", "10/14 定格成当天的 20%");
+
+        // ------------------------------------------------------------------
+        Section("当天完成度：落盘与回读");
+
+        // 落盘前会顺手把"今天"这一档刷成实时值 —— "次日 0 点前保存当天进度"就落在这里
+        var storeBook = new LogBook();
+        var storeToday = storeBook.GetOrCreateDay(DateTime.Today);
+        var st1 = new NoteEntry { Text = "今天的一条" };
+        st1.Progress = 70;
+        storeToday.Entries.Add(st1);
+        LogBookStore.SyncTodayCompletion(storeBook);
+        CheckEq(storeToday.Completion?.ToString(), "70", "落盘那一刻把今天的完成度刷成实时值");
+
+        st1.Progress = 100;
+        LogBookStore.SyncTodayCompletion(storeBook);
+        CheckEq(storeToday.Completion?.ToString(), "100", "再落盘一次就跟上新的进度");
+
+        // 定格值要能跟着索引一起走一圈
+        var frozenBook = new LogBook();
+        var frozenDay = frozenBook.GetOrCreateDay(new DateTime(2026, 6, 1));
+        frozenDay.Entries.Add(new NoteEntry { Text = "六月的一条", CreatedAt = new DateTime(2026, 6, 1, 9, 0, 0) });
+        frozenDay.Entries[0].Progress = 35;
+        Check(frozenDay.Freeze(new DateTime(2026, 6, 2, 0, 0, 5)), "6/1 定格成功");
+
+        var json = System.Text.Json.JsonSerializer.Serialize(frozenBook, new System.Text.Json.JsonSerializerOptions
+        {
+            PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase,
+        });
+        var reloaded = LogBookStore.Deserialize(json);
+        Check(reloaded != null, "带完成度的索引能读回来");
+        if (reloaded != null)
+        {
+            var back = reloaded.FindDay(new DateTime(2026, 6, 1))!;
+            CheckEq(back.Completion?.ToString(), "35", "读回来定格值还在");
+            CheckEq(back.CompletionFrozenText, "6月2日 00:00", "读回来定格时间还在");
+            Check(back.IsCompletionSettled, "读回来「已经收工结账」这个状态还在（否则隔天又会被当成没结账）");
+            CheckEq(back.DisplayCompletion(new DateTime(2026, 10, 14))?.ToString(), "35",
+                "读回来之后，翻到过去显示的还是定格值");
+        }
+
+        // 补算历史（结账时间远在几天之后）也要能落盘回读：值有、"收工时刻"没有
+        var backfillBook = new LogBook();
+        var backfillDay = backfillBook.GetOrCreateDay(new DateTime(2026, 5, 1));
+        backfillDay.Entries.Add(new NoteEntry { Text = "五月的一条", CreatedAt = new DateTime(2026, 5, 1, 9, 0, 0) });
+        backfillDay.Entries[0].Progress = 20;
+        Check(backfillDay.Freeze(new DateTime(2026, 10, 14, 9, 0, 0)), "一两个月前的日子也能补算");
+        Check(backfillDay.IsCompletionSettled && !backfillDay.HasFrozenTime,
+            "补算：记下值、不记假的收工时刻");
+
+        var backfillReloaded = LogBookStore.Deserialize(System.Text.Json.JsonSerializer.Serialize(
+            backfillBook, new System.Text.Json.JsonSerializerOptions
+            {
+                PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase,
+            }));
+        Check(backfillReloaded?.FindDay(new DateTime(2026, 5, 1))?.IsCompletionSettled == true,
+            "补算过的日子读回来仍然是「已结账」（幂等靠它，不靠时间戳）");
+
+        // ------------------------------------------------------------------
+        Section("当天完成度：写进 notes\\*.md 和日报");
+
+        var mdDay = new DayNote { Date = "2026-06-02" };
+        var mdEntry = new NoteEntry { Text = "一条", CreatedAt = new DateTime(2026, 6, 2, 9, 0, 0) };
+        mdEntry.Progress = 55;
+        mdDay.Entries.Add(mdEntry);
+        mdDay.Freeze(new DateTime(2026, 6, 3, 0, 0, 0));
+
+        var md = mdDay.ToMarkdown();
+        Check(md.Contains("completion: 55"), "md 的头部写了 completion");
+        Check(md.Contains("frozenAt: 2026-06-03 00:00:00"), "md 的头部写了定格时间");
+        Check(md.Contains("当天完成度 **55%**"), "md 正文里有一行当天完成度");
+        Check(md.Contains("收工定格"), "md 里写清了这是收工定格的数字");
+
+        var emptyMd = new DayNote { Date = "2026-06-04" }.ToMarkdown();
+        Check(!emptyMd.Contains("completion:"), "没记录的一天不写 completion（免得 0% 被当成「今天啥也没干」）");
+
+        var reportBook = new LogBook();
+        var reportDay = reportBook.GetOrCreateDay(new DateTime(2026, 6, 5));
+        var r1 = new NoteEntry { Text = "甲", CreatedAt = new DateTime(2026, 6, 5, 9, 0, 0) };
+        var r2 = new NoteEntry { Text = "乙", CreatedAt = new DateTime(2026, 6, 5, 10, 0, 0) };
+        r1.Done = true;
+        r2.Progress = 40;
+        reportDay.Entries.Add(r1);
+        reportDay.Entries.Add(r2);
+
+        var daily = ReportService.BuildDaily(reportBook, new DateTime(2026, 6, 5));
+        Check(daily.Contains("当天完成度 **70%**"), "日报里带上当天完成度（100 和 40 → 70）");
+
+        // ------------------------------------------------------------------
+        Section("回看历史时把一条改回未完成 → 同步到今天");
+
+        // 自动顺延只在启动 / 跨零点跑。可"昨天那条其实没干完"这种更正，往往是第二天
+        // 翻记录时才发现的 —— 那时候顺延的时机早过了，不当场补一条，用户看到的就是
+        // 「我明明改了，它没过来」。
+        var syncBook = new LogBook();
+        var syncPast = syncBook.GetOrCreateDay(new DateTime(2026, 10, 13));
+        var syncToday = syncBook.GetOrCreateDay(new DateTime(2026, 10, 14));
+        var late = new NoteEntry { Text = "昨天没干完的", CreatedAt = new DateTime(2026, 10, 13, 18, 0, 0) };
+        late.Progress = 62;
+        syncPast.Entries.Add(late);
+
+        var syncReport = CarryOverService.CarryEntry(
+            syncBook, new DateTime(2026, 10, 13), late, new DateTime(2026, 10, 14));
+
+        CheckEq(syncReport.Carried.ToString(), "1", "回看昨天把一条拖成未完成 → 当场搬一条到今天");
+        CheckEq(syncReport.Describe(), "1 条未完成事项顺延到 10月14日：昨天没干完的", "同步提示文案");
+        CheckEq(syncToday.Entries.Count.ToString(), "1", "今天那边真的多了一条");
+        CheckEq(syncToday.Entries[0].Progress.ToString(), "62", "副本带的是改完之后的进度");
+        CheckEq(syncToday.Entries[0].CarriedFromId, late.Id, "副本记得自己是从哪条来的");
+        CheckEq(syncToday.Entries[0].CarriedFromDate, "2026-10-13", "副本记得自己是从哪天来的");
+        CheckEq(late.CarriedToDate, "2026-10-14", "源条目戳上「已顺延至」");
+        CheckEq(late.Progress.ToString(), "62", "源条目自己的进度一个字不改（历史是历史）");
+
+        CheckEq(CarryOverService.CarryEntry(
+                syncBook, new DateTime(2026, 10, 13), late, new DateTime(2026, 10, 14)).Carried.ToString(), "0",
+            "幂等：拖着进度条一格一格走，不会在今天叠出一堆副本");
+        CheckEq(syncToday.Entries.Count.ToString(), "1", "今天还是那一条");
+
+        // 已经顺延过、但今天那份被用户删了 → 不复活（和自动顺延同一条规矩）
+        var ghostBook = new LogBook();
+        var ghostPast = ghostBook.GetOrCreateDay(new DateTime(2026, 10, 13));
+        ghostBook.GetOrCreateDay(new DateTime(2026, 10, 14));
+        var ghost = new NoteEntry { Text = "搬过又被删了", Progress = 30, CarriedToDate = "2026-10-14" };
+        ghostPast.Entries.Add(ghost);
+        CheckEq(CarryOverService.CarryEntry(
+                ghostBook, new DateTime(2026, 10, 13), ghost, new DateTime(2026, 10, 14)).Carried.ToString(), "0",
+            "已经顺延过的不再搬（今天的副本被删掉 = 这件事被放下了，不该自己长回来）");
+
+        // 今天已经有这条的副本 → 一条都不重复搬，今天那边的进展优先
+        var dupBook = new LogBook();
+        var dupPast = dupBook.GetOrCreateDay(new DateTime(2026, 10, 13));
+        var dupToday = dupBook.GetOrCreateDay(new DateTime(2026, 10, 14));
+        var origin = new NoteEntry { Text = "同一条活儿", Progress = 20 };
+        dupPast.Entries.Add(origin);
+        dupToday.Entries.Add(new NoteEntry { Text = "同一条活儿", Progress = 20, CarriedFromId = origin.Id });
+        CheckEq(CarryOverService.CarryEntry(
+                dupBook, new DateTime(2026, 10, 13), origin, new DateTime(2026, 10, 14)).Carried.ToString(), "0",
+            "今天已经有这条的副本 → 不重复搬（也不去改今天那份，它有自己的进展）");
+        CheckEq(dupToday.Entries.Count.ToString(), "1", "今天还是那一条，没被顶掉也没被改");
+        Check(origin.CarriedToDate == null, "不搬的时候连「已顺延至」都不戳（免得翻历史时显示个假的）");
+
+        // 完成的永不顺延：拖回 100% 就不带了
+        var doneBook = new LogBook();
+        var donePast = doneBook.GetOrCreateDay(new DateTime(2026, 10, 13));
+        var finished = new NoteEntry { Text = "昨天干完了", Done = true };
+        donePast.Entries.Add(finished);
+        CheckEq(CarryOverService.CarryEntry(
+                doneBook, new DateTime(2026, 10, 13), finished, new DateTime(2026, 10, 14)).Carried.ToString(), "0",
+            "又拖回 100% 完成 → 不搬（完成的永不顺延）");
+        Check(doneBook.FindDay(new DateTime(2026, 10, 14)) == null,
+            "不搬的时候连今天的空账本都不建（不留一堆空日子）");
+
+        // 看着今天 / 将来的日子，都谈不上"同步到今天"
+        var selfBook = new LogBook();
+        var selfDay = selfBook.GetOrCreateDay(new DateTime(2026, 10, 14));
+        var selfEntry = new NoteEntry { Text = "今天的活", Progress = 10 };
+        selfDay.Entries.Add(selfEntry);
+        CheckEq(CarryOverService.CarryEntry(
+                selfBook, new DateTime(2026, 10, 14), selfEntry, new DateTime(2026, 10, 14)).Carried.ToString(), "0",
+            "看着今天的时候不叫「同步到今天」（它本来就在今天）");
+        CheckEq(selfDay.Entries.Count.ToString(), "1", "今天这条没被复制成两份");
+        CheckEq(CarryOverService.CarryEntry(
+                selfBook, new DateTime(2026, 10, 20), selfEntry, new DateTime(2026, 10, 14)).Carried.ToString(), "0",
+            "提前写在将来某天的计划不往今天搬");
+
+        // 徽标要当场冒出来：用户正看着这一行，靠的是属性通知
+        // （自动属性不发通知，得重新加载整个列表才显示）
+        var notifyBook = new LogBook();
+        var notifyEntry = new NoteEntry { Text = "通知", Progress = 10 };
+        notifyBook.GetOrCreateDay(new DateTime(2026, 10, 13)).Entries.Add(notifyEntry);
+        var notified = new List<string>();
+        notifyEntry.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName != null) notified.Add(e.PropertyName);
+        };
+        CarryOverService.CarryEntry(notifyBook, new DateTime(2026, 10, 13), notifyEntry, new DateTime(2026, 10, 14));
+        Check(notified.Contains(nameof(NoteEntry.RolledToText)) && notified.Contains(nameof(NoteEntry.IsRolledForward)),
+            "顺延的那一瞬间会通知界面刷新「已顺延至 X」徽标");
+    }
+
+    /// <summary>
+    /// 编辑一条记录时，改动顺着顺延链传下去（2026-10-14 用户要的）。
+    ///
+    /// 这一节的重心全在**边界**上：传得太少（链上还有一份没改到）看不出来，
+    /// 传得太多（把进度也搬过去，今天干到 80% 被昨天那份的 30% 顶回去）也看不出来 ——
+    /// 两种坏法都不报错，只是数字悄悄变了。
+    /// </summary>
+    private static void TestCarryEditSync()
+    {
+        // ---- 造一条三天的链：10-12 → 10-13 → 10-14 ----
+        var book = new LogBook();
+        var day12 = book.GetOrCreateDay(new DateTime(2026, 10, 12));
+        var origin = new NoteEntry
+        {
+            Text = "写报告",
+            Category = NoteCategories.Work,
+            Tag = "甲",
+            Progress = 30,
+        };
+        day12.Entries.Add(origin);
+
+        CarryOverService.RunOnBook(book, new DateTime(2026, 10, 13));
+        CarryOverService.RunOnBook(book, new DateTime(2026, 10, 14));
+
+        var mid = book.FindDay(new DateTime(2026, 10, 13))!.Entries[0];
+        var tip = book.FindDay(new DateTime(2026, 10, 14))!.Entries[0];
+
+        CheckEq(origin.CarriedToDate ?? "", "2026-10-13", "源头搬去了 10-13");
+        CheckEq(mid.CarriedToDate ?? "", "2026-10-14", "中间那份又搬去了 10-14");
+        CheckEq(tip.CarriedFromId ?? "", mid.Id, "最新那份记得自己是从中间那份来的");
+
+        // ---- 链要认得出来：从任何一环看都是同一条三天链 ----
+        CheckEq(CarryOverService.ChainOf(book, origin).Count.ToString(), "3", "从源头数得出三天");
+        CheckEq(CarryOverService.ChainOf(book, mid).Count.ToString(), "3", "从中间那份也能数出三天（要往上追）");
+        CheckEq(CarryOverService.ChainOf(book, tip).Count.ToString(), "3", "从最新那份也能数出三天");
+
+        var chainDates = string.Join(",", CarryOverService.ChainOf(book, tip).Select(l => l.Date));
+        CheckEq(chainDates, "2026-10-12,2026-10-13,2026-10-14", "链是按日期从早到晚排的");
+
+        // 链上每一环带的日期得是**它自己那天**，不是传进去那条的日期
+        var chainEntries = CarryOverService.ChainOf(book, tip).Select(l => l.Entry).ToList();
+        Check(chainEntries[0] == origin && chainEntries[1] == mid && chainEntries[2] == tip,
+            "链里的条目顺序和日期一一对应");
+
+        // ---- 今天推进了，再回头改名字：内容跟着走，进度留在原地 ----
+        mid.Progress = 80;
+
+        var beforeCreated = origin.CreatedAt;
+        var beforeMidId = mid.Id;
+
+        origin.Text = "写方案";
+        origin.Category = NoteCategories.Meeting;
+        origin.Tag = "乙";
+
+        var report = CarryOverService.SyncContent(book, origin);
+
+        CheckEq(report.Updated.ToString(), "2", "改最上面那份：下面两份都跟着改了");
+        CheckEq(mid.Text, "写方案", "中间那份的正文被同步");
+        CheckEq(tip.Text, "写方案", "最新那份的正文也被同步");
+        CheckEq(tip.Category, NoteCategories.Meeting, "分类一起同步");
+        CheckEq(mid.Tag, "乙", "标签一起同步");
+
+        // ⚠️ 这三条是这一节的核心：进度绝不能跟着走。
+        // 真出过这类方向性错误 —— 今天那份干到 80%，被昨天那份的 30% 顶回去，
+        // 界面上只是"进度条怎么退回去了"，没有任何报错。
+        CheckEq(mid.Progress.ToString(), "80", "今天那份的进度没被昨天的 30% 顶回去");
+        CheckEq(tip.Progress.ToString(), "30", "最新那份的进度也没被拉过去");
+        CheckEq(origin.Progress.ToString(), "30", "源头自己的进度没动");
+        Check(mid.Done == false && tip.Done == false, "勾选状态不参与同步");
+
+        // 时间 / Id / 顺延标记一个都不该动 —— 那是"这条记录存在过"的凭据
+        CheckEq(origin.CreatedAt.ToString("O"), beforeCreated.ToString("O"), "同步不动创建时间");
+        CheckEq(mid.Id, beforeMidId, "同步不动 Id");
+        CheckEq(mid.CarriedToDate ?? "", "2026-10-14", "同步不动「已顺延至」标记");
+        CheckEq(tip.CarriedFromId ?? "", mid.Id, "同步不动「顺延自哪条」");
+
+        // ---- 双向：编最新那份，前面的两份也一起改 ----
+        tip.Text = "写方案（改过）";
+        var back = CarryOverService.SyncContent(book, tip);
+        CheckEq(back.Updated.ToString(), "2", "编最新那份：上面两份一起改（双向）");
+        CheckEq(origin.Text, "写方案（改过）", "源头那份被同步");
+        CheckEq(mid.Text, "写方案（改过）", "中间那份被同步");
+
+        // ---- 幂等：内容一模一样时什么都不做 ----
+        CheckEq(CarryOverService.SyncContent(book, tip).Updated.ToString(), "0",
+            "内容没变时一条都不碰（不是每次都重写一遍）");
+
+        // ---- 不在链上：一条孤零零的记录 ----
+        var lonely = new NoteEntry { Text = "一个人的活", Progress = 10 };
+        book.GetOrCreateDay(new DateTime(2026, 10, 15)).Entries.Add(lonely);
+        CheckEq(CarryOverService.ChainOf(book, lonely).Count.ToString(), "1", "没顺延过的记录自成一条单链");
+        CheckEq(CarryOverService.SyncContent(book, lonely).Updated.ToString(), "0", "单链编辑时没有东西可同步");
+
+        // ---- 正文为空不覆盖：这条保护分支要真走一遍（得是**在链上**的那条才测得到） ----
+        // 编辑窗拦了空正文，但这条规则在服务层也得自己站得住 ——
+        // 真从别的入口进来一个空白正文，宁可少同步一样，也别把链条上几条记录的正文一起抹掉。
+        origin.Text = "   ";   // 分类和标签都还是链上那份的样子，唯一变的就是"正文是空的"
+        var blankReport = CarryOverService.SyncContent(book, origin);
+        CheckEq(blankReport.Updated.ToString(), "0", "正文是空白的：不覆盖链上任何一条");
+        CheckEq(mid.Text, "写方案（改过）", "链上那几份的正文原封不动");
+        CheckEq(tip.Text, "写方案（改过）", "最新那份的正文也没被抹掉");
+        origin.Text = "写方案（改过）";   // 还原，别把后面的用例带歪
+
+        // ---- 链断了：中间那份被删掉 ----
+        var cutBook = new LogBook();
+        var cutOrigin = new NoteEntry { Text = "断链", Progress = 10 };
+        cutBook.GetOrCreateDay(new DateTime(2026, 10, 12)).Entries.Add(cutOrigin);
+        CarryOverService.RunOnBook(cutBook, new DateTime(2026, 10, 13));
+        cutBook.FindDay(new DateTime(2026, 10, 13))!.Entries.Clear();   // 用户手动删掉了副本
+        CheckEq(CarryOverService.ChainOf(cutBook, cutOrigin).Count.ToString(), "1",
+            "副本被删掉之后链就剩自己（不会吊着一条不存在的）");
+        CheckEq(CarryOverService.SyncContent(cutBook, cutOrigin).Updated.ToString(), "0", "断链时同步是空操作");
+
+        // ---- 脏数据：两条互相指认对方是来源（手改 index.json 能改出来） ----
+        var loopBook = new LogBook();
+        var a = new NoteEntry { Text = "甲" };
+        var b = new NoteEntry { Text = "乙", CarriedFromId = a.Id, CarriedFromDate = "2026-10-12" };
+        a.CarriedFromId = b.Id;
+        a.CarriedFromDate = "2026-10-13";
+        loopBook.GetOrCreateDay(new DateTime(2026, 10, 12)).Entries.Add(a);
+        loopBook.GetOrCreateDay(new DateTime(2026, 10, 13)).Entries.Add(b);
+        var loopChain = CarryOverService.ChainOf(loopBook, a);
+        Check(loopChain.Count is >= 1 and <= 2,
+            $"互相指认的脏数据能停下来（拿到 {loopChain.Count} 环，不是死循环）");
+
+        // ---- 提示文案 ----
+        var tipBook = new LogBook();
+        var t0 = new NoteEntry { Text = "文案", Progress = 5 };
+        tipBook.GetOrCreateDay(new DateTime(2026, 10, 12)).Entries.Add(t0);
+        CarryOverService.RunOnBook(tipBook, new DateTime(2026, 10, 13));
+        var t1 = tipBook.FindDay(new DateTime(2026, 10, 13))!.Entries[0];
+        t0.Text = "文案改";
+        var oneDay = CarryOverService.SyncContent(tipBook, t0);
+        CheckEq(oneDay.Describe(), " · 同步到 10月13日 的顺延记录", "只同步一天时的提示");
+
+        CarryOverService.RunOnBook(tipBook, new DateTime(2026, 10, 14));
+        t0.Text = "文案再改";
+        var twoDays = CarryOverService.SyncContent(tipBook, t0);
+        CheckEq(twoDays.Describe(), " · 同步到 10月14日、10月13日 的顺延记录", "同步多天时倒着列出来（最近的在前）");
+
+        CheckEq(new CarryOverService.SyncReport().Describe(), "", "没同步任何东西时提示是空串（状态栏不该多出个括号）");
+        Check(t1.Text == "文案再改", "多天同步时每一天都真的改到了");
     }
 
     private static void CheckSnapshotUnchanged(

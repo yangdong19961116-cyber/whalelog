@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.IO;
 using System.Text.Json;
 using WhaleLog.Models;
@@ -89,6 +90,11 @@ public sealed class LogBookStore
             {
                 AppPaths.EnsureCreated();
 
+                // 落盘前把「今天」这一档的完成度刷成实时值：
+                // 每一次进度条改动都会走到这里，所以"当天做到哪儿了"永远已经写进 index.json ——
+                // 用户说的是"次日 0 点前保存当天的进度"，而最靠得住的保证就是"改一次就存一次"。
+                SyncTodayCompletion(Book);
+
                 // 备份上一版
                 if (File.Exists(AppPaths.IndexFile))
                 {
@@ -131,6 +137,26 @@ public sealed class LogBookStore
     public void MarkDirty() => _dirty = true;
 
     public bool IsDirty => _dirty;
+
+    /// <summary>
+    /// 把「今天」这一档的完成度刷成实时值（过去的日子不动 —— 它们是收工定格过的结账单，
+    /// 见 CompletionService.FreezePastDays）。
+    ///
+    /// 只认日期等于今天的那一份：跨零点之后"昨天"自动落进"过去的日子"，轮到定格那一套接手，
+    /// 不会出现"昨天的数字还在跟着条目变"。
+    ///
+    /// internal 而不是 private：自测要直接调它验"落盘那一刻确实把今天的完成度刷了"
+    /// （走整个 Save 也行，但要真写文件、还要清理临时目录，不如把这一步单独验）。
+    /// </summary>
+    internal static void SyncTodayCompletion(LogBook book)
+    {
+        var today = DateTime.Today.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        foreach (var day in book.Days)
+        {
+            if (day.Date != today) continue;
+            day.Completion = day.LiveCompletion; // 当天没记录时写回 null
+        }
+    }
 
     /// <summary>
     /// 确保今天有一份笔记文件，并在缺失时补写。

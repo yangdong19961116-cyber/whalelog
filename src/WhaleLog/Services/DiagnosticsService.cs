@@ -1,9 +1,11 @@
+using System.Globalization;
 using System.IO;
 using System.Reflection;
 using System.Text;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
+using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using WhaleLog.Models;
@@ -386,12 +388,30 @@ public static class DiagnosticsService
         Section("进度条与顺延（界面）");
         ProbeProgressBars(Check);
 
+        // ---- 当天完成度 ----
+        // 上面那节验的是"每一条事项都有自己的进度条"，这节验的是"把一整天汇成一个数"：
+        // 数字对不对、行有没有画出来、全干完时变不变绿、文字有没有贴住最左边
+        // （2026-10-14 用户要求去掉那根汇总条、文字左对齐），
+        // 以及"回看历史时把一条改回未完成要不要同步到今天"这个判定。
+        // 失效方式全是安静的：数字不动、行压根没出现、颜色永远一个样、文字悄悄跑到行中间、
+        // 改了昨天的记录今天却什么都没过来 —— 界面一个错都不报，只是"看着不对"。
+        Section("当天完成度");
+        ProbeDayCompletion(Check);
+
         // ---- 改一条已经写下的记录 ----
         // 以前写错了只能删掉重打一条，而删掉的恰恰是"这条记录存在过"这个事实本身。
         // 现在点「编辑」或双击整行就能改。失效方式全是安静的：入口没接上 = 功能等于不存在；
         // 改完没写回**原来那个对象** = 用户下次打开只会觉得"改了没生效"。
         Section("记录的编辑");
         ProbeEntryEdit(Check);
+
+        // ---- 编辑一条记录时，改动传给跨天顺延出去的那几份 ----
+        // 一条没做完的事项会被一天天复制下去（10-12 → 10-13 → 10-14），
+        // 链上每一份都是一个独立的条目，改了一处不会自动传到别处 ——
+        // 用户翻回昨天改个名字，今天那份还是旧的，看着就是"改了没生效"。
+        // 这里验的是**界面接线**：保存之后到底有没有真的把改动传下去、有没有说清楚动了哪几天。
+        Section("编辑同步到顺延链");
+        ProbeEditSyncToChain(Check);
 
         // ---- 按日期回看 ----
         // 以前回看往期只有日期栏的「‹」一天一天退（从今天退到两周前要点十几次），
@@ -938,6 +958,17 @@ public static class DiagnosticsService
         Console.WriteLine($"[recent] 面板 {size.Width:F1}×{size.Height:F1} · {panel.RowCount} 行 · "
                           + $"摘要「{panel.SummaryLine}」");
         Console.WriteLine($"[recent] 第一行：{string.Join(" | ", panel.RowCounts.Take(1))}");
+
+        // 标记那几段也念出来：图上"已顺延"和"未收尾"只差一个字，
+        // 而且要对着颜色看（一个是灰的、一个是橙的），光看图容易看串。
+        // 拼接用空格不用「·」—— 标记自己就带前导的点，再连一个会读成「· · 1 未收尾」。
+        for (int i = 0; i < Math.Min(4, panel.RowCount); i++)
+        {
+            Console.WriteLine($"[recent]   {panel.RowDates[i]}：{panel.RowCounts[i]}"
+                              + (panel.RowBadges[i].Length > 0 ? $" {panel.RowBadges[i]}" : "")
+                              + $"   [{panel.RowBadgeBrushes[i]}]");
+        }
+
         return path;
     }
 
@@ -3625,6 +3656,183 @@ public static class DiagnosticsService
     }
 
     /// <summary>
+    /// 列表底部那行「当天完成度」。
+    ///
+    /// 探针刻意读可视树里的控件（Slider / TextBlock 的文字和位置），不回头读数据模型：
+    /// 「模型里算得出 54%」和「界面上真的画了一根 54% 的条、旁边写着 54%、还和上面几根条
+    /// 对齐在同一条竖线上」隔着绑定和模板两层。这里灌一份假数据进去，把这两层一起量了。
+    /// </summary>
+    private static void ProbeDayCompletion(CheckFn check)
+    {
+        MainWindow? window = null;
+        try
+        {
+            window = new MainWindow
+            {
+                WindowStartupLocation = WindowStartupLocation.Manual,
+                ShowInTaskbar = false,
+                Left = -32000,
+                Top = -32000,
+            };
+            window.Show();
+
+            // 0 / 45 / 70 / 100 → 53.75 → 54
+            var sample = new List<NoteEntry>
+            {
+                new() { Text = "零进度", Category = NoteCategories.Work },
+                new() { Text = "半截", Category = NoteCategories.Work, Progress = 45 },
+                new() { Text = "七成", Category = NoteCategories.Work, Progress = 70 },
+                new() { Text = "干完了", Category = NoteCategories.Work, Done = true },
+            };
+
+            window.LoadEntriesForProbe(sample);
+            var parts = window.DayCompletionReport().Split('|');
+
+            check("列表底部画出了「当天完成度」这一行",
+                parts.Length > 0 && parts[0] == "Visible",
+                parts.Length > 0 ? $"可见性={parts[0]}" : "报告格式不对");
+
+            check("行里写着「当天完成度」",
+                parts.Length > 2 && parts[2] == "当天完成度",
+                parts.Length > 2 ? parts[2] : "报告格式不对");
+
+            // 0 + 45 + 70 + 100 = 215，除以 4 = 53.75 → 54
+            check("数字是所有事项进度的平均（勾选按 100 算）",
+                parts.Length > 1 && parts[1] == "54%",
+                parts.Length > 1 ? $"显示={parts[1]}，期望 54%" : "报告格式不对");
+
+            check("今天这一档标着「实时更新」",
+                parts.Length > 3 && parts[3] == "实时更新",
+                parts.Length > 3 ? parts[3] : "报告格式不对");
+
+            // ---- 2026-10-14 用户改的口径：去掉那根汇总条、文字贴左边 ----
+            // 这两条都是"安静型"失效：条还在（只是多了一根长得像能拖的东西）、
+            // 文字跑到行中间，界面照常渲染、日志一个字都没有。
+            var completionBars = Descendants(window.DayCompletionRow).OfType<Slider>().ToList();
+            check("这一行里没有滑动条（用户要去掉那根汇总条）",
+                completionBars.Count == 0,
+                $"{completionBars.Count} 根");
+
+            var rowX = double.TryParse(parts[5].TrimStart('x', '='), out var rx) ? rx : double.NaN;
+            var textX = double.TryParse(parts[6].TrimStart('t', 'x', '='), out var tx) ? tx : double.NaN;
+            var firstX = double.TryParse(parts[7].TrimStart('f', 'x', '='), out var fx) ? fx : double.NaN;
+            var padLeft = double.TryParse(parts[8].TrimStart('p', 'a', 'd', '='), out var pad) ? pad : double.NaN;
+            check("说明文字和上面每一行内容对齐（贴住整行的最左边，不是居中也不是右对齐）",
+                !double.IsNaN(textX) && !double.IsNaN(firstX) && Math.Abs(textX - firstX) < 0.6,
+                $"文字 x={textX:0.#}，记录行内容 x={firstX:0.#}，本行 x={rowX:0.#} 左内边距={padLeft:0.#}");
+
+            // 上面每一行的进度条也要互相对齐（那条固定宽度的耗时列就是为了这个）
+            var rowBars = Descendants(window.EntryList).OfType<Slider>().ToList();
+            check("上面 4 条事项各自有一根进度条",
+                rowBars.Count == sample.Count,
+                $"{rowBars.Count} 根");
+
+            if (rowBars.Count == sample.Count)
+            {
+                var rowXs = rowBars
+                    .Select(b => Math.Round(b.TranslatePoint(new Point(0, 0), window).X))
+                    .Distinct()
+                    .ToList();
+
+                check("各行的进度条互相对齐（耗时文字长短不该晃到它们）",
+                    rowXs.Count == 1,
+                    "起点：" + string.Join(" / ", rowXs));
+            }
+
+            // ---- 未满 100% 时不该是绿的 ----
+            var success = (window.FindResource("SuccessBrush") as SolidColorBrush)?.Color.ToString() ?? "";
+            check("没干完的时候数字不是绿的",
+                parts.Length > 4 && parts[4] != success,
+                $"数字色={parts[4]} 绿={success}");
+
+            // ---- 全干完：100% + 变绿 ----
+            window.LoadEntriesForProbe(new List<NoteEntry>
+            {
+                new() { Text = "甲", Category = NoteCategories.Work, Done = true },
+                new() { Text = "乙", Category = NoteCategories.Work, Done = true },
+            });
+            var doneParts = window.DayCompletionReport().Split('|');
+            check("全部干完时是 100%",
+                doneParts.Length > 1 && doneParts[1] == "100%",
+                doneParts.Length > 1 ? doneParts[1] : "报告格式不对");
+            check("全部干完时数字变绿（和列表里「已完成」一个颜色）",
+                doneParts.Length > 4 && doneParts[4] == success,
+                doneParts.Length > 4 ? $"数字色={doneParts[4]} 绿={success}" : "报告格式不对");
+
+            // ---- 翻回过去的日子：显示的是收工定格值，而不是按现在的条目重算 ----
+            // 这是整个功能的核心承诺（"记录那天完成了百分之多少"），而它的失效方式最隐蔽：
+            // 数字会照常显示、也照着上面的条目算，只是"永远跟着改"——
+            // 看着一切正常，其实历史已经不是历史了。
+            var yesterday = DateTime.Today.AddDays(-1);
+            window.LoadEntriesForProbe(sample, yesterday, 85);
+            var pastParts = window.DayCompletionReport().Split('|');
+
+            check("翻回过去的日子：显示的是收工定格值（不是实时重算的 54%）",
+                pastParts.Length > 1 && pastParts[1] == "85%",
+                pastParts.Length > 1 ? $"显示={pastParts[1]}，期望 85%（实时算是 54）" : "报告格式不对");
+
+            check("过去的日子标着「收工定格」",
+                pastParts.Length > 3 && pastParts[3] == "收工定格",
+                pastParts.Length > 3 ? pastParts[3] : "报告格式不对");
+
+            // 老数据（没有定格值）：退回实时算，但不能空着不显示
+            window.LoadEntriesForProbe(sample, yesterday, null);
+            var legacyParts = window.DayCompletionReport().Split('|');
+            check("老数据没有定格值：退回实时算，而不是不显示",
+                legacyParts.Length > 1 && legacyParts[1] == "54%" && legacyParts[0] == "Visible",
+                legacyParts.Length > 1 ? $"{legacyParts[0]} / {legacyParts[1]}" : "报告格式不对");
+
+            // ---- 回看历史时把一条改回"没做完" → 要不要同步到今天 ----
+            // 自动顺延只在启动 / 跨零点跑，这种"第二天才发现昨天其实没干完"的更正赶不上，
+            // 必须当场补一条。判定错了的表现是"改了但今天什么都没有"或者反过来
+            // "回看历史把今天已经做完的事又退回去了" —— 两种都不报错。
+            // 这里刻意只验判定（_probeMode 下不会真去写）：探针手上是假数据，
+            // 背后是用户的真实记录。
+            window.LoadEntriesForProbe(sample, yesterday, null);
+            var unfinished = new NoteEntry { Text = "昨天没干完", Category = NoteCategories.Work, Progress = 40 };
+            check("看着昨天、把一条拖成未完成 → 会同步到今天",
+                window.TrySyncUnfinishedPastEntryToToday(unfinished),
+                "判定为不同步");
+
+            check("回看历史但这条已经完成 → 不同步",
+                !window.TrySyncUnfinishedPastEntryToToday(
+                    new NoteEntry { Text = "昨天干完了", Category = NoteCategories.Work, Done = true }),
+                "判定为同步");
+
+            check("回看历史但这条早就顺延过了 → 不重复搬",
+                !window.TrySyncUnfinishedPastEntryToToday(new NoteEntry
+                {
+                    Text = "早就搬过了", Category = NoteCategories.Work, Progress = 40,
+                    CarriedToDate = DateTime.Today.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                }),
+                "判定为同步");
+
+            // 看着今天的时候不叫"同步到今天" —— 今天这条本来就在今天
+            window.LoadEntriesForProbe(sample, DateTime.Today, null);
+            check("看着今天时不会自己再往今天搬一条",
+                !window.TrySyncUnfinishedPastEntryToToday(
+                    new NoteEntry { Text = "今天的活", Category = NoteCategories.Work, Progress = 40 }),
+                "判定为同步");
+
+            // ---- 一条记录都没有：整行收起来 ----
+            window.LoadEntriesForProbe(Array.Empty<NoteEntry>(), DateTime.Today);
+            var emptyParts = window.DayCompletionReport().Split('|');
+            check("一条记录都没有时整行收起来（而不是显示个 0%）",
+                emptyParts.Length > 0 && emptyParts[0] == "Collapsed",
+                emptyParts.Length > 0 ? emptyParts[0] : "报告格式不对");
+        }
+        catch (Exception ex)
+        {
+            check("当天完成度探针没有抛异常", false, ex.Message);
+        }
+        finally
+        {
+            try { window?.Close(); }
+            catch { /* 关不掉不影响自检结论 */ }
+        }
+    }
+
+    /// <summary>
     /// 「改一条已经写下的记录」这条链路。
     ///
     /// 分两半验，因为它们的失效方式完全不同：
@@ -3796,6 +4004,132 @@ public static class DiagnosticsService
         {
             try { dialog?.CloseForProbe(); }
             catch { /* 关不掉不影响自检结论 */ }
+        }
+    }
+
+    /// <summary>
+    /// 编辑一条记录之后，改动有没有顺着顺延链传到别的日期去。
+    ///
+    /// 算法本身（`CarryOverService.SyncContent`）在自测里逐条验过，这里只认两件事：
+    ///   ① 界面保存之后真的调了它（接线断掉时，功能整个等于不存在，而界面上一切正常）；
+    ///   ② 状态栏有没有把"动过哪几天"说出来 —— 同步改的是别的日期的记录，
+    ///      用户眼前这一天看着一点变化都没有，这句话是他唯一能知道的途径。
+    ///
+    /// ⚠️ 探针**不落盘**（`ApplyEntryEdit(..., persist: false)`）：自检也会拿真实数据目录跑一遍，
+    /// 那时往索引里写一笔假数据就是在动用户的记录。造的那两天测完原样还回去。
+    /// </summary>
+    private static void ProbeEditSyncToChain(CheckFn check)
+    {
+        var store = App.Store;
+        var backup = store.Book.Days.ToList();
+
+        MainWindow? window = null;
+        EditEntryWindow? dialog = null;
+
+        try
+        {
+            // 昨天一条没做完的活 → 今天自动顺延出一条副本，这就是一条两天的链
+            store.Book.Days.Clear();
+
+            var origin = new NoteEntry
+            {
+                Text = "链上的活",
+                Category = NoteCategories.Work,
+                Tag = "甲",
+                Progress = 20,
+            };
+            store.Book.GetOrCreateDay(DateTime.Today.AddDays(-1)).Entries.Add(origin);
+            CarryOverService.RunOnBook(store.Book, DateTime.Today);
+
+            var today = store.Book.FindDay(DateTime.Today);
+            var tip = today?.Entries.FirstOrDefault(e => e.CarriedFromId == origin.Id);
+
+            check("昨天没做完的那条，今天真的有一份顺延过来的副本",
+                tip != null, tip == null ? "今天没有副本，后面的检查都没意义" : $"副本正文=「{tip.Text}」");
+
+            if (tip == null) return;
+
+            tip.Progress = 70;   // 今天推进到 70%：等会儿要验它没被昨天那份顶回去
+
+            window = new MainWindow
+            {
+                WindowStartupLocation = WindowStartupLocation.Manual,
+                ShowInTaskbar = false,
+                Left = -32000,
+                Top = -32000,
+            };
+            window.Show();
+
+            // 走用户的真实走法：打开编辑窗、改内容、点保存
+            dialog = new EditEntryWindow(origin, DateTime.Today.AddDays(-1))
+            {
+                WindowStartupLocation = WindowStartupLocation.Manual,
+                ShowInTaskbar = false,
+                ShowActivated = false,
+                Left = -32000,
+                Top = -32000,
+            };
+            dialog.Show();
+            dialog.UpdateLayout();
+
+            dialog.BodyBoxForProbe.Text = "链上的活（改过）";
+            dialog.ClickCategoryForProbe(NoteCategories.Report);
+            dialog.SaveForProbe();
+
+            check("编辑窗把改动写回了那条记录（没有东西可同步就白测了）",
+                origin.Text == "链上的活（改过）" && origin.Category == NoteCategories.Report,
+                $"正文=「{origin.Text}」分类=「{origin.Category}」");
+
+            dialog.CloseForProbe();
+            dialog = null;
+
+            // ---- 接线：保存完之后走的正是界面那条路 ----
+            window.ApplyEntryEdit(origin, persist: false);
+
+            check("改昨天那条：今天顺延过来的副本跟着改了正文",
+                tip.Text == "链上的活（改过）",
+                $"今天的正文=「{tip.Text}」");
+
+            check("分类和标签也一起同步过去",
+                tip.Category == NoteCategories.Report && tip.Tag == "甲",
+                $"分类=「{tip.Category}」标签=「{tip.Tag}」");
+
+            // ⚠️ 这一条是整节的核心。进度跟着走的话，今天干到 70% 会被昨天那份的 20% 顶回去 ——
+            // 界面上只是"进度条怎么退回去了"，不报错、也没有任何日志。
+            check("今天那份的进度没被昨天那份顶回去（70 还在）",
+                tip.Progress == 70,
+                $"今天的进度={tip.Progress}，昨天的是 {origin.Progress}");
+
+            check("昨天的源条目自己没被改坏（Id、顺延标记都在）",
+                !string.IsNullOrEmpty(origin.Id)
+                && origin.CarriedToDate == DateTime.Today.ToString("yyyy-MM-dd"),
+                $"CarriedToDate={origin.CarriedToDate ?? "(空)"}");
+
+            check("状态栏说清楚了动过哪几天（同步发生在别的日期上，界面上看不出痕迹）",
+                window.StatusLine.Contains("同步到") && window.StatusLine.Contains($"{DateTime.Today.Month}月"),
+                $"状态栏=「{window.StatusLine}」");
+
+            // ---- 没顺延过的记录：编辑它不该冒出"同步"两个字 ----
+            var lonely = new NoteEntry { Text = "孤零零", Category = NoteCategories.Work };
+            store.Book.GetOrCreateDay(DateTime.Today.AddDays(-5)).Entries.Add(lonely);
+            window.ApplyEntryEdit(lonely, persist: false);
+
+            check("没顺延过的记录：编辑它时不提同步（状态栏不该多出一句）",
+                !window.StatusLine.Contains("同步"),
+                $"状态栏=「{window.StatusLine}」");
+        }
+        catch (Exception ex)
+        {
+            check("编辑同步探针没有抛异常", false, ex.Message);
+        }
+        finally
+        {
+            try { dialog?.CloseForProbe(); } catch { /* 关不掉不影响自检结论 */ }
+            try { window?.Close(); } catch { /* 同上 */ }
+
+            // 造的数据原样还回去 —— 这节碰过 Book，后面几节还在用它
+            store.Book.Days.Clear();
+            store.Book.Days.AddRange(backup);
         }
     }
 
@@ -3982,6 +4316,67 @@ public static class DiagnosticsService
 
             panel.FilterText = "";
             check("清空搜索后恢复全部行", panel.RowCount == 2, $"{panel.RowCount} 行");
+
+            // ---- 未收尾 / 已顺延（用户 2026-10-15：「往期记录里的未收尾改成已顺延，
+            //      当天存在的未收尾的除外」）----
+            //
+            // 往期那些天里没收尾的东西，绝大多数早就顺延到后面去了，
+            // 再拿橙色说「未收尾」等于天天催一件早就不欠在这一天的事。
+            // 今天这一天不一样：它的未完成还没滚走（顺延只从过去往今天搬），照旧说未收尾。
+            //
+            // 断言必须落在**真建出来的那几段文字**上（RowBadges 读的是控件的 Text），
+            // 而不是拿摘要再算一遍 —— 算一遍的话，BuildRow 里"忘了加控件"这种错就测不出来。
+            var twoDaysAgo = today.AddDays(-2).ToString("yyyy-MM-dd");
+            var todayKey = today.ToString("yyyy-MM-dd");
+            var fourDaysAgo = today.AddDays(-4).ToString("yyyy-MM-dd");
+
+            panel.Show(today, new List<DayDigest>
+            {
+                // 昨天：1 条没收尾、已经滚到今天了（用户数据里就是这个形状）
+                new() { Date = yesterday, Entries = 1, Open = 1, Carried = 1 },
+                // 前天：1 条滚走了 + 1 条还挂着
+                new() { Date = twoDaysAgo, Entries = 2, Open = 2, Carried = 1 },
+                // 今天：1 条没完成，还没滚走
+                new() { Date = todayKey, Entries = 1, Open = 1 },
+                // 再往前：那天的事全做完了（勾上就是 100%）
+                new() { Date = fourDaysAgo, Entries = 1, Files = 2 },
+            });
+
+            var badges = panel.RowBadges;
+            check("往期清单给每个有记录的日子一行（四行）",
+                panel.RowCount == 4, $"{panel.RowCount} 行：{string.Join("、", panel.RowDates)}");
+
+            check("过去某天没收尾的已经顺延走 → 说「已顺延」",
+                badges.Count == 4 && badges[0] == "· 1 已顺延",
+                badges.Count == 4 ? $"昨天那行「{badges[0]}」" : $"只拿到 {badges.Count} 行");
+
+            check("一天里既有顺延走的、又有还挂着的：两段都说出来",
+                badges.Count == 4 && badges[1] == "· 1 未收尾 · 1 已顺延",
+                badges.Count == 4 ? $"前天那行「{badges[1]}」" : $"只拿到 {badges.Count} 行");
+
+            check("今天这一天的未完成照旧说「未收尾」（当天存在的未收尾除外）",
+                badges.Count == 4 && badges[2] == "· 1 未收尾",
+                badges.Count == 4 ? $"今天那行「{badges[2]}」" : $"只拿到 {badges.Count} 行");
+
+            check("全做完了的日子一个标记段都不挂（既不是未收尾也不是已顺延）",
+                badges.Count == 4 && badges[3].Length == 0,
+                badges.Count == 4 ? $"「{badges[3]}」" : $"只拿到 {badges.Count} 行");
+
+            // 颜色：橙 = 待办（这是"我还能回去补一下"的入口），灰 = 只是历史交代。
+            // 「已顺延」要是还挂着橙色，用户会一直以为这一天欠着活。
+            var brushKeys = panel.RowBadgeBrushes;
+            check("「已顺延」走灰色（和事项行尾的「已顺延至 X」同一个 TextMutedBrush）",
+                brushKeys.Count == 4 && brushKeys[0] == "TextMutedBrush",
+                brushKeys.Count == 4 ? $"昨天那行「{brushKeys[0]}」" : $"只拿到 {brushKeys.Count} 行");
+
+            check("「未收尾」仍然是橙色（今天那条才是真欠着的）",
+                brushKeys.Count == 4 && brushKeys[2] == "WarningBrush",
+                brushKeys.Count == 4 ? $"今天那行「{brushKeys[2]}」" : $"只拿到 {brushKeys.Count} 行");
+
+            // 混合的那天：两段的颜色得各是各的，一锅端就不对了。
+            check("混合的那天两段颜色分开（顺延灰、未收尾橙）",
+                brushKeys.Count == 4 && brushKeys[1] == "WarningBrush TextMutedBrush",
+                brushKeys.Count == 4 ? $"前天那行「{brushKeys[1]}」" : $"只拿到 {brushKeys.Count} 行");
         }
         catch (Exception ex)
         {
@@ -4024,6 +4419,19 @@ public static class DiagnosticsService
             check("往期清单的行数等于有内容的天数",
                 window.RecentDayRowCount == expected.Count,
                 $"界面 {window.RecentDayRowCount} 行，独立算 {expected.Count} 天");
+
+            // 真实数据上的不变量：**今天那一行**永远不出现「已顺延」。
+            // 顺延只从过去往今天搬，今天的还没滚走；这条一旦破了，说明拆分规则被改坏
+            // （比如退回"只要没收尾就都算已顺延"那种按日期拍的写法）。
+            // 只查这一条：过去某天恰好有一条没打过顺延标记的是合法的（回看旧日期补记的一条）。
+            var todayKey = DateTime.Today.ToString("yyyy-MM-dd");
+            var todayRow = window.RecentDays.RowDates.ToList().IndexOf(todayKey);
+            if (todayRow >= 0)
+            {
+                check("真实数据里今天那一行不会被说成「已顺延」",
+                    !window.RecentDays.RowBadges[todayRow].Contains("已顺延", StringComparison.Ordinal),
+                    $"今天那行：{window.RecentDays.RowBadges[todayRow]}");
+            }
 
             if (expected.Count > 0)
             {

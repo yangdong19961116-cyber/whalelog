@@ -18,7 +18,19 @@ public partial class RecentDaysPanel : UserControl
     {
         public string Date = "";
         public Button Button = null!;
+
+        /// <summary>这一行右侧那几段标记（未收尾 / 已顺延），按实际建出来的控件记着。诊断自检用。</summary>
+        public List<Badge> Badges = new();
     }
+
+    /// <summary>
+    /// 行右侧的一小段标记文字 + 它用的资源键。
+    ///
+    /// 记的是**资源键**而不是解析出来的画刷：面板在自检里是**脱离可视树**建的
+    /// （`new RecentDaysPanel()` 之后不挂到窗口上），`SetResourceReference` 那一刻
+    /// 上游还没有资源字典，`Foreground` 读出来是 null —— 拿它断言颜色只会得到"?"。
+    /// </summary>
+    private readonly record struct Badge(string Text, string BrushKey);
 
     private readonly List<Row> _rows = new();
 
@@ -49,6 +61,17 @@ public partial class RecentDaysPanel : UserControl
 
     /// <summary>当前清单里每一行右侧的条数文案，按显示顺序。</summary>
     public IReadOnlyList<string> RowCounts => _rows.Select(r => DayIndex.CountsText(DigestOf(r.Date))).ToList();
+
+    /// <summary>
+    /// 每一行右侧的标记文案（「· 1 已顺延」/「· 1 未收尾」），按显示顺序；一行里多段用空格连。
+    /// 读的是**真建出来的那段文字**，不是拿摘要再算一遍。诊断自检用。
+    /// </summary>
+    public IReadOnlyList<string> RowBadges
+        => _rows.Select(r => string.Join(" ", r.Badges.Select(b => b.Text))).ToList();
+
+    /// <summary>同上，但给的是每段文字用的资源键（例如 WarningBrush / TextMutedBrush）。诊断自检用。</summary>
+    public IReadOnlyList<string> RowBadgeBrushes
+        => _rows.Select(r => string.Join(" ", r.Badges.Select(b => b.BrushKey))).ToList();
 
     /// <summary>键盘光标停在第几行（-1 表示清单是空的）。</summary>
     public int CursorIndex => _cursor;
@@ -188,8 +211,9 @@ public partial class RecentDaysPanel : UserControl
                 RowsHost.Children.Add(header);
             }
 
-            var button = BuildRow(day, keyword);
-            _rows.Add(new Row { Date = day.Date, Button = button });
+            var badges = new List<Badge>();
+            var button = BuildRow(day, keyword, badges);
+            _rows.Add(new Row { Date = day.Date, Button = button, Badges = badges });
             RowsHost.Children.Add(button);
         }
 
@@ -209,7 +233,7 @@ public partial class RecentDaysPanel : UserControl
             : (keyword.Length == 0 ? DayIndex.SummaryText(shown) : $"命中 {shown.Count} 天");
     }
 
-    private Button BuildRow(DayDigest day, string keyword)
+    private Button BuildRow(DayDigest day, string keyword, List<Badge> badges)
     {
         var dateLabel = new TextBlock
         {
@@ -253,18 +277,17 @@ public partial class RecentDaysPanel : UserControl
         };
         right.Children.Add(counts);
 
-        // 没收尾的要显眼：这是"我还能回去补一下"的入口，不是纯统计
-        if (day.HasOpen)
-        {
-            var open = new TextBlock
-            {
-                Text = $"· {day.Open} 未收尾",
-                FontSize = 11.5,
-                Margin = new Thickness(6, 0, 0, 0),
-            };
-            open.SetResourceReference(TextBlock.ForegroundProperty, "WarningBrush");
-            right.Children.Add(open);
-        }
+        // 没收尾的条目分两拨说，颜色也不同：
+        //   · 还挂着的 → 橙色：这是"我还能回去补一下"的入口，不是纯统计；
+        //   · 已经顺延走的 → 灰色：它已经滚到后面那天了，回看这一天只需要知道"它去哪了"，
+        //     再拿橙色催没有意义（和事项行尾那句「已顺延至 X」同一个颜色，同一件事同一个观感）。
+        var (carried, pending) = DayIndex.OpenSplit(day, _today);
+
+        var pendingText = DayIndex.OpenLabel(pending, carried: false);
+        if (pendingText.Length > 0) AddBadge(right, badges, pendingText, "WarningBrush");
+
+        var carriedText = DayIndex.OpenLabel(carried, carried: true);
+        if (carriedText.Length > 0) AddBadge(right, badges, carriedText, "TextMutedBrush");
 
         var line = new Grid();
         line.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -301,6 +324,25 @@ public partial class RecentDaysPanel : UserControl
         button.Click += (_, _) => PickDate(captured);
 
         return button;
+    }
+
+    /// <summary>
+    /// 往右侧那串里加一小段标记文字，并记下它是哪一段 ——
+    /// 自检读的是这一段（文字 + 资源键），所以"说成已顺延了没有""有没有还在拿橙色催"
+    /// 这两件事都验得了。共用一份，不在探针里另算一遍。
+    /// </summary>
+    private static void AddBadge(StackPanel host, List<Badge> badges, string text, string brushKey)
+    {
+        var block = new TextBlock
+        {
+            Text = text,
+            FontSize = 11.5,
+            Margin = new Thickness(6, 0, 0, 0),
+        };
+        block.SetResourceReference(TextBlock.ForegroundProperty, brushKey);
+
+        host.Children.Add(block);
+        badges.Add(new Badge(text, brushKey));
     }
 
     private void ApplyCursor()

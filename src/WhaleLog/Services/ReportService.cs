@@ -45,6 +45,19 @@ public static class ReportService
         sb.AppendLine("## 概览");
         sb.AppendLine();
         sb.AppendLine($"- 记录 **{entries.Count}** 条，完成 **{done.Count}** 条，进行中 **{open.Count}** 条");
+        // 当天完成度：所有事项进度的平均（勾选记 100%）。
+        // 定格过的那天用定格值 —— 日报是"回看某一天"的文档，这个数该和那天收工时一致，
+        // 而不是按今天的条目重算一遍（界面上列表底部那一行是同一个数）。
+        var completion = day.DisplayCompletion(DateTime.Today);
+        if (completion.HasValue)
+        {
+            // 结过账的写清是什么时候定的格；补算出来的那种日子直说"没有记下收工时刻"，
+            // 不编一个时间出来（界面上那一行的提示里是同一套说法）。
+            var tail = !day.IsCompletionSettled
+                ? ""
+                : day.HasFrozenTime ? $"，{day.CompletionFrozenText} 收工定格" : "，没有记下收工时刻";
+            sb.AppendLine($"- 当天完成度 **{completion}%**（{entries.Count} 条事项进度的平均{tail}）");
+        }
         // 进行中的那几条平均做到哪儿了 —— 只看条数看不出"快收尾了"还是"刚开头"
         if (open.Count > 0) sb.AppendLine($"- 进行中平均进度 **{day.OpenProgress}%**");
         if (day.CarriedCount > 0) sb.AppendLine($"- 其中 **{day.CarriedCount}** 条由以前顺延而来");
@@ -147,6 +160,14 @@ public static class ReportService
         sb.AppendLine();
         sb.AppendLine($"- 有记录的天数 **{dayNotes.Count(x => x.Note is { Entries.Count: > 0 })}** / {days.Count}");
         sb.AppendLine($"- 累计记录 **{allEntries.Count}** 条，完成 **{allEntries.Count(e => e.Done)}** 条");
+        // 这一周每天的完成度（过去的日子是收工定格值）取平均 —— "这周整体干得怎么样"一个数看完
+        var dayCompletions = dayNotes
+            .Select(x => x.Note?.DisplayCompletion(DateTime.Today))
+            .Where(c => c.HasValue)
+            .Select(c => (double)c!.Value)
+            .ToList();
+        if (dayCompletions.Count > 0)
+            sb.AppendLine($"- 平均每日完成度 **{(int)Math.Round(dayCompletions.Average())}%**（{dayCompletions.Count} 天有记录）");
         var weekOpen = allEntries.Where(e => !e.Done).ToList();
         if (weekOpen.Count > 0)
             sb.AppendLine($"- 未完成 **{weekOpen.Count}** 条，平均进度 **{(int)Math.Round(weekOpen.Average(e => e.Progress))}%**");
@@ -170,8 +191,11 @@ public static class ReportService
         foreach (var (date, note) in dayNotes)
         {
             var dayFiles = allFiles.Count(f => f.AddedDate == date.ToString("yyyy-MM-dd"));
+            var dayCompletion = note?.DisplayCompletion(DateTime.Today);
             var summary = note?.Entries.Count > 0
-                ? $"记录 {note.Entries.Count} 条 / 完成 {note.DoneCount} 条" + (dayFiles > 0 ? $" / 文件 {dayFiles} 个" : "")
+                ? $"记录 {note.Entries.Count} 条 / 完成 {note.DoneCount} 条"
+                  + (dayCompletion.HasValue ? $" / 完成度 {dayCompletion}%" : "")
+                  + (dayFiles > 0 ? $" / 文件 {dayFiles} 个" : "")
                 : "（无记录）";
 
             sb.AppendLine($"### {date:MM-dd} {WeekdayNames[(int)date.DayOfWeek]}  {summary}");
