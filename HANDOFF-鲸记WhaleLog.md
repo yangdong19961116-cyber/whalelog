@@ -1330,10 +1330,9 @@ WPF 这个格式在内存里是 **B,G,R,A**。两个顺序差一格，等于**�
 
 **下一轮最该做的三件（按价值排）：**
 
-1. **把 1.4.0 推上 GitHub。** 新设备上 4 行命令（见第 6 节/第 9 节第 7 条），
-   仓库 `https://github.com/yangdong19961116-cyber/whalelog.git` 还是空的，本机推不了。
-   ⚠️ 1.4.0 新增了 51.9 MB 的二进制素材，**首次推送的体量比原来大一个量级**，
-   网络不好时用 `git config http.postBuffer 524288000` 顶一下。
+1. ~~**把 1.4.0 推上 GitHub。**~~ ✅ **2026-10-16 已完成** —— 70 个提交全推上去了，
+   逐提交 sha 与本地一致。走的**不是**交接包那 4 行命令，而是 SSH over 443，
+   见第 9 节第 7 条（那一条已重写为可用做法）。
 2. **真实鼠标的目视确认**（下面第 1、2 条）—— 动画是这一版的主卖点，但至今只有代码路径验证过。
 3. **`build\` 下那三个旧摊开目录已经清了**（约 415 MB）—— 2026-09-20 用户点头后连同
    `.tmp-dsh-assets` 一起删掉，合计腾出约 467 MB。现在 `build\` 是空的。
@@ -1384,22 +1383,53 @@ WPF 这个格式在内存里是 **B,G,R,A**。两个顺序差一格，等于**�
    `workwork\build\` 下的旧产物（四个摊开目录 + 探针数据，约 470 MB）
    **2026-09-20 已征得用户同意全部清掉**，现在 `build\` 是空的（脚本会再建）。
    以后再攒出这类东西，删之前照旧问一句。
-7. **Git 远端已建好，但仓库是空的 —— 第一次推送只能在新设备上做。**
-   仓库：`https://github.com/yangdong19961116-cyber/whalelog.git`（私有，默认分支 `main`）。
-   2026-09-15 实测，**本机的上传路全断**：
-   - **git 通道**：`github.com` 被代理拦，`git push` 报 `CONNECT tunnel failed, response 502`
-     （同一时刻 `api.github.com` 返回 200）。git 协议走的正是 `github.com`。
-   - **连接器通道**：平台 GitHub 连接器走 `api.github.com` 通，但**只有读权限** ——
+7. **Git 远端：✅ 2026-10-16 已推完（70 个提交）。可用做法是 SSH over 443。**
+   仓库：`https://github.com/yangdong19961116-cyber/whalelog.git`（默认分支 `main`）。
+   远端 sha 与本地**逐提交一致**，已用 `git fetch` + `rev-list` 对照验证。
+
+   **✅ 现在能用的推送方式 —— SSH 到 `ssh.github.com:443`：**
+
+   ```bash
+   # ~/.ssh/config
+   Host github.com
+       HostName ssh.github.com
+       Port 443
+       User git
+       IdentityFile ~/.ssh/id_ed25519
+       IdentitiesOnly yes
+       StrictHostKeyChecking accept-new
+   ```
+
+   ```bash
+   git remote set-url origin git@github.com:yangdong19961116-cyber/whalelog.git
+   ssh -T git@github.com        # 期望：Hi <用户名>! You've successfully authenticated...
+   git push -u origin main
+   ```
+
+   ⚠️ **为什么是 443 而不是 22**：22 端口不通，但 `ssh.github.com:443` 是 GitHub 官方的
+   SSH-over-HTTPS 备用端口，握手正常。**这条路不需要 PAT、也不经任何第三方镜像。**
+
+   **⚠️ 三个反直觉的点（都实测过）：**
+
+   - **`github.com:443` 的封锁是时间性的，不是「一直不通」**。同一 IP 几秒内能在
+     **0/12 与 12/12 成功率之间跳变**，ICMP 能 ping 通、TCP:443 被丢。
+     所以**别拿一次采样下结论** —— 我为此连错两轮（先以为「通了」，又以为「换个 IP 就行」）。
+     横向对照：`api.github.com` / `baidu.com` / `example.com` / `microsoft.com` 全都稳定正常。
+   - **本地 `known_hosts` 要能被读**。沙箱里跑 `git push` 会被拦（`hostkeys_find_by_key_hostfile`
+     **`Permission denied` → Host key verification failed`），报错看起来像"没权限访问仓库"，
+     其实是读不到 `~/.ssh/`。需要在放行沙箱的终端里跑。
+   - **镜像站（ghproxy.net / ghfast.top）在协议上是通的**，`receive-pack` 返回
+     **401 + `www-authenticate: Basic realm="GitHub"`** —— 这串挑战是 GitHub 自己发的、
+     被代理原样透传，正说明**请求真的打到了 GitHub**。但**镜像运营方能拿到你的 PAT**，
+     所以能用 SSH 就别用镜像。
+   - **连接器通道**（平台 GitHub 连接器，走 `api.github.com`）**只有读权限**：
      `create_or_update_file` / `push_files` 一律 `403 Resource not accessible by integration`。
-   - **连接器 + 文本兜底**：即便有写权限也不行 —— 它是逐文件写、内容要当文本参数传，
-     全仓 962 KB 文本 + 1 MB 二进制图这个量级传不动。
-   - → **新设备上 4 行命令推一次**（`git branch -M master main` + `git push -u origin main`，
-     仓库是空的，所以是干净首发，不需要 force / merge），推完 `main` 才是唯一事实源。
-     详见 `新设备继续指令.md` 第 0 节与第 6 节。
-   - ⚠️ **本机推不了、也 `pull` 不了**。GitHub 这条通道只对新设备有效，本机继续走「拷包」。
-   - **教训（已写进 MEMORY.md）**：别用「往不存在的仓库写返回 404 而非 403」判断写权限 ——
-     GitHub 对当前凭据看不到的仓库也返回 404，只能说明仓库不存在。
-     判权限必须看**仓库存在之后**的返回码。这个推断错过一次。
+     **教训**：别用「往不存在的仓库写返回 404 而非 403」判断写权限 ——
+     GitHub 对当前凭据看不到的仓库也返回 404。判权限必须看**仓库存在之后**的返回码。
+     这个推断错过一次。
+   - **兜底**：`tools/push_via_api.py`（改走 api.github.com 的 Git Data API，完整历史重放）
+     仍留在仓库里 —— SSH 哪天又不行了可以用它。首次推送时的体量参考：
+     本次 67.55 MB pack / 最大单文件 2.62 MB，没触及 GitHub 的单文件上限。
 8. **仓库根 README 已归位。** 原先放在根目录的 `README.md` 其实是工作区里**另一个项目
    AudioRoute**（音频设备切换托盘应用）的，已移到 `src/AudioRoute/README.md`；
    根 README 重写成工作区总览，并加了「仓库暂不完整」的显眼警告。

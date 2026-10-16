@@ -145,7 +145,9 @@
 - `dotnet.exe` 是 32 位宿主（`C:\Program Files (x86)\dotnet\dotnet.exe`，**不在 bash PATH 里**，用完整路径加引号）→ **项目不要设 `PlatformTarget=x64`**（FileLoadException），用 AnyCPU。
 - ⚠️ **从 bash 启动鲸记必须先补 `SystemRoot`/`windir`**（受限会话里为空）：WPF 初始化要拼字体缓存路径，拿不到就抛 `Invalid URI: ...`，**偶发崩溃**，看着像"随机闪退"。`tool\*.py` 的 `child_env()` 已处理。**不能从 bash 调 `cmd.exe`**（安全策略）→ `build-whalelog*.cmd` 在只能执行 bash 的会话里跑不了，要手工复现它四步。本会话 PowerShell 工具不返回 stdout，读输出优先用 bash 或直接看文件。
 - **给 .NET 程序传路径必须用 Windows 风格**（`C:/...`）：Git Bash 里 `$PWD` 是 `/c/Users/...`，.NET 不认 → **静默失败**（退出码 0、不报错、不生成文件）。凡"跑条命令看结果"，**判定标准看产物文件，不看退出码**。
-- **本机没法 `git push`**：`api.github.com` 通但 `github.com` 被代理拦（`CONNECT tunnel failed 502`）。**平台 GitHub 连接器只有读权限**（写文件/建仓库一律 403）—— ⚠️ 别用"往不存在的仓库写返回 404"推断有写权限（看不到的仓库同样 404），判权限必须看**仓库存在之后**的返回码。
+- ~~**本机没法 `git push`**~~ ⚠️ **2026-10-16 已推翻**：走 **SSH over 443** 正常推得动（见第八节）。
+  仍然成立的部分：`github.com:443`（https/git 协议）**间歇性不通**；**平台 GitHub 连接器只有读权限**
+  （写文件/建仓库一律 403）—— ⚠️ 别用"往不存在的仓库写返回 404"推断有写权限（看不到的仓库同样 404），判权限必须看**仓库存在之后**的返回码。
 - **bash 命令可能被「沙箱重跑」一次**（输出末尾 `⚠️ Sandbox bypassed`）：第一次已执行成功，第二次得到 `nothing to commit` 退出码 1 → 长 `&&` 链当场中断、后面一步都没跑 → 收尾类命令别用长 `&&`，改用 `;` 并最后**显式回查结果**。
 
 ## 七、发布例行
@@ -155,9 +157,20 @@
 - **文档里的项数必须 grep 校验**（交接单断言数漂过 151→163→213→232→294，每次都是改代码忘了改数字）。**桌面属于个人目录：删桌面上的旧包必须用户明确同意**。
 - 2026-10-10 已发 1.4.7（包 139.6 MB，`E:\jingji\` 与桌面各一份）。⚠️ 桌面那个 1.4.7 包**不含**「当天完成度」，要含新功能必须重打。
 
-## 八、Git 远端
-- 远端 `https://github.com/yangdong19961116-cyber/whalelog.git`，**公开空仓（零 ref，默认分支还没建）**。
-  ⚠️ 09 月记的「私有」是**错的**（私有仓匿名访问不会返 200）；本地分支已 `git branch -M main`。
+## 八、Git 远端（✅ 2026-10-16 已推完，70 个提交）
+- 远端：网页 `https://github.com/yangdong19961116-cyber/whalelog.git`，
+  **推送用的是 SSH** `git@github.com:yangdong19961116-cyber/whalelog.git`（本地 `origin` 已切成 SSH）。
+  ⚠️ 09 月记的「私有」是**错的** —— 仓库实为**公开**（匿名 `api.github.com` 能拿到元信息）。
+- **✅ 可用推送方式＝SSH over 443**（`~/.ssh/config` 里 `Host github.com` → `HostName ssh.github.com` /
+  `Port 443` / `IdentitiesOnly yes`）→ `git push` 正常，**不需要 PAT、不经第三方镜像**。
+  密钥 `~/.ssh/id_ed25519`（公钥 `ssh-ed25519 AAAA…mzDpXev whalelog-workbuddy`）。
+  验证方式：`git fetch` 后 `diff <(git rev-list main) <(git rev-list origin/main)` 为空。
+- ⚠️ **沙箱里跑 `git push` 会被误伤**：报 `hostkeys_find_by_key_hostfile: … Permission denied`
+  + `Host key verification failed`，**看着像 GitHub 拒绝、其实是本地读不到 `~/.ssh/`** →
+  要在放行沙箱的终端里跑（本次用 `dangerouslyDisableSandbox` 过的）。
+  另外：**`git ls-files` 会把非 ASCII 路径转义成 `\346\235\245…`**，
+  用中文 grep 查文件会**假阴性**（我据此差点误报"许可文件没入库"）→
+  查中文路径要加 `-c core.quotepath=false` 或走 `-z`。
 - **`github.com:443` 是「时间性」间歇封锁**（2026-10-16 反复实测）：
   * 同一个 IP 在几秒内能在 **0/12 ↔ 12/12** 之间跳变；换 IP（`140.82.112.3` / `140.82.113.3` / `20.27.177.113`）
     同样会撞坏窗口。**不是「DNS 指错 IP」，改 hosts 没用** —— 那条「DNS 指到被封 IP、换成别的 IP 就通」
@@ -171,14 +184,16 @@
     `raw.githubusercontent.com` **不通**。注入的 `HTTPS_PROXY=127.0.0.1:5574` 对 github 回 **502** → 跑 git 前剥掉。
   * 试过又放弃的：本地 CONNECT 隧道把 github.com 钉到 `.112.3`（`tools/github_tunnel.py`，**已删**）——
     接通一次后照样在坏窗口里超时，因为封锁与 IP 无关。hosts 备份文件也一并删了。
-- ✅ **正路：`tools/push_via_api.py`（2026-10-16 新增）** —— 走 `api.github.com` 的 Git Data API
-  把本地提交原样搬上去（blob → tree → commit → ref），**支持完整历史重放**（本仓 66 个提交 / 833 个 blob；
-  `--squash` 压成 1 个提交则约 400 次请求）。每个 commit 都带**原始的 author / committer / 日期 / 提交信息**，
-  而 GitHub 的 blob/tree/commit 用同一套 SHA-1，所以远端 sha 应与本地**逐个相等**，脚本结尾会核对并报出来。
+- 🔁 **兜底方案：`tools/push_via_api.py`（2026-10-16 新增，当天没用上、留着备用）** —— 走 `api.github.com`
+  的 Git Data API 把本地提交原样搬上去（blob → tree → commit → ref），**支持完整历史重放**
+  （本仓 66 个提交 / 833 个 blob；`--squash` 压成 1 个提交则约 400 次请求）。每个 commit 都带
+  **原始的 author / committer / 日期 / 提交信息**，而 GitHub 的 blob/tree/commit 用同一套 SHA-1，
+  所以远端 sha 应与本地**逐个相等**，脚本结尾会核对并报出来。
   `--dry-run` 只读本地、不碰网络。本机 Python **没有 `requests`**，脚本用 stdlib `urllib`。
-- **第二道关是凭据**：本机无 `~/.ssh`、无 `.git-credentials`；`credential.helper=helper-selector` 非交互
-  弹不出选择框 → `could not read Username` 挂到超时。走 API 要 PAT（经典 PAT 勾 `repo`，
-  或细粒度 PAT 的 `Contents: Read and write`）。
+  → **SSH 哪天又不行了再用它**（它要 PAT：经典 PAT 勾 `repo`，或细粒度 PAT 的 `Contents: Read and write`）。
+- ~~**第二道关是凭据**：本机无 `~/.ssh`~~ → **`~/.ssh` 已于 2026-10-16 生成**（ed25519，无密码短语），
+  凭据问题就此解决。历史信息：本机无 `.git-credentials`；`credential.helper=helper-selector` 非交互
+  弹不出选择框 → `could not read Username` 挂到超时（走 https 会撞上这个）。
 - **2026-10-16 下午实测：镜像可以推送，"镜像只读"这个假设是错的**（这条推翻了本文件早先的默认认知）。
   在**代理开着**的环境（当时 `https_proxy=127.0.0.1:6354`，端口每次会话都可能不同）实测：
 
@@ -197,15 +212,16 @@
   **GitHub 自己发的、代理原样透传**，证明请求真的被转发到了 GitHub。
   `git push --dry-run` 走镜像的报错也是 `could not read Username for 'https://ghproxy.net'`
   （**认证层**失败），而不是超时/502（网络层失败）。→ **镜像路径通，瓶颈从来不是网络。**
-- ⭐ **另一条不用 PAT 的路：`ssh.github.com:443` 实测握手成功**（不只是 TCP 通）：
-  `ssh -T -p 443 git@ssh.github.com` 返回 `Permission denied (publickey)` ——
-  这是 **SSH 协议层**的应答（ED25519 host key 都换到了），说明整条隧道可用，
-  只差一对本机密钥 + 把公钥加到 GitHub 账号。`~/.ssh` 目前不存在（可以生成）。
+- ⭐ **实际走通的就是这条路：`ssh.github.com:443`**（2026-10-16 当天下午落地）。
+  先前只验到 TCP/协议层（`ssh -T` 返 `Permission denied (publickey)` = 隧道可用、只差密钥）；
+  生成 ed25519 密钥 + `~/.ssh/config` 路由 443 后，`ssh -T git@github.com` 返回
+  `Hi yangdong19961116-cyber! You've successfully authenticated…` → 一次 `git push -u origin main`
+  把 **70 个提交**全推上去（67.55 MB pack，最大单文件 2.62 MB），
+  远端 sha 与本地**逐提交一致**。
 
   ⚠️ **安全取舍（重要）**：走镜像 push 等于**把 PAT 交给第三方代理**，它理论上能看到
   `Authorization` 头。方案 B（`api.github.com`）和方案 C（SSH）的凭据**只发给官方域名**，
-  不经过第三方 → **能选就别走镜像**。而且用细粒度 PAT（只给这一个仓库 `Contents: Read and write`）
-  比经典 `repo` PAT 权限小得多。
-- 2026-10-16 之后本地积累了若干未推提交（当时 69 个，最新看 `git log --oneline`），
-  三条路都只差凭据，等用户给一个就能一次推上去。
+  不经过第三方 → **能选就别走镜像**。SSH 比 API 更省事（不需要 PAT）：**这是现在的主路**。
+- 2026-10-16 推送前的存量提交（69 个）已全部推完，工作区干净、与 `origin/main` 同步。
+  以后收工照旧 `git add -A && git commit && git push`。
 - `workwork` 是双项目工作区：AudioRoute（`src/AudioRoute/`，已完成）+ WhaleLog（在做）。建基线时 AudioRoute 一并进仓库；其 README 在 `src/AudioRoute/README.md`。

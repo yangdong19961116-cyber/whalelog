@@ -68,6 +68,8 @@
 升 `<Version>` → `--no-incremental` 重建 Release + apphost（**先备份同目录 `ffmpeg.exe`**，Clean 会删）
 → 打包到 `E:\jingji` + 桌面 → 核销（包内 dll md5 == bin 产物；解压跑 `--selfcheck --quiet`）
 → grep 校验 HANDOFF/README 所有数字 → 提交。
-- 远端 `https://github.com/yangdong19961116-cyber/whalelog.git`（公开空仓，默认分支未建）；
-  本地 `master`，推前 `git branch -M master main` 并**配 PAT**。`workwork` 双项目同仓。
+- 远端 `yangdong19961116-cyber/whalelog`（**公开**，默认分支 `main`）。
+  ✅ 2026-10-16 用 **SSH over 443** 把 70 个提交推完、远端 sha 与本地逐提交一致；
+  **不再需要 PAT**（`~/.ssh/config` 把 `github.com` 路由到 `ssh.github.com:443`，细节见 MEMORY-detail 第八节）。
+  兜底脚本 `tools/push_via_api.py` 留着备用。`workwork` 双项目同仓。
 - **桌面属个人目录：删旧包必须用户明确同意。**
