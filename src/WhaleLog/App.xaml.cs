@@ -94,6 +94,7 @@ public partial class App : Application
         bool oneShot = HasFlag("--selfcheck") || HasFlag("--create-shortcut")
                     || HasFlag("--shot") || HasFlag("--shot-notes") || HasFlag("--shot-settings")
                     || HasFlag("--shot-floating") || HasFlag("--shot-calendar")
+                    || HasFlag("--shot-anim-menu")
                     || HasFlag("--shot-recent") || HasFlag("--shot-file-calendar")
                     || HasFlag("--shot-edit")
                     || HasFlag("--export-assets");
@@ -239,6 +240,49 @@ public partial class App : Application
                 LogCrash(ex);
                 if (!HasFlag("--quiet"))
                     MessageBox.Show(ex.Message, "鲸记 · 月历截图失败",
+                        MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+
+            Shutdown();
+            return;
+        }
+
+        // 截图模式：把托盘菜单渲染成 PNG（一级页 + 「自选播放动画」二级页各一张）。
+        // 二级页是这里唯一"靠滚动和筛选撑住上百项"的界面 ——
+        // 分组标题挤不挤、动作名有没有被截断，断言一句都问不出来，只能看图。
+        if (HasFlag("--shot-anim-menu"))
+        {
+            var target = ArgValue("--shot-anim-menu")
+                         ?? Path.Combine(AppPaths.LogDir, "anim-menu.png");
+            try
+            {
+                // 挑一个**真有动画素材**的形象包来出图：用户可能正用着原版（没有 anim 目录），
+                // 那样二级页拍出来是空的 —— 一张什么都核销不了的图。
+                var lib = CharacterPacks.Available()
+                              .Select(p => AnimLibrary.Scan(p.Root))
+                              .FirstOrDefault(l => l.HasAny)
+                          ?? AnimLibrary.Scan();
+
+                var mainMenu = new TrayMenuWindow();
+                BuildMainMenu(mainMenu, 0, 0);
+                DiagnosticsService.WriteMenuShot(mainMenu, target);
+
+                var subMenu = new TrayMenuWindow();
+                BuildAnimationMenu(subMenu, 0, 0, lib);
+                var subTarget = Path.Combine(
+                    Path.GetDirectoryName(target) ?? ".",
+                    Path.GetFileNameWithoutExtension(target) + "-sub.png");
+                DiagnosticsService.WriteMenuShot(subMenu, subTarget);
+
+                if (!HasFlag("--quiet"))
+                    MessageBox.Show($"一级页：{target}\n二级页：{subTarget}", "鲸记 · 菜单截图",
+                        MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            catch (Exception ex)
+            {
+                LogCrash(ex);
+                if (!HasFlag("--quiet"))
+                    MessageBox.Show(ex.Message, "鲸记 · 菜单截图失败",
                         MessageBoxButton.OK, MessageBoxImage.Warning);
             }
 
@@ -728,30 +772,7 @@ public partial class App : Application
             _trayMenu?.Close();
             _trayMenu = new TrayMenuWindow();
 
-            var s = Settings.Settings;
-            var hotkey = string.IsNullOrWhiteSpace(s.QuickCaptureHotkey) ? "未设置" : s.QuickCaptureHotkey;
-
-            _trayMenu.AddItem($"快速记录（{hotkey}）", ShowQuickCapture);
-            _trayMenu.AddItem("打开主面板", ShowMainWindow);
-            _trayMenu.AddItem("生成今日日报", () => ShowDailyReport(DateTime.Today));
-            _trayMenu.AddItem("生成本周周报", () => ShowWeeklyReport(DateTime.Today));
-            _trayMenu.AddItem("桌面小鲸鱼", ToggleFloating, s.FloatingEnabled, isLast: true);
-            _trayMenu.AddItem("小鲸鱼动画", ToggleFloatingAnimations, s.FloatingAnimations);
-            _trayMenu.AddItem("今天别再提醒", () =>
-            {
-                Settings.Update(x2 => x2.ReminderEnabled = false);
-                _floatingWindow?.ShowBubble("已关闭今日提醒", "重新打开：托盘菜单 → 恢复提醒。");
-            });
-            _trayMenu.AddItem("恢复提醒", () =>
-            {
-                Settings.Update(x2 => x2.ReminderEnabled = true);
-                Reminder.ResetToday();
-            });
-            _trayMenu.AddItem("创建桌面快捷方式", () => CreateDesktopShortcut(), isLast: true);
-            _trayMenu.AddItem("打开数据目录", OpenDataFolder);
-            _trayMenu.AddItem("打开素材目录", OpenAssetsFolder);
-            _trayMenu.AddItem("重新加载素材", ReloadAssets);
-            _trayMenu.AddItem("退出鲸记", ExitApp);
+            BuildMainMenu(_trayMenu, x, y);
 
             _trayMenu.ShowAt(x, y);
         }
@@ -759,6 +780,159 @@ public partial class App : Application
         {
             LogCrash(ex);
         }
+    }
+
+    /// <summary>
+    /// 一级菜单。
+    ///
+    /// 抽成独立方法是给二级页的「← 返回」用的 —— 返回要把同一套内容原样重建一遍，
+    /// 而不是"关掉再开一个新的"（那样位置会重新算，用户点的那个位置就飘了）。
+    /// </summary>
+    private void BuildMainMenu(TrayMenuWindow menu, int x, int y)
+    {
+        var s = Settings.Settings;
+        var hotkey = string.IsNullOrWhiteSpace(s.QuickCaptureHotkey) ? "未设置" : s.QuickCaptureHotkey;
+
+        menu.AddItem($"快速记录（{hotkey}）", ShowQuickCapture);
+        menu.AddItem("打开主面板", ShowMainWindow);
+        menu.AddItem("生成今日日报", () => ShowDailyReport(DateTime.Today));
+        menu.AddItem("生成本周周报", () => ShowWeeklyReport(DateTime.Today));
+        menu.AddItem("桌面小鲸鱼", ToggleFloating, s.FloatingEnabled, isLast: true);
+        menu.AddItem("小鲸鱼动画", ToggleFloatingAnimations, s.FloatingAnimations);
+        // 素材包有一百多个动作，全铺进一级就彻底没法看了 —— 收进二级页（见下面那个方法）
+        menu.AddNavItem("播放动画…", () => BuildAnimationMenu(menu, x, y));
+        menu.AddItem("今天别再提醒", () =>
+        {
+            Settings.Update(x2 => x2.ReminderEnabled = false);
+            _floatingWindow?.ShowBubble("已关闭今日提醒", "重新打开：托盘菜单 → 恢复提醒。");
+        });
+        menu.AddItem("恢复提醒", () =>
+        {
+            Settings.Update(x2 => x2.ReminderEnabled = true);
+            Reminder.ResetToday();
+        });
+        menu.AddItem("创建桌面快捷方式", () => CreateDesktopShortcut(), isLast: true);
+        menu.AddItem("打开数据目录", OpenDataFolder);
+        menu.AddItem("打开素材目录", OpenAssetsFolder);
+        menu.AddItem("重新加载素材", ReloadAssets);
+        menu.AddItem("退出鲸记", ExitApp);
+    }
+
+    /// <summary>
+    /// 二级页：自选播放动画。
+    ///
+    /// 原样照搬一级的做法做不到 —— dsh 那套素材光是"闲置小动作"就有九十多个，
+    /// 名字还各不相同，光按角色分组根本压不短。所以这里给一个筛选框，
+    /// 列表本身按角色分组，输入关键词才平铺。
+    /// </summary>
+    private void BuildAnimationMenu(TrayMenuWindow menu, int x, int y, AnimLibrary? library = null)
+    {
+        menu.ClearItems();
+
+        menu.AddNavItem("返回菜单", () =>
+        {
+            menu.ClearItems();
+            BuildMainMenu(menu, x, y);
+            menu.Relayout();
+        }, isBack: true);
+
+        // 默认用**当前形象包**扫出来的那份 —— 菜单不自己另扫一遍，
+        // 否则「重新加载素材」之后，菜单里列的和界面上真能播的会对不上。
+        // 自检会传一份自己造的素材进来，好让主路径在隔离环境下也能被验到。
+        var lib = library ?? _floatingWindow?.Animations;
+        if (lib == null || !lib.HasAny)
+        {
+            menu.AddHeader("没扫到能播的动作");
+            menu.AddItem("打开素材目录", OpenAssetsFolder);
+            menu.AddItem("重新加载素材", ReloadAssets);
+            menu.Relayout();
+            return;
+        }
+
+        // 两个开关关着时，点了是不会有任何动静的 —— 那正是最难查的"点了没反应"。
+        // 先说清楚会自己打开，用户不用两头跑。
+        if (!Settings.Settings.FloatingEnabled || !Settings.Settings.FloatingAnimations)
+            menu.AddHeader("选一个动作会自动打开桌面小鲸鱼");
+
+        // 搜索框必须排在列表**上面**：这块列表有一百多项，搜索框要是跟在它后面，
+        // 用户得先滚到底才找得到 —— 那等于没有。（先加的就是上面的。）
+        //
+        // section 先声明成可空的：Fill 要交给搜索框当回调，编译器没法证明
+        // 它被调用时列表已经建好，所以 Fill 自己判一下（实际不会走到那个分支）。
+        TrayMenuWindow.Section? section = null;
+
+        void Fill(string keyword)
+        {
+            if (section is not { } host) return;
+
+            host.Clear();
+
+            // 行清单由纯函数算出来（见 AnimMenu）：分组、短名、平铺、筛不出东西的提示
+            // 全在那边，这里只负责把行变成控件 —— 能测的那部分就别留在界面层。
+            foreach (var row in AnimMenu.Build(lib, keyword))
+            {
+                if (row.Kind == AnimMenuRowKind.Header) host.AddHeader(row.Text);
+                else host.AddItem(row.Text, () => PlayChosenAction(row.Action!));
+            }
+        }
+
+        menu.AddSearchBox(Fill);
+
+        section = menu.AddSection();
+
+        Fill("");
+
+        menu.Relayout();
+    }
+
+    /// <summary>
+    /// 播放用户选中的动作（走到这里时菜单已经关了）。
+    ///
+    /// 桌面小鲸鱼没开、动画开关关着，都在这儿补齐：用户点的是"播放动画"，
+    /// 不是"研究这两个开关怎么配合"—— 让他点完什么也看不到，才是真的莫名其妙。
+    /// </summary>
+    private void PlayChosenAction(string action)
+    {
+        try
+        {
+            if (!Settings.Settings.FloatingEnabled || !Settings.Settings.FloatingAnimations)
+            {
+                Settings.Update(s =>
+                {
+                    s.FloatingEnabled = true;
+                    s.FloatingAnimations = true;
+                });
+            }
+
+            if (_floatingWindow is not { IsVisible: true }) ShowFloating();
+            _floatingWindow?.ApplySettings();
+
+            if (_floatingWindow?.PlayAction(action) != true)
+            {
+                CrashLog.Note($"[动画] 菜单里选的动作没播出来：{action}");
+                _floatingWindow?.ShowBubble("这个动作没播出来", "素材可能读不出来，可在菜单里「重新加载素材」。");
+            }
+        }
+        catch (Exception ex)
+        {
+            LogCrash(ex);
+        }
+    }
+
+    /// <summary>
+    /// 自检用：把「自选播放动画」二级页搭出来（**不显示窗口**），返回它每一行长什么样。
+    ///
+    /// 素材由调用方给：自检环境里形象包可能是原版（压根没有 anim 素材），
+    /// 用真实素材验的就只是"没扫到"那条分支，主路径反而没人管了。
+    ///
+    /// 菜单是代码构造的、没有数据绑定可查 —— 想知道"里面到底有什么"，
+    /// 只能把构建结果念出来核对。少了一截不会报错，只会安静地空着。
+    /// </summary>
+    public IReadOnlyList<string> AnimationMenuForProbe(AnimLibrary library)
+    {
+        var probe = new TrayMenuWindow();
+        BuildAnimationMenu(probe, 0, 0, library);
+        return probe.RowTextsForProbe;
     }
 
     /// <summary>在鼠标当前位置弹菜单（悬浮窗右键用）。</summary>

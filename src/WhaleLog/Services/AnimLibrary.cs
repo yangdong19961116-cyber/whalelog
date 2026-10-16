@@ -110,6 +110,46 @@ public sealed class AnimLibrary
         return counts;
     }
 
+    /// <summary>
+    /// 按角色分好组的全部动作，「自选播放动画」的列表直接用它。
+    ///
+    /// 顺序 = <see cref="AnimActions.All"/> 的角色顺序（待机 → 点击 → …），
+    /// 认不出角色的自制动作排在**最后**（角色用空串表示），免得混在中间把正经分组冲散。
+    /// **空组不返回** —— 素材包没有哪个角色就不该出现哪个标题。
+    /// </summary>
+    public IReadOnlyList<(string Role, IReadOnlyList<string> Actions)> GroupedActions()
+    {
+        var groups = new List<(string, IReadOnlyList<string>)>();
+
+        foreach (var role in AnimActions.All)
+        {
+            var list = ActionsWithRole(role);
+            if (list.Count > 0) groups.Add((role, list));
+        }
+
+        var custom = ActionNames.Where(a => RoleOf(a).Length == 0).ToList();
+        if (custom.Count > 0) groups.Add(("", custom));
+
+        return groups;
+    }
+
+    /// <summary>
+    /// 按关键词筛选动作（菜单里的搜索框用）。
+    ///
+    /// 关键词为空 → 全部。命中条件：动作名包含它，**或者**它的角色中文名包含它 ——
+    /// 所以搜「眨眼」能搜到原版那个叫 blink 的动作，搜「吃」能搜出一串吃播。
+    /// </summary>
+    public IReadOnlyList<string> Search(string? keyword)
+    {
+        var kw = (keyword ?? "").Trim();
+        if (kw.Length == 0) return ActionNames;
+
+        return ActionNames
+            .Where(a => a.Contains(kw, StringComparison.OrdinalIgnoreCase)
+                     || AnimActions.DisplayName(RoleOf(a)).Contains(kw, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+    }
+
     /// <summary>能认出角色的动作数（相对于"自定义动作"）。</summary>
     public int RecognizedRoleCount => _roles.Values.Count(r => r.Length > 0);
 

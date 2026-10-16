@@ -439,6 +439,12 @@ public static class DiagnosticsService
         Section("小鲸鱼动画");
         ProbeFloatingAnimations(Check, sb);
 
+        // ---- 托盘菜单里自选播放动画 ----
+        // 整条链路都在界面层，错了不报任何错：菜单少一截 = 二级页里空着，
+        // 名字取错 = 菜单上写着别的动作，选中播不出来 = 点了没动静。
+        Section("自选播放动画（托盘菜单）");
+        ProbeAnimationMenu(Check);
+
         // ---- 悬浮态形象 ----
         // 鼠标移上去换一张图。最容易错的是"移出要换回来"（处理函数里有个提前 return）
         // 和"悬浮期间动画播完该落回哪张"（落回本体就会闪一下睁眼）。
@@ -4227,6 +4233,144 @@ public static class DiagnosticsService
             try { window?.Close(); }
             catch { /* 关不掉不影响结论 */ }
         }
+    }
+
+    /// <summary>
+    /// 托盘菜单里的「自选播放动画」。
+    ///
+    /// 这个功能整条链路都在界面层：菜单是**代码构造**的、清单来自素材扫描结果，
+    /// 少了哪一段都不会报错 —— 表现只是"二级页里空着"，或者"点了没动静"。
+    ///
+    /// **素材自己造**：自检环境里的形象包可能是原版（压根没有 anim 目录），
+    /// 拿真实素材验的就只是"没扫到"那条分支 —— 而那恰恰是没人会走的路径。
+    /// 这里照 dsh 那种"一个角色下塞几十个动作"的规模造一份，验的才是主路径。
+    /// </summary>
+    private static void ProbeAnimationMenu(CheckFn check)
+    {
+        try
+        {
+            if (System.Windows.Application.Current is not App app)
+            {
+                check("能拿到程序实例", false, "Application.Current 不是 App");
+                return;
+            }
+
+            var assetDir = Path.Combine(AppPaths.Root, "logs", "menu-probe", "Assets");
+            try { Directory.Delete(assetDir, true); } catch { /* 第一次跑时还不存在 */ }
+
+            for (var i = 0; i < 60; i++)
+                WriteProbeAnimation(assetDir, $"ambient-探针动作{i:00}", 720, 2, 2);
+
+            WriteProbeAnimation(assetDir, "clickBounce-开心跃动", 720, 2, 2);
+            WriteProbeAnimation(assetDir, "idle-待机呼吸休闲", 720, 2, 2);
+
+            var lib = AnimLibrary.Scan(assetDir);
+            check("探针素材扫出来了",
+                lib.ActionNames.Count == 62, $"扫到 {lib.ActionNames.Count} 个动作");
+
+            var rows = app.AnimationMenuForProbe(lib);
+
+            check("二级页第一行是「返回菜单」",
+                rows.Count > 0 && rows[0].Contains("返回", StringComparison.Ordinal),
+                rows.Count > 0 ? rows[0] : "（菜单是空的）");
+
+            check("二级页里有搜索框（上百个动作不筛没法用）",
+                rows.Contains(TrayMenuWindow.SearchBoxMarker),
+                string.Join("、", rows.Take(3)));
+
+            // 搜索框必须排在动作列表**上面**。这条是真踩到的：一开始先加列表、后加搜索框，
+            // 结果它被排到一百多项底下去了 —— 界面上压根看不出来（得滚到底），
+            // 光断言"有没有搜索框"也照样过。出了图才看见。
+            var searchIndex = -1;
+            var firstActionIndex = -1;
+            for (var i = 0; i < rows.Count; i++)
+            {
+                if (searchIndex < 0 && rows[i] == TrayMenuWindow.SearchBoxMarker) searchIndex = i;
+                if (firstActionIndex < 0 && rows[i].StartsWith("    ", StringComparison.Ordinal)) firstActionIndex = i;
+            }
+
+            check("搜索框排在动作列表上面（排在底下等于没有）",
+                searchIndex >= 0 && firstActionIndex >= 0 && searchIndex < firstActionIndex,
+                $"搜索框在第 {searchIndex + 1} 行，第一个动作在第 {firstActionIndex + 1} 行");
+
+            // 一个动作一行、行首四个空格（导航项用的是「←  」）。
+            // 对不上就是"菜单里根本没列全"—— 这种事得数才知道，界面上不一定看得出来。
+            var actionRows = rows.Count(r => r.StartsWith("    ", StringComparison.Ordinal));
+            check("每个动作都在二级页里有一行",
+                actionRows == lib.ActionNames.Count,
+                $"列了 {actionRows} 行，素材里有 {lib.ActionNames.Count} 个动作");
+
+            check("动作按角色分了组（标题形如「闲置小动作（60）」）",
+                rows.Contains("闲置小动作（60）"),
+                rows.FirstOrDefault(r => r.EndsWith("）", StringComparison.Ordinal)) ?? "（一个分组标题都没有）");
+
+            check("菜单里的动作名去掉了角色前缀（分组标题已经说过一遍了）",
+                rows.Any(r => r.Trim() == "探针动作00") &&
+                !rows.Any(r => r.TrimStart().StartsWith("ambient-", StringComparison.Ordinal)),
+                rows.FirstOrDefault(r => r.StartsWith("    ", StringComparison.Ordinal)) ?? "（没有动作行）");
+        }
+        catch (Exception ex)
+        {
+            check("自选播放动画（托盘菜单）", false, ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// 把托盘菜单渲染成 PNG（一级页和「自选播放动画」二级页各出一张）。
+    ///
+    /// 菜单是**自绘窗口**，没有任何取内容的正经入口（探针那个 <c>RowTextsForProbe</c>
+    /// 是给它自己用的），"分组标题挤不挤""动作名有没有被截断""滚动条压没压住文字"
+    /// 这类事断言一句都问不出来 —— 只能看图。
+    ///
+    /// 渲染的是窗口的 <c>Content</c> 而不是窗口本身：窗口没显示过就没有 HWND，
+    /// 但内容树是现成的，量一遍、摆一遍就能画。
+    /// </summary>
+    public static string WriteMenuShot(TrayMenuWindow menu, string path, int scale = 2)
+    {
+        if (scale < 1) scale = 1;
+
+        if (menu.Content is not System.Windows.FrameworkElement root)
+            throw new InvalidOperationException("菜单没有内容可渲染");
+
+        root.Measure(new System.Windows.Size(double.PositiveInfinity, double.PositiveInfinity));
+        var size = root.DesiredSize;
+        root.Arrange(new System.Windows.Rect(new System.Windows.Point(0, 0), size));
+        root.UpdateLayout();
+
+        int pw = Math.Max(1, (int)Math.Ceiling(size.Width * scale));
+        int ph = Math.Max(1, (int)Math.Ceiling(size.Height * scale));
+        double dpi = 96.0 * scale;
+
+        var shot = new System.Windows.Media.Imaging.RenderTargetBitmap(
+            pw, ph, dpi, dpi, System.Windows.Media.PixelFormats.Pbgra32);
+        shot.Render(root);
+
+        // 菜单自己透明（圆角外面那圈 Margin 是空的），垫一层窗口底色才看得出边界和阴影
+        var visual = new System.Windows.Media.DrawingVisual();
+        using (var dc = visual.RenderOpen())
+        {
+            var bg = Application.Current?.TryFindResource("WindowBackgroundBrush")
+                         as System.Windows.Media.Brush
+                     ?? System.Windows.Media.Brushes.White;
+            dc.DrawRectangle(bg, null, new System.Windows.Rect(0, 0, size.Width, size.Height));
+            dc.DrawImage(shot, new System.Windows.Rect(0, 0, size.Width, size.Height));
+        }
+
+        var composed = new System.Windows.Media.Imaging.RenderTargetBitmap(
+            pw, ph, dpi, dpi, System.Windows.Media.PixelFormats.Pbgra32);
+        composed.Render(visual);
+
+        var encoder = new System.Windows.Media.Imaging.PngBitmapEncoder();
+        encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(composed));
+
+        var dir = Path.GetDirectoryName(path);
+        if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+
+        using var fs = File.Create(path);
+        encoder.Save(fs);
+
+        Console.WriteLine($"[菜单] {size.Width:F1}×{size.Height:F1} · {menu.RowTextsForProbe.Count} 行 → {path}");
+        return path;
     }
 
     /// <summary>

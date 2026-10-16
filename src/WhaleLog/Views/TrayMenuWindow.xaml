@@ -21,6 +21,16 @@
         <Border.Effect>
             <DropShadowEffect BlurRadius="14" ShadowDepth="2" Opacity="0.3" Color="#000000" />
         </Border.Effect>
-        <StackPanel x:Name="ItemsHost" MinWidth="176" />
+        <!--
+            二级页（自选播放动画）有一百多项，必须能滚。
+            MaxHeight 别贴着屏幕高度写：留出 Margin 和四周余量，
+            1366×768 这种小屏上也要能把整菜单摆进工作区。
+            一级那十几项够不到这个高度，所以这条对它们没有任何影响。
+        -->
+        <ScrollViewer MaxHeight="560"
+                      VerticalScrollBarVisibility="Auto"
+                      HorizontalScrollBarVisibility="Disabled">
+            <StackPanel x:Name="ItemsHost" MinWidth="176" />
+        </ScrollViewer>
     </Border>
 </Window>

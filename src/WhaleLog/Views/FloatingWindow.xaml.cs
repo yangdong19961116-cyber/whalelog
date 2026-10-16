@@ -1655,6 +1655,21 @@ public partial class FloatingWindow : Window
     /// <summary>自检用：ffmpeg 找没找到、在哪。</summary>
     public string FfmpegState => FfmpegLocator.Describe();
 
+    /// <summary>
+    /// 扫到的动态素材。「自选播放动画」靠它列动作 ——
+    /// 拿的是**这个实例扫出来的那一份**，菜单不自己再扫一遍，
+    /// 否则「重新加载素材」之后，菜单里列的和界面上真能播的会对不上。
+    /// </summary>
+    public AnimLibrary? Animations => _anim;
+
+    /// <summary>
+    /// 播放指定动作（托盘菜单「自选播放动画」选中一项走这里）。
+    ///
+    /// 返回是否真的起播了：动画开关关着、或这个动作的素材读不出来时是 false。
+    /// 调用方据此给一句解释 —— "点了没反应"是最难查的那种故障。
+    /// </summary>
+    public bool PlayAction(string action) => PlayAnimation(action);
+
     /// <summary>自检用：按角色播一个动作（走真实的 <see cref="PlayRandomOfRole"/> 路径）。</summary>
     public bool PlayRoleOnce(string role)
     {

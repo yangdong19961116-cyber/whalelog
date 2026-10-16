@@ -2226,6 +2226,105 @@ internal static class Program
             "角色从目录名认出来了");
         CheckEq(ordered.RoleOf($"{AnimActions.Cheer}-雀跃庆祝"), AnimActions.Cheer,
             "角色从目录名认出来了");
+
+        // ------------------------------------------------------------------
+        // 托盘菜单「自选播放动画」要用的显示名、分组和筛选
+        //
+        // 这套东西唯一的用户是那个二级菜单，但它错起来是**静默**的：
+        // 名字切歪了只是菜单上多几个怪字，分组顺序错了只是一百多项里次序不对 ——
+        // 没人会为这种程度的小毛病专门来报。所以在这儿钉住。
+        //
+        // 现实约束（在真 dsh 包里数过）：106 个动作有 93 个是 ambient，
+        // 名字还几乎全不重复（"吃汤圆""写代码"…）—— 光靠分组压不短，必须有筛选。
+        // ------------------------------------------------------------------
+        Section("播放菜单：显示名与短名");
+
+        CheckEq(AnimActions.DisplayName(AnimActions.Ambient), "闲置小动作", "ambient 的中文名");
+        CheckEq(AnimActions.DisplayName(AnimActions.Idle), "待机", "idle 的中文名");
+        CheckEq(AnimActions.DisplayName("随手动"), "未分类", "认不出的角色落到「未分类」");
+
+        CheckEq(AnimActions.ShortName("ambient-余额-分文不剩", AnimActions.Ambient), "余额-分文不剩",
+            "只去掉第一段角色前缀，后面的连字符是动作名自己的");
+        CheckEq(AnimActions.ShortName("clickBounce-开心跃动", AnimActions.Click), "开心跃动",
+            "英文前缀同样去掉");
+        CheckEq(AnimActions.ShortName("blink", AnimActions.Blink), "眨眼",
+            "名字本身就是角色时退回角色名（否则菜单上会孤零零写一行 blink）");
+        CheckEq(AnimActions.ShortName("随手动", ""), "随手动",
+            "第一段认不出角色 → 原样显示，绝不硬切");
+
+        // ---- 分组与筛选（另起一个干净目录，免得跟上面那堆坏素材混在一起）----
+        var menuAssetDir = Path.Combine(workspace, "menu-assets");
+        var menuAnimDir = Path.Combine(menuAssetDir, AnimLibrary.FolderName);
+        Directory.CreateDirectory(menuAnimDir);
+
+        AddAction(menuAnimDir, "ambient-写代码", SampleSheetJson, withSheetPng: true);
+        AddAction(menuAnimDir, "ambient-吃汤圆", SampleSheetJson, withSheetPng: true);
+        AddAction(menuAnimDir, "ambient-写福字", SampleSheetJson, withSheetPng: true);
+        AddAction(menuAnimDir, "cheer-雀跃庆祝", SampleSheetJson, withSheetPng: true);
+        AddAction(menuAnimDir, "随手动", SampleSheetJson, withSheetPng: true);
+
+        var menu = AnimLibrary.Scan(menuAssetDir);
+        var groups = menu.GroupedActions();
+
+        Section("播放菜单：分组与筛选");
+
+        CheckEq(groups.Count.ToString(), "3", "两个真角色 + 一个未分类，共三组");
+        CheckEq(groups[0].Role, AnimActions.Ambient, "角色顺序跟着 AnimActions.All 走，不按动作数量排");
+        CheckEq(groups[1].Role, AnimActions.Cheer, "第二个是真角色");
+        CheckEq(groups[2].Role, "", "认不出角色的排最后（混在中间会把正经分组冲散）");
+        CheckEq(groups[0].Actions.Count.ToString(), "3", "三个闲置小动作都进同一组");
+        Check(!groups.Any(g => g.Role == AnimActions.Idle),
+            "空组不出现 —— 素材包没有哪个角色就不该出现哪个标题");
+
+        var ambientNames = groups[0].Actions.ToList();
+        Check(ambientNames.SequenceEqual(ambientNames.OrderBy(n => n, StringComparer.OrdinalIgnoreCase)),
+            "组内按名字排序（不排的话顺序取决于文件系统，每次打开菜单都不一样）");
+        Check(groups[2].Actions.Contains("随手动"), "自定义动作仍然列得出来（只是排在最后）");
+
+        CheckEq(menu.Search("").Count.ToString(), menu.ActionNames.Count.ToString(),
+            "空关键词返回全部（清空搜索框就回到全量列表）");
+        CheckEq(menu.Search("   ").Count.ToString(), menu.ActionNames.Count.ToString(),
+            "只有空格也算空关键词");
+
+        var eatHit = menu.Search("吃");
+        Check(eatHit.Count == 1 && eatHit[0] == "ambient-吃汤圆", "按动作名筛选");
+        CheckEq(menu.Search("闲置").Count.ToString(), "3",
+            "按角色中文名筛选：搜「闲置」能搜出所有闲置小动作");
+        CheckEq(menu.Search("AMBIENT").Count.ToString(), "3", "关键词不区分大小写");
+        CheckEq(menu.Search("不存在的动作").Count.ToString(), "0",
+            "没有匹配时返回空 —— 不能悄悄退回全部（那就成了「筛不筛都一样」）");
+
+        // ------------------------------------------------------------------
+        // 上面验的是"库里查得对不对"，这一节验"菜单会列成什么样"。
+        // 二级页本身是代码构造出来的 WPF 控件、喂不进断言 ——
+        // 所以行清单被单独抽成了纯函数 AnimMenu.Build，
+        // 菜单那边只剩"把行变成控件"一件事，没得错。
+        // ------------------------------------------------------------------
+        Section("播放菜单：行清单");
+
+        var allRows = AnimMenu.Build(menu, "");
+        CheckEq(AnimMenu.ActionCount(allRows).ToString(), menu.ActionNames.Count.ToString(),
+            "不带关键词时，每个动作都有一行");
+
+        var headerTexts = allRows.Where(r => r.Kind == AnimMenuRowKind.Header).Select(r => r.Text).ToList();
+        CheckEq(string.Join("、", headerTexts), "闲置小动作（3）、完工庆祝（1）、未分类（1）",
+            "分组标题 = 角色名 + 个数，未分类排最后（标题写错了菜单上就是一句错话）");
+
+        var firstActionRow = allRows.First(r => r.Kind == AnimMenuRowKind.Action);
+        Check(!firstActionRow.Text.StartsWith("ambient", StringComparison.Ordinal) &&
+              firstActionRow.Action!.EndsWith(firstActionRow.Text, StringComparison.Ordinal),
+            $"动作行显示短名：{firstActionRow.Action} → {firstActionRow.Text}");
+
+        var searched = AnimMenu.Build(menu, "吃");
+        CheckEq(AnimMenu.ActionCount(searched).ToString(), "1", "带关键词时只列命中的动作");
+        CheckEq(searched.Count(r => r.Kind == AnimMenuRowKind.Header).ToString(), "0",
+            "筛选结果是平铺的 —— 已经在缩小范围了，再分组只会碍事");
+        CheckEq(searched[0].Action, "ambient-吃汤圆", "行里带着动作键（不带的话点了不知道要播哪个）");
+
+        var noneRows = AnimMenu.Build(menu, "不存在的动作");
+        CheckEq(noneRows.Count.ToString(), "1", "筛不出东西时给**一行提示**，不是空清单");
+        CheckEq(noneRows[0].Kind.ToString(), AnimMenuRowKind.Header.ToString(), "而且那行是标题、不可点");
+        CheckEq(noneRows[0].Text, "没有匹配的动作", "提示语要说清发生了什么");
     }
 
     // ==================================================================

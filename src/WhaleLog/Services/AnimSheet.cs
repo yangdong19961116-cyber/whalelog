@@ -644,4 +644,50 @@ public static class AnimActions
 
     /// <summary>这个动作在帧表里找不找得到（键已归一化）。</summary>
     public static bool IsKnown(string canonical) => All.Contains(canonical, StringComparer.Ordinal);
+
+    /// <summary>
+    /// 角色的中文名。用在「自选播放动画」的分组标题、以及搜「眨眼」能搜到 blink。
+    ///
+    /// 和 <see cref="RoleOf"/> 一样只有这一处映射 —— 界面不另起一套说法。
+    /// </summary>
+    public static string DisplayName(string role) => role switch
+    {
+        Idle => "待机",
+        Click => "点击回应",
+        Blink => "眨眼",
+        Ambient => "闲置小动作",
+        Alert => "到点提醒",
+        Drag => "拖拽",
+        Move => "移动",
+        Turn => "转身",
+        Archive => "归档清点",
+        Cheer => "完工庆祝",
+        _ => "未分类",
+    };
+
+    /// <summary>
+    /// 动作在列表里显示的名字：**去掉角色前缀**，因为分组标题已经说过一遍了。
+    ///
+    ///     ambient-余额-分文不剩  →  余额-分文不剩
+    ///     idle-待机呼吸休闲      →  待机呼吸休闲
+    ///     blink                  →  眨眼     （名字本身就是角色，退回角色名）
+    ///     我自己的动作           →  我自己的动作（第一段认不出角色，原样显示，绝不硬切）
+    ///
+    /// 切前缀只用**第一段**（和 <see cref="RoleOf"/> 同一套分隔符），
+    /// 所以「余额-分文不剩」这种自带连字符的用户动作不会被误切。
+    /// </summary>
+    public static string ShortName(string action, string role)
+    {
+        var raw = (action ?? "").Trim();
+        if (raw.Length == 0) return DisplayName(role);
+
+        var cut = raw.IndexOfAny(new[] { '-', '_', ' ' });
+        var head = (cut < 0 ? raw : raw[..cut]).ToLowerInvariant();
+
+        // 第一段认不出角色 → 整个名字都是用户自己起的，别动它
+        if (RoleOf(head).Length == 0) return raw;
+
+        var rest = cut < 0 ? "" : raw[(cut + 1)..].Trim().TrimStart('-', '_', ' ');
+        return rest.Length > 0 ? rest : DisplayName(role.Length > 0 ? role : RoleOf(head));
+    }
 }

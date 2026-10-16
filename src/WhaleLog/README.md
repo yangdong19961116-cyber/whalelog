@@ -496,6 +496,10 @@ Assets\anim\
 
 不想让小鲸鱼动：托盘菜单 →「小鲸鱼动画」，素材文件不用删。
 
+想单独看某一个动作：托盘菜单 →「播放动画…」，二级页里按角色分组列着全部动作，
+顶上一个搜索框（素材包里九十多个都是"闲置小动作"，不筛是翻不完的）——
+搜动作名或角色名都行，点一个就播。
+
 #### 8.1 第二条路线：透明视频 + 形象包（2026-09-20 新增）
 
 精灵图那条路要求"画一套帧拼成一张大图"，不适合手上已经有一堆现成动画视频的情况。
@@ -1050,6 +1054,7 @@ WhaleLog.exe --shot-settings D:\tmp\settings-page.png
 WhaleLog.exe --shot-floating D:\tmp\floating-scales.png
 WhaleLog.exe --shot-calendar D:\tmp\calendar.png     :: 月历面板，放大 4 倍
 WhaleLog.exe --shot-recent D:\tmp\recent-days.png    :: 往期清单面板，放大 2 倍
+WhaleLog.exe --shot-anim-menu D:\tmp\menu.png        :: 托盘菜单一级页 +「播放动画」二级页
 WhaleLog.exe --shot-file-calendar D:\tmp\fcal.png    :: 归档日历（蓝点 + 当天数量），放大 4 倍
 WhaleLog.exe --export-assets D:\tmp\Assets      :: 只导出出厂素材，不启界面
 ```
