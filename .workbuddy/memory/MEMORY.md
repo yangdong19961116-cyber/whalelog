@@ -54,6 +54,12 @@
 - ⚠️ **`github.com:443` 是时间性间歇封锁**（同一 IP 几秒内 0/12 ↔ 12/12，换 IP 同样撞坏窗口）→
   **改 hosts 没用**，且本会话无管理员权限写 `hosts`。
   ✅ 推代码走 **`tools/push_via_api.py`**（`api.github.com` 一直稳）；仍要 PAT（本机无任何凭据）。详见 detail「Git 远端」。
+- ⭐ **镜像能推送（2026-10-16 实测，推翻了"镜像只读"的想当然）**：`ghproxy.net` / `ghfast.top`
+  的 **receive-pack 端点回 401 且带 `www-authenticate: Basic realm="GitHub"`** —— 挑战是 GitHub
+  自己发的、代理透传，即 push 请求真被转发到了 GitHub，只差凭据。
+  ⚠️ 但**别优先走镜像**：等于把 PAT 交给第三方。凭据只发官方的两条路都实测可用：
+  ① `push_via_api.py`（`api.github.com` 200）② **`ssh.github.com:443` SSH 握手成功**
+  （返回 `Permission denied (publickey)` = 协议层通了，只差本机密钥 + 账号配公钥）。
 - bash 命令可能被「沙箱重跑」一次 → 收尾别用长 `&&`，用 `;` 并回查结果。
 - 本会话 PowerShell 工具不返回 stdout → 用 bash 或直接看文件。
 

@@ -179,5 +179,33 @@
 - **第二道关是凭据**：本机无 `~/.ssh`、无 `.git-credentials`；`credential.helper=helper-selector` 非交互
   弹不出选择框 → `could not read Username` 挂到超时。走 API 要 PAT（经典 PAT 勾 `repo`，
   或细粒度 PAT 的 `Contents: Read and write`）。
-- 2026-10-16 之后本地积累了若干未推提交（最新看 `git log --oneline`），等配好 PAT 一次推上去。
+- **2026-10-16 下午实测：镜像可以推送，"镜像只读"这个假设是错的**（这条推翻了本文件早先的默认认知）。
+  在**代理开着**的环境（当时 `https_proxy=127.0.0.1:6354`，端口每次会话都可能不同）实测：
+
+  | 端点 | 结果 | 含义 |
+  |---|---|---|
+  | `api.github.com` | **200** | 通，方案 B 可用 |
+  | `github.com`（`info/refs?service=git-upload-pack`） | **502 CONNECT tunnel failed** | 代理层直接拒了 CONNECT |
+  | `ghproxy.net/https://github.com` 读（upload-pack） | 200 | 可读 |
+  | `ghproxy.net/...` 写（**receive-pack**） | **401** | ⭐ **push 端点在，只是要认证** |
+  | `ghfast.top/https://github.com` 读写 | 200 / **401** | 同上 |
+  | `hub.gitmirror.com` / `github.kkgithub.com` | 502 | 代理连不上 |
+  | `gitclone.com` | 502 | 不可用 |
+
+  **判据是关键**：`401 Unauthorized` ≠ `403/404/405`。401 说明端点存在、只差身份；
+  而且响应头里带着 **`www-authenticate: Basic realm="GitHub"`** —— 这个挑战是
+  **GitHub 自己发的、代理原样透传**，证明请求真的被转发到了 GitHub。
+  `git push --dry-run` 走镜像的报错也是 `could not read Username for 'https://ghproxy.net'`
+  （**认证层**失败），而不是超时/502（网络层失败）。→ **镜像路径通，瓶颈从来不是网络。**
+- ⭐ **另一条不用 PAT 的路：`ssh.github.com:443` 实测握手成功**（不只是 TCP 通）：
+  `ssh -T -p 443 git@ssh.github.com` 返回 `Permission denied (publickey)` ——
+  这是 **SSH 协议层**的应答（ED25519 host key 都换到了），说明整条隧道可用，
+  只差一对本机密钥 + 把公钥加到 GitHub 账号。`~/.ssh` 目前不存在（可以生成）。
+
+  ⚠️ **安全取舍（重要）**：走镜像 push 等于**把 PAT 交给第三方代理**，它理论上能看到
+  `Authorization` 头。方案 B（`api.github.com`）和方案 C（SSH）的凭据**只发给官方域名**，
+  不经过第三方 → **能选就别走镜像**。而且用细粒度 PAT（只给这一个仓库 `Contents: Read and write`）
+  比经典 `repo` PAT 权限小得多。
+- 2026-10-16 之后本地积累了若干未推提交（当时 69 个，最新看 `git log --oneline`），
+  三条路都只差凭据，等用户给一个就能一次推上去。
 - `workwork` 是双项目工作区：AudioRoute（`src/AudioRoute/`，已完成）+ WhaleLog（在做）。建基线时 AudioRoute 一并进仓库；其 README 在 `src/AudioRoute/README.md`。
