@@ -156,5 +156,28 @@
 - 2026-10-10 已发 1.4.7（包 139.6 MB，`E:\jingji\` 与桌面各一份）。⚠️ 桌面那个 1.4.7 包**不含**「当天完成度」，要含新功能必须重打。
 
 ## 八、Git 远端
-- 远端 `https://github.com/yangdong19961116-cyber/whalelog.git`（私有，默认分支 `main`）；本地分支叫 `master`，推之前 `git branch -M master main` 对齐。本机连不上 `github.com`（见六）。
+- 远端 `https://github.com/yangdong19961116-cyber/whalelog.git`，**公开空仓（零 ref，默认分支还没建）**。
+  ⚠️ 09 月记的「私有」是**错的**（私有仓匿名访问不会返 200）；本地分支已 `git branch -M main`。
+- **`github.com:443` 是「时间性」间歇封锁**（2026-10-16 反复实测）：
+  * 同一个 IP 在几秒内能在 **0/12 ↔ 12/12** 之间跳变；换 IP（`140.82.112.3` / `140.82.113.3` / `20.27.177.113`）
+    同样会撞坏窗口。**不是「DNS 指错 IP」，改 hosts 没用** —— 那条「DNS 指到被封 IP、换成别的 IP 就通」
+    是正好落在一次 12/12 好窗口里得出的，**已被推翻**。
+  * `hosts` 本会话**无管理员权限写不进**（`-w` 测试骗人：能判断可写，实际 append 报 PermissionError，
+    且不能在 `etc\` 下新建备份文件）。所以**没改 hosts**（md5 `3688374325b992de…` 前后一致）。
+  * ICMP 能 ping 通、TCP:443 被丢；同一时刻 `api.github.com` / `baidu.com` / `example.com` / `microsoft.com`
+    全部正常 → 就是针对 `github.com:443`。
+  * **重试不是可靠办法**：裸连 `git ls-remote` 连续 9 次全败（约 90 秒）。
+  * 其它域名：`api.github.com`(0.4 s)、`codeload.github.com`(301)、`objects.githubusercontent.com`(404) **通**；
+    `raw.githubusercontent.com` **不通**。注入的 `HTTPS_PROXY=127.0.0.1:5574` 对 github 回 **502** → 跑 git 前剥掉。
+  * 试过又放弃的：本地 CONNECT 隧道把 github.com 钉到 `.112.3`（`tools/github_tunnel.py`，**已删**）——
+    接通一次后照样在坏窗口里超时，因为封锁与 IP 无关。hosts 备份文件也一并删了。
+- ✅ **正路：`tools/push_via_api.py`（2026-10-16 新增）** —— 走 `api.github.com` 的 Git Data API
+  把本地提交原样搬上去（blob → tree → commit → ref），**支持完整历史重放**（本仓 66 个提交 / 833 个 blob；
+  `--squash` 压成 1 个提交则约 400 次请求）。每个 commit 都带**原始的 author / committer / 日期 / 提交信息**，
+  而 GitHub 的 blob/tree/commit 用同一套 SHA-1，所以远端 sha 应与本地**逐个相等**，脚本结尾会核对并报出来。
+  `--dry-run` 只读本地、不碰网络。本机 Python **没有 `requests`**，脚本用 stdlib `urllib`。
+- **第二道关是凭据**：本机无 `~/.ssh`、无 `.git-credentials`；`credential.helper=helper-selector` 非交互
+  弹不出选择框 → `could not read Username` 挂到超时。走 API 要 PAT（经典 PAT 勾 `repo`，
+  或细粒度 PAT 的 `Contents: Read and write`）。
+- 2026-10-16 之后本地积累了若干未推提交（最新看 `git log --oneline`），等配好 PAT 一次推上去。
 - `workwork` 是双项目工作区：AudioRoute（`src/AudioRoute/`，已完成）+ WhaleLog（在做）。建基线时 AudioRoute 一并进仓库；其 README 在 `src/AudioRoute/README.md`。

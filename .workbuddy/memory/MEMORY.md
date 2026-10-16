@@ -49,9 +49,9 @@
 - `dotnet.exe` 不在 bash PATH：`"C:/Program Files (x86)/dotnet/dotnet.exe"`；项目用 **AnyCPU**。
 - 🔴 从 bash 启动鲸记必须先 `source <repo>/.tmp-env.sh`（缺 `SystemRoot`/`windir` → WPF 起不来）。
 - 不能从 bash 调 `cmd.exe` → `build-whalelog*.cmd` 跑不了，手工复现那四步。
-- 🟢 **GitHub 网络本身是通的**（10-15 实测直连 1.2 s 返 200）；推不上去的真因是**没有凭据**
-  （`credential.helper=helper-selector` 非交互弹不出框），远端 `yangdong19961116-cyber/whalelog` 是**公开空仓**。
-  另：环境注入的 `HTTPS_PROXY=127.0.0.1:5574` 对 github 会**传一半断流** → 跑 git 前先剥掉。
+- ⚠️ **`github.com:443` 是时间性间歇封锁**（同一 IP 几秒内 0/12 ↔ 12/12，换 IP 同样撞坏窗口）→
+  **改 hosts 没用**，且本会话无管理员权限写 `hosts`。
+  ✅ 推代码走 **`tools/push_via_api.py`**（`api.github.com` 一直稳）；仍要 PAT（本机无任何凭据）。详见 detail「Git 远端」。
 - bash 命令可能被「沙箱重跑」一次 → 收尾别用长 `&&`，用 `;` 并回查结果。
 - 本会话 PowerShell 工具不返回 stdout → 用 bash 或直接看文件。
 
